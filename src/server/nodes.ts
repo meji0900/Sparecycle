@@ -1,0 +1,300 @@
+// Node registration, task assignment (long poll) and the public node list.
+//
+// Assignment rules:
+//   - a job's two tasks go to two distinct nodes with distinct owner wallets AND distinct GPU UUIDs;
+//   - both tasks run on the SAME backend (cuda | vulkan | cpu), and dev-runner nodes pair only with dev-runner
+//     nodes: CUDA, Vulkan and CPU kernels differ in floating point, so mixed pairs could disagree honestly;
+//   - the node needs the model's capability tag, enough VRAM and a backend that runs the model (SD 1.5 = CUDA only);
+//   - the first task of a job is handed out only if a compatible peer (same backend, other owner, other GPU,
+//     capable, online) exists to take the second one, so a lone node can't strand a job;
+//   - a lease expires after POLICY.taskLeaseSeconds and the task goes back to the queue.
+import { getAddress, isAddress, verifyMessage, type Address, type Hex } from "viem";
+import { publicClient, targetChain } from "@/lib/chain";
+import {
+  BACKENDS,
+  CAPABILITY_TAGS,
+  capabilityTagsFor,
+  isBackend,
+  linkMessage,
+  MODELS,
+  MODEL_IDS,
+  modelRunsOn,
+  type Backend,
+  type JobSpec,
+  type ModelId,
+} from "@/lib/protocol";
+import { getDb, nowSec, tx } from "./db";
+import { POLICY, serverEnv } from "./env";
+import { ApiError } from "./http";
+import { ensureEpoch } from "./epochs";
+import { expireStaleJobs } from "./jobs";
+
+type NodeRow = {
+  node_key: Address;
+  owner: Address;
+  gpu: string;
+  gpu_uuid: string;
+  vram_mb: number;
+  caps: string;
+  dev: number;
+  backend: Backend;
+  last_seen: number;
+  agreed_jobs: number;
+};
+
+type Obj = Record<string, unknown>;
+
+const shortText = (v: unknown, field: string, max = 128): string => {
+  if (typeof v !== "string" || v.trim().length === 0 || v.length > max) {
+    throw new ApiError(400, "invalid-registration", `${field} must be text of 1..${max} characters`, { field });
+  }
+  return v.trim();
+};
+
+async function ownerSigValid(nodeKey: Address, owner: Address, sig: Hex): Promise<boolean> {
+  const message = linkMessage(nodeKey, owner);
+  try {
+    if (await verifyMessage({ address: owner, message, signature: sig })) return true;
+  } catch {
+    /* fall through to the contract-wallet check */
+  }
+  try {
+    // Smart-contract wallets (ERC-1271 / ERC-6492) need an RPC call.
+    return await publicClient.verifyMessage({ address: owner, message, signature: sig });
+  } catch {
+    return false;
+  }
+}
+
+/** POST /api/v1/nodes/register */
+export async function registerNode(nodeKey: Address, body: unknown) {
+  if (typeof body !== "object" || body === null) throw new ApiError(400, "invalid-registration", "expected a JSON object");
+  const b = body as Obj;
+  const gpu = shortText(b.gpu, "gpu");
+  const gpuUuid = shortText(b.gpuUuid, "gpuUuid");
+  const vramMb = b.vramMb;
+  if (typeof vramMb !== "number" || !Number.isInteger(vramMb) || vramMb < 0 || vramMb > 1_000_000) {
+    throw new ApiError(400, "invalid-registration", "vramMb must be a whole number of MB", { field: "vramMb" });
+  }
+  const backend = b.backend === undefined ? "cuda" : b.backend;
+  if (!isBackend(backend)) {
+    throw new ApiError(400, "invalid-registration", `backend must be one of ${BACKENDS.join(", ")}`, { field: "backend" });
+  }
+  if (!Array.isArray(b.caps) || b.caps.length === 0 || !b.caps.every((c) => typeof c === "string" && CAPABILITY_TAGS.includes(c))) {
+    throw new ApiError(400, "invalid-registration", `caps must be a non-empty subset of ${CAPABILITY_TAGS.join(", ")}`, {
+      field: "caps",
+    });
+  }
+  const allowed = capabilityTagsFor(backend);
+  const notHere = (b.caps as string[]).filter((c) => !allowed.includes(c));
+  if (notHere.length) {
+    throw new ApiError(400, "invalid-registration", `backend ${backend} can't run ${notHere.join(", ")} (allowed: ${allowed.join(", ")})`, {
+      field: "caps",
+    });
+  }
+  const caps = [...new Set(b.caps as string[])].sort();
+  if (typeof b.owner !== "string" || !isAddress(b.owner)) {
+    throw new ApiError(400, "invalid-registration", "owner must be a wallet address", { field: "owner" });
+  }
+  const owner = getAddress(b.owner);
+  if (typeof b.ownerSig !== "string" || !/^0x[0-9a-fA-F]+$/.test(b.ownerSig)) {
+    throw new ApiError(400, "invalid-registration", "ownerSig must be a hex signature", { field: "ownerSig" });
+  }
+  const dev = b.dev === true;
+  if (dev && !serverEnv.allowDevRunner()) {
+    throw new ApiError(403, "dev-runner-not-accepted", "this scheduler does not accept dev-runner nodes (no GPU, synthetic outputs)");
+  }
+  if (!(await ownerSigValid(nodeKey, owner, b.ownerSig as Hex))) {
+    throw new ApiError(401, "bad-owner-signature", `ownerSig must be the owner's signature of: ${linkMessage(nodeKey, owner)}`);
+  }
+  const version = typeof b.version === "string" ? b.version.slice(0, 32) : null;
+  const now = nowSec();
+  tx((db) => {
+    const clash = db
+      .prepare("SELECT owner FROM nodes WHERE gpu_uuid = ? AND owner != ? AND node_key != ? LIMIT 1")
+      .get(gpuUuid, owner, nodeKey) as { owner: string } | undefined;
+    if (clash) throw new ApiError(409, "gpu-linked-to-other-wallet", "this GPU is already registered to a different owner wallet");
+    db.prepare(
+      `INSERT INTO nodes (node_key, owner, owner_sig, gpu, gpu_uuid, vram_mb, caps, dev, backend, version, registered_at, last_seen)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(node_key) DO UPDATE SET owner = excluded.owner, owner_sig = excluded.owner_sig, gpu = excluded.gpu,
+         gpu_uuid = excluded.gpu_uuid, vram_mb = excluded.vram_mb, caps = excluded.caps, dev = excluded.dev,
+         backend = excluded.backend, version = excluded.version, last_seen = excluded.last_seen`,
+    ).run(nodeKey, owner, b.ownerSig as string, gpu, gpuUuid, vramMb, JSON.stringify(caps), dev ? 1 : 0, backend, version, now, now);
+  });
+  const epoch = await ensureEpoch().catch(() => null);
+  return { ok: true, nodeKey, owner, caps, dev, backend, chainId: targetChain.id, epoch: epoch?.id ?? null };
+}
+
+function getNode(nodeKey: Address): NodeRow {
+  const row = getDb().prepare("SELECT * FROM nodes WHERE node_key = ?").get(nodeKey) as NodeRow | undefined;
+  if (!row) throw new ApiError(403, "not-registered", "register this node first (POST /api/v1/nodes/register)");
+  return row;
+}
+
+export type Assignment = { taskId: string; jobId: string; epoch: number; spec: JobSpec; chainId: number; leaseExpiresAt: number };
+
+/** SQL CASE giving each model's VRAM need (for the peer check). Built from MODELS, no user input. */
+const VRAM_CASE = `CASE j.model ${MODEL_IDS.map((m) => `WHEN '${m}' THEN ${MODELS[m].vramMb}`).join(" ")} ELSE 1000000000 END`;
+
+/** One assignment attempt (synchronous, in a transaction). */
+function tryLease(node: NodeRow, epochId: number): Assignment | null {
+  return tx((db) => {
+    const now = nowSec();
+    // Already holding a live lease (e.g. the node restarted): hand the same task back.
+    const held = db
+      .prepare(
+        `SELECT t.id, t.job_id, t.epoch, t.lease_expires, j.spec FROM tasks t JOIN jobs j ON j.id = t.job_id
+         WHERE t.node_key = ? AND t.status = 'leased' AND t.lease_expires >= ? AND j.status IN ('running','checking') LIMIT 1`,
+      )
+      .get(node.node_key, now) as { id: string; job_id: string; epoch: number; lease_expires: number; spec: string } | undefined;
+    if (held) {
+      return {
+        taskId: held.id,
+        jobId: held.job_id,
+        epoch: held.epoch,
+        spec: JSON.parse(held.spec) as JobSpec,
+        chainId: targetChain.id,
+        leaseExpiresAt: held.lease_expires,
+      };
+    }
+    const caps = JSON.parse(node.caps) as string[];
+    const backend: Backend = isBackend(node.backend) ? node.backend : "cuda";
+    const models = MODEL_IDS.filter(
+      (m: ModelId) => caps.includes(MODELS[m].tag) && node.vram_mb >= MODELS[m].vramMb && modelRunsOn(m, backend),
+    );
+    if (!models.length) return null;
+    const params: Record<string, string | number> = {
+      now,
+      online: now - POLICY.onlineWindowSeconds,
+      node: node.node_key,
+      owner: node.owner,
+      gpu: node.gpu_uuid,
+      backend,
+      dev: node.dev ? 1 : 0,
+      allowDev: serverEnv.allowDevRunner() ? 1 : 0,
+    };
+    models.forEach((m, i) => (params[`m${i}`] = m));
+    const cand = db
+      .prepare(
+        `SELECT t.id, t.job_id, j.spec FROM tasks t JOIN jobs j ON j.id = t.job_id
+         WHERE j.status IN ('queued','running','checking')
+           AND j.model IN (${models.map((_, i) => `$m${i}`).join(",")})
+           AND (t.status = 'open' OR (t.status = 'leased' AND t.lease_expires < $now))
+           -- the sibling task, if held or done, must be on another node / owner / GPU and on the same backend class
+           AND NOT EXISTS (
+             SELECT 1 FROM tasks o WHERE o.job_id = t.job_id AND o.id != t.id
+               AND (o.status = 'done' OR (o.status = 'leased' AND o.lease_expires >= $now))
+               AND (o.node_key = $node OR o.owner = $owner OR o.gpu_uuid = $gpu
+                    OR COALESCE(o.backend, 'cuda') != $backend OR COALESCE(o.dev, 0) != $dev))
+           -- first task of a job: only when a compatible peer is online to take the second one
+           AND (
+             EXISTS (SELECT 1 FROM tasks o WHERE o.job_id = t.job_id AND o.id != t.id
+                       AND (o.status = 'done' OR (o.status = 'leased' AND o.lease_expires >= $now)))
+             OR EXISTS (SELECT 1 FROM nodes p
+                       WHERE p.backend = $backend AND p.dev = $dev AND (p.dev = 0 OR $allowDev = 1)
+                         AND p.node_key != $node AND p.owner != $owner AND p.gpu_uuid != $gpu
+                         AND p.last_seen >= $online
+                         AND p.caps LIKE '%"' || j.kind || ':' || j.model || '"%'
+                         AND p.vram_mb >= ${VRAM_CASE})
+           )
+         ORDER BY j.created_at ASC, t.slot ASC LIMIT 1`,
+      )
+      .get(params) as { id: string; job_id: string; spec: string } | undefined;
+    if (!cand) return null;
+    const expires = now + POLICY.taskLeaseSeconds;
+    db.prepare(
+      `UPDATE tasks SET status = 'leased', node_key = ?, owner = ?, gpu_uuid = ?, backend = ?, dev = ?, epoch = ?, leased_at = ?,
+         lease_expires = ?, attempts = attempts + 1 WHERE id = ?`,
+    ).run(node.node_key, node.owner, node.gpu_uuid, backend, node.dev ? 1 : 0, epochId, now, expires, cand.id);
+    db.prepare("UPDATE jobs SET status = 'running' WHERE id = ? AND status = 'queued'").run(cand.job_id);
+    return {
+      taskId: cand.id,
+      jobId: cand.job_id,
+      epoch: epochId,
+      spec: JSON.parse(cand.spec) as JobSpec,
+      chainId: targetChain.id,
+      leaseExpiresAt: expires,
+    };
+  });
+}
+
+/** POST /api/v1/nodes/poll — waits up to POLICY.pollWaitMs for work; null = nothing (204). */
+export async function pollForTask(nodeKey: Address, signal?: AbortSignal): Promise<Assignment | null> {
+  const node = getNode(nodeKey);
+  if (node.dev && !serverEnv.allowDevRunner()) {
+    throw new ApiError(403, "dev-runner-not-accepted", "this scheduler does not accept dev-runner nodes");
+  }
+  const touch = () => getDb().prepare("UPDATE nodes SET last_seen = ? WHERE node_key = ?").run(nowSec(), nodeKey);
+  touch();
+  expireStaleJobs();
+  const epoch = await ensureEpoch();
+  const deadline = Date.now() + POLICY.pollWaitMs;
+  for (;;) {
+    const a = tryLease(node, epoch.id);
+    if (a) return a;
+    if (Date.now() >= deadline || signal?.aborted) break;
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  touch();
+  return null;
+}
+
+/** GET /api/v1/nodes — registered nodes only (no GPU UUIDs, no signatures). */
+export function listNodes(epochId: number | null) {
+  const now = nowSec();
+  const rows = getDb()
+    .prepare(
+      `SELECT n.*,
+         (SELECT COUNT(*) FROM tasks t WHERE t.node_key = n.node_key AND t.status = 'leased' AND t.lease_expires >= ?) AS live_leases,
+         (SELECT COUNT(*) FROM results r JOIN jobs j ON j.id = r.job_id
+            WHERE r.node_key = n.node_key AND j.status = 'agreed' AND j.epoch_id = ?) AS epoch_agreed
+       FROM nodes n ORDER BY n.registered_at ASC`,
+    )
+    .all(now, epochId ?? -1) as (NodeRow & { live_leases: number; epoch_agreed: number })[];
+  const project = serverEnv.projectOwners();
+  const paidTest = serverEnv.paidTestOwners();
+  return {
+    nodes: rows.map((r) => ({
+      owner: r.owner,
+      nodeKey: r.node_key,
+      gpu: r.gpu,
+      vramMb: r.vram_mb,
+      caps: JSON.parse(r.caps) as string[],
+      backend: r.backend,
+      online: r.last_seen >= now - POLICY.onlineWindowSeconds || r.live_leases > 0,
+      lastSeen: r.last_seen,
+      agreedJobs: r.agreed_jobs,
+      epochAgreedJobs: r.epoch_agreed,
+      dev: r.dev === 1,
+      /** Run by the project (bootstrap GPU pool): never paid. */
+      project: project.has(r.owner.toLowerCase()),
+      /** A project node that is paid, for the team's openly labelled payout test. */
+      paidTest: paidTest.has(r.owner.toLowerCase()),
+    })),
+  };
+}
+
+export function nodeCounts() {
+  const now = nowSec();
+  const rows = getDb()
+    .prepare(
+      `SELECT n.backend AS backend, COUNT(*) AS registered,
+         SUM(CASE WHEN n.last_seen >= ? OR EXISTS (SELECT 1 FROM tasks t WHERE t.node_key = n.node_key AND t.status = 'leased'
+           AND t.lease_expires >= ?) THEN 1 ELSE 0 END) AS online
+       FROM nodes n GROUP BY n.backend`,
+    )
+    .all(now - POLICY.onlineWindowSeconds, now) as { backend: string; registered: number; online: number }[];
+  const byBackend = Object.fromEntries(BACKENDS.map((b) => [b, { registered: 0, online: 0 }])) as Record<
+    Backend,
+    { registered: number; online: number }
+  >;
+  let registered = 0;
+  let online = 0;
+  for (const r of rows) {
+    registered += r.registered;
+    online += r.online ?? 0;
+    if (isBackend(r.backend)) byBackend[r.backend] = { registered: r.registered, online: r.online ?? 0 };
+  }
+  return { registered, online, byBackend };
+}
