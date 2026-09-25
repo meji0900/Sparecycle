@@ -1,0 +1,2 @@
+# Simulations (forge script without --broadcast) are not deployment records.
+broadcast/*/*/dry-run/
