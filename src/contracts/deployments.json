@@ -1,0 +1,14 @@
+{
+  "4663": {
+    "SparecycleRewards": "0x68A0569130551154FC1aABD71d99f65681c58Fe9",
+    "SparecycleJobPayments": "0x420716931E5Ff2a984840C6E95837d826a8BE7eB"
+  },
+  "31337": {
+    "MockPonsFeeEscrow": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+    "SparecycleRewards": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+  },
+  "46630": {
+    "MockPonsFeeEscrow": "0xc6168598bA048b23faBfED4EEec2EF417a30b554",
+    "SparecycleRewards": "0x42387abDf935BCca8484515453945fA6CD5C5661"
+  }
+}
