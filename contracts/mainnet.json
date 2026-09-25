@@ -1,0 +1,29 @@
+{
+  "wallet": "0x6C079ff20B77fBbc89Fb5C90c5f43Cf24166d7D4",
+  "keystore": "sparecycle-mainnet",
+  "epochLengthSeconds": 21600,
+  "asset": "ETH",
+  "creatorTaxBps": 100,
+  "launchConfigId": 0,
+  "token": {
+    "name": "Sparecycle",
+    "symbol": "CYCLE",
+    "logo": "https://sparecycle.tech/token/logo.png",
+    "description": "Idle GPUs run AI jobs and get paid from this token. The creator share of trading fees plus the 1% creator tax go to an on-chain reward contract that pays node operators every 6-hour epoch.",
+    "website": "https://sparecycle.tech",
+    "twitter": "",
+    "telegram": "",
+    "discord": "",
+    "farcaster": ""
+  },
+  "treasury": {
+    "safe": "0xb262E4436aD6760F91e987f14e2fAc5D6550c71B",
+    "owners": [
+      "0x6C079ff20B77fBbc89Fb5C90c5f43Cf24166d7D4",
+      "0x783435E47AcE1905C1197b1d36526797d3dbE696"
+    ],
+    "threshold": 2,
+    "note": "Safe 1.5.0 on Robinhood Chain, created 2026-11-24; both keys held by the project owner on one laptop (separate seed phrases)"
+  },
+  "jobPriceWeiPerUnit": "500000000"
+}
