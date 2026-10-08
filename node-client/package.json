@@ -1,0 +1,28 @@
+{
+  "name": "sparecycle-node",
+  "version": "0.2.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Sparecycle node: runs the network's checked AI jobs (Stable Diffusion 1.5, Qwen2.5-1.5B) on an idle NVIDIA GPU.",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "imports": {
+    "#protocol": "./src/protocol.ts",
+    "#keys": "./src/keys.ts",
+    "#gpu": "./src/gpu.ts",
+    "#runners": "./src/runners.ts",
+    "#dev-runner": "./src/dev-runner.ts",
+    "#bench": "./src/bench.ts"
+  },
+  "scripts": {
+    "init": "node src/agent.ts init",
+    "link-message": "node src/agent.ts link-message",
+    "start": "node src/agent.ts start"
+  },
+  "dependencies": {
+    "pngjs": "^7.0.0",
+    "viem": "^2.58.2"
+  }
+}
