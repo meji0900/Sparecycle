@@ -1,0 +1,18 @@
+{
+  "version": "0.2.0",
+  "packedFrom": "node-client/",
+  "files": {
+    "windows": {
+      "os": "windows",
+      "file": "sparecycle-node-windows.zip",
+      "bytes": 41615,
+      "sha256": "767d5200ee6c9bb46861b19f45229d891d6efb2522e220706edb62a9a00148ca"
+    },
+    "linux": {
+      "os": "linux",
+      "file": "sparecycle-node-linux.tar.gz",
+      "bytes": 31923,
+      "sha256": "efbf62a8db201847d84995a0f98e686f154412b07a27f696192c0bef3ff055ee"
+    }
+  }
+}
