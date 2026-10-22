@@ -1,0 +1,13 @@
+.recon
+.check
+.check-live
+data
+.next*
+node_modules
+contracts/out
+contracts/cache
+node-client/.venv
+node-client/models
+node-client/bin
+.keys
+videos

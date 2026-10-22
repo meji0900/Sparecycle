@@ -1,0 +1,63 @@
+{
+  "name": "sparecycle",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "scheduler:close": "node src/server/close-cli.mjs",
+    "sweep": "node scripts/sweep.mjs",
+    "e2e:local": "node scripts/e2e-local.mjs",
+    "node:dev": "node node-client/src/agent.ts",
+    "contracts:build": "node contracts/tools/forge.mjs build",
+    "contracts:test": "node contracts/tools/forge.mjs test",
+    "contracts:abi-check": "node scripts/abi-check.mjs",
+    "prelaunch:check": "node scripts/prelaunch-check.mjs",
+    "deploy:local": "node scripts/deploy-local.mjs"
+  },
+  "dependencies": {
+    "@gsap/react": "^2.1.2",
+    "@hugeicons/core-free-icons": "^4.4.0",
+    "@hugeicons/react": "^1.1.10",
+    "@rainbow-me/rainbowkit": "^2.2.11",
+    "@react-three/drei": "^10.7.9",
+    "@react-three/fiber": "^9.8.2",
+    "@tanstack/react-query": "^5.108.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "gsap": "^3.15.1",
+    "lucide-react": "^1.77.0",
+    "motion": "^12.43.0",
+    "next": "16.4.6",
+    "pngjs": "^7.0.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "server-only": "^0.0.1",
+    "tailwind-merge": "^3.7.1",
+    "three": "^0.180.0",
+    "viem": "^2.58.2",
+    "wagmi": "^2.19.5",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@openzeppelin/contracts": "^5.6.1",
+    "@playwright/test": "^1.65.1",
+    "@tailwindcss/turbopack": "4.3.3",
+    "@types/node": "^24.19.2",
+    "@types/pngjs": "^6.0.5",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/three": "^0.180.0",
+    "eslint": "^9",
+    "eslint-config-next": "16.4.6",
+    "tailwindcss": "4.3.3",
+    "typescript": "^5"
+  },
+  "engines": {
+    "node": "24.x"
+  }
+}

@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>Run a Sparecycle node in 4 steps</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/gsap.min.js"></script>
+    <style>
+      @font-face { font-family: "Geist"; src: url("assets/fonts/Geist-Regular.woff2") format("woff2"); font-weight: 400; }
+      @font-face { font-family: "Geist"; src: url("assets/fonts/Geist-Medium.woff2") format("woff2"); font-weight: 500; }
+      @font-face { font-family: "Geist"; src: url("assets/fonts/Geist-SemiBold.woff2") format("woff2"); font-weight: 600; }
+      @font-face { font-family: "Geist Mono"; src: url("assets/fonts/GeistMono-Regular.woff2") format("woff2"); font-weight: 400; }
+      @font-face { font-family: "Geist Mono"; src: url("assets/fonts/GeistMono-Medium.woff2") format("woff2"); font-weight: 500; }
+
+      /* Sparecycle site tokens: dark neutral ground, one accent used only as state. */
+      :root {
+        --coal: #0c0c0c;
+        --graphite: #111111;
+        --slate: #171717;
+        --line: rgba(255, 255, 255, 0.09);
+        --line-strong: rgba(255, 255, 255, 0.16);
+        --text: #ededed;
+        --muted: #a3a3a3;
+        --faint: #8a8a8a;
+        --signal: #00c805;
+        --signal-soft: rgba(0, 200, 5, 0.14);
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--coal); }
+      #root { position: relative; width: 100%; height: 100%; overflow: hidden; background: var(--coal); color: var(--text); font-family: "Geist", sans-serif; }
+      .clip { position: absolute; inset: 0; }
+
+      /* ground */
+      #ground .grid { position: absolute; inset: -80px; background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px); background-size: 80px 80px; opacity: 0.35; }
+      #ground .glow { position: absolute; width: 1400px; height: 1000px; left: 760px; top: 60px; border-radius: 50%; background: radial-gradient(closest-side, rgba(0, 200, 5, 0.09), rgba(0, 200, 5, 0)); }
+      #ground .ghost { position: absolute; left: 96px; bottom: -40px; font-size: 300px; font-weight: 600; letter-spacing: -0.06em; color: rgba(255, 255, 255, 0.025); white-space: nowrap; }
+
+      /* brand + progress (steps) */
+      .brand { position: absolute; left: 120px; top: 72px; display: flex; align-items: center; gap: 14px; font-size: 26px; font-weight: 600; letter-spacing: -0.02em; }
+      .mark { width: 44px; height: 26px; display: block; }
+      .progress { position: absolute; right: 120px; top: 84px; display: flex; gap: 10px; }
+      .progress span { display: block; width: 72px; height: 4px; border-radius: 2px; background: var(--line-strong); }
+      .progress span.on { background: var(--signal); }
+      .honest { position: absolute; left: 120px; bottom: 56px; font-size: 22px; color: var(--faint); }
+
+      /* caption panel */
+      .cap { position: absolute; left: 120px; top: 300px; width: 520px; }
+      .chip { display: inline-flex; align-items: center; gap: 10px; height: 46px; padding: 0 18px; border: 1px solid var(--line-strong); border-radius: 999px; font-family: "Geist Mono", monospace; font-size: 22px; color: var(--muted); }
+      .chip i { display: block; width: 8px; height: 8px; border-radius: 50%; background: var(--signal); }
+      .cap h2 { margin-top: 28px; font-size: 60px; line-height: 1.04; font-weight: 600; letter-spacing: -0.035em; }
+      .cap h2 b { display: block; font-weight: 600; color: var(--muted); }
+      .cap p { margin-top: 26px; font-size: 28px; line-height: 1.45; color: var(--muted); }
+
+      /* screen: browser or terminal */
+      .screen { position: absolute; left: 700px; top: 180px; width: 1100px; height: 720px; border: 1px solid var(--line-strong); border-radius: 14px; overflow: hidden; background: var(--graphite); box-shadow: 0 60px 120px -60px rgba(0, 0, 0, 0.9); }
+      .bar { height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 18px; border-bottom: 1px solid var(--line); background: #0f0f0f; }
+      .bar u { display: block; width: 11px; height: 11px; border-radius: 50%; background: #2a2a2a; }
+      .bar .url { margin-left: 14px; height: 26px; flex: 1; display: flex; align-items: center; padding: 0 14px; border-radius: 6px; background: #161616; font-family: "Geist Mono", monospace; font-size: 18px; color: var(--muted); }
+      .view { position: absolute; left: 0; right: 0; top: 44px; bottom: 0; overflow: hidden; }
+      .view img { position: absolute; left: 0; top: 0; width: 100%; height: auto; display: block; }
+      .term { position: absolute; inset: 44px 0 0 0; padding: 26px 28px; font-family: "Geist Mono", monospace; font-size: 19px; line-height: 1.6; color: #d9d9d9; overflow: hidden; background: #0d0d0d; }
+      .term .ln { display: block; white-space: pre-wrap; word-break: break-all; }
+      .term .ps { color: var(--muted); }
+      .term .cmd { display: inline-block; color: var(--text); }
+      .term .h { color: #ffffff; font-weight: 500; }
+      .term .dim { color: #9a9a9a; }
+      .term .ok { color: var(--signal); }
+      .term .key { background: var(--signal-soft); color: #e9ffe9; padding: 0 6px; border-radius: 4px; }
+      .term .cursor { display: inline-block; width: 10px; height: 20px; background: var(--text); vertical-align: -3px; }
+      .ring { position: absolute; border: 2px solid var(--signal); border-radius: 10px; }
+      .tag { position: absolute; padding: 10px 16px; border-radius: 8px; background: #101010; border: 1px solid var(--line-strong); font-size: 24px; color: var(--text); white-space: nowrap; }
+      .tag b { color: var(--signal); font-weight: 500; }
+
+      /* title + end */
+      .center { position: absolute; left: 0; right: 0; top: 0; bottom: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+      .bigmark { width: 132px; height: 78px; display: block; }
+      .title-chip { margin-top: 34px; }
+      .center h1 { margin-top: 26px; font-size: 104px; line-height: 0.98; font-weight: 600; letter-spacing: -0.045em; }
+      .center h1 span { display: block; color: var(--muted); }
+      .center .sub { margin-top: 30px; font-size: 30px; color: var(--muted); }
+      .end { position: absolute; left: 180px; top: 230px; width: 1300px; }
+      .end h1 { font-size: 96px; line-height: 1; font-weight: 600; letter-spacing: -0.045em; }
+      .end h1 span { display: block; color: var(--signal); }
+      .facts { margin-top: 56px; border-top: 1px solid var(--line); }
+      .fact { display: flex; gap: 40px; padding: 22px 0; border-bottom: 1px solid var(--line); font-size: 32px; }
+      .fact dt { width: 120px; font-family: "Geist Mono", monospace; font-size: 24px; color: var(--faint); padding-top: 6px; }
+      .fact dd { color: var(--text); }
+      .cta { margin-top: 48px; display: inline-flex; align-items: center; height: 60px; padding: 0 28px; border-radius: 10px; background: var(--signal); color: #041a05; font-size: 26px; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="61" data-width="1920" data-height="1080">
+      <!-- shared ground for the whole film -->
+      <div id="ground" class="clip" data-start="0" data-duration="61" data-track-index="0">
+        <div class="grid" id="g-grid"></div>
+        <div class="glow" id="g-glow"></div>
+        <div class="ghost" id="g-ghost" data-layout-ignore aria-hidden="true">sparecycle</div>
+      </div>
+
+      <!-- 1. title -->
+      <section id="s1" class="clip" data-start="0" data-duration="4" data-track-index="1">
+        <div class="center">
+          <svg class="bigmark" id="s1-mark" viewBox="0 0 24 14" fill="none" aria-hidden="true">
+            <rect x="0.5" y="2.5" width="9" height="9" rx="1.5" stroke="#ededed" stroke-width="0.6" />
+            <rect id="s1-agree" x="14.5" y="2.5" width="9" height="9" rx="1.5" fill="#00c805" stroke="#00c805" stroke-width="0.6" />
+            <path d="M9.5 7h5" stroke="#ededed" stroke-width="0.6" />
+          </svg>
+          <div class="chip title-chip" id="s1-chip"><i></i>SPARECYCLE · NODE SETUP</div>
+          <h1 id="s1-h"><span id="s1-h1" style="color: var(--text)">Run a Sparecycle node</span><span id="s1-h2">in 4 steps.</span></h1>
+          <p class="sub" id="s1-sub">Images on NVIDIA. Text on NVIDIA, iGPU or CPU.</p>
+        </div>
+      </section>
+
+      <!-- persistent chrome during the steps -->
+      <div id="chrome" class="clip" data-start="4" data-duration="46" data-track-index="2">
+        <div class="brand" id="c-brand">
+          <svg class="mark" viewBox="0 0 24 14" fill="none" aria-hidden="true">
+            <rect x="0.5" y="2.5" width="9" height="9" rx="1.5" stroke="#ededed" />
+            <rect x="14.5" y="2.5" width="9" height="9" rx="1.5" fill="#00c805" stroke="#00c805" />
+            <path d="M9.5 7h5" stroke="#ededed" />
+          </svg>
+          Sparecycle
+        </div>
+        <div class="progress"><span id="p1"></span><span id="p2"></span><span id="p3"></span><span id="p4"></span></div>
+        <p class="honest" id="c-honest" data-layout-ignore>Real output, not a mock-up: Ryzen 7 5700U laptop (Radeon iGPU, Vulkan), Robinhood Chain testnet run, 20 Nov 2026.</p>
+      </div>
+
+      <!-- 2. step 1: check you have everything -->
+      <section id="s2" class="clip" data-start="4" data-duration="8.5" data-track-index="3">
+        <div class="cap">
+          <div class="chip" id="s2-chip"><i></i>STEP 1 / 4</div>
+          <h2 id="s2-h">Check you have <b>everything.</b></h2>
+          <p id="s2-p">NVIDIA RTX 30-series or newer for image jobs. No NVIDIA? An AMD or Intel GPU, an iGPU or a CPU runs the text model.</p>
+        </div>
+        <div class="screen" id="s2-screen">
+          <div class="bar"><u></u><u></u><u></u><div class="url" data-layout-ignore>/nodes</div></div>
+          <div class="view" data-layout-allow-overflow>
+            <img id="s2-a" src="assets/shots/nodes-before.png" alt="" />
+            <img id="s2-b" src="assets/shots/nodes-igpu.png" alt="" />
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. step 2: run the installer -->
+      <section id="s3" class="clip" data-start="12.5" data-duration="12.5" data-track-index="3">
+        <div class="cap">
+          <div class="chip" id="s3-chip"><i></i>STEP 2 / 4</div>
+          <h2 id="s3-h">Run the installer. <b>One command.</b></h2>
+          <p id="s3-p">On this laptop: the Vulkan backend, text jobs only. It fetches pinned llama.cpp and the Qwen2.5-1.5B model, then creates the node key.</p>
+        </div>
+        <div class="screen" id="s3-screen">
+          <div class="bar"><u></u><u></u><u></u><div class="url" data-layout-ignore>Windows PowerShell · node-client</div></div>
+          <div class="term" data-layout-ignore>
+            <span class="ln"><span class="ps">PS D:\…\node-client&gt; </span><span class="cmd" id="s3-cmd">powershell -ExecutionPolicy Bypass -File install.ps1 -Backend vulkan</span></span>
+            <span class="ln s3l h">Sparecycle node installer, backend: vulkan</span>
+            <span class="ln s3l h">== Checking requirements</span>
+            <span class="ln s3l dim">  Vulkan: AMD Radeon(TM) Graphics</span>
+            <span class="ln s3l h">== npm packages</span>
+            <span class="ln s3l dim">up to date in 2s</span>
+            <span class="ln s3l h">== No Python needed for -Backend vulkan (text jobs only)</span>
+            <span class="ln s3l h">== llama.cpp b12404 (vulkan) for text jobs</span>
+            <span class="ln s3l dim">  asset: llama-b12404-bin-win-vulkan-x64.zip</span>
+            <span class="ln s3l dim">  version: 1.0.0-dev (build 12404, commit cf9a9957d)</span>
+            <span class="ln s3l h">== Text model (Qwen/Qwen2.5-1.5B-Instruct-GGUF, qwen2.5-1.5b-instruct-q4_k_m.gguf, about 1 GB)</span>
+            <span class="ln s3l dim">  have models\qwen2.5-1.5b-instruct-q4_k_m.gguf</span>
+            <span class="ln s3l h">== Node key</span>
+            <span class="ln s3l">Created node key: <span class="key">0x4c5b016D625BB08d45b982e8f571b136405053bF</span></span>
+            <span class="ln s3l dim">This key only signs for the node. Never send funds to it; never share the key file.</span>
+            <span class="ln s3l ok">Installed (backend vulkan).</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 4. step 3: link the wallet -->
+      <section id="s4" class="clip" data-start="25" data-duration="11.5" data-track-index="3">
+        <div class="cap">
+          <div class="chip" id="s4-chip"><i></i>STEP 3 / 4</div>
+          <h2 id="s4-h">Link your wallet: <b>one signature, no gas.</b></h2>
+          <p id="s4-p">The node key signs work. Your wallet only signs this one message and receives payouts; the node never sees its private key.</p>
+        </div>
+        <div class="screen" id="s4-term">
+          <div class="bar"><u></u><u></u><u></u><div class="url" data-layout-ignore>Windows PowerShell · node-client</div></div>
+          <div class="term" data-layout-ignore>
+            <span class="ln"><span class="ps">PS D:\…\node-client&gt; </span><span class="cmd" id="s4-cmd">node src/agent.ts link-message --owner 0x503ecd2D1e47610882D27fD743bfB3a5c7611bD9</span></span>
+            <span class="ln s4l dim">Sign this exact message with 0x503ecd2D1e47610882D27fD743bfB3a5c7611bD9 (personal_sign / "Sign message", no gas), then pass the signature as --owner-sig:</span>
+            <span class="ln s4l">&nbsp;</span>
+            <span class="ln s4l h"><span class="key">Sparecycle: link node 0x4c5b016d625bb08d45b982e8f571b136405053bf to wallet 0x503ecd2d1e47610882d27fd743bfb3a5c7611bd9</span></span>
+            <span class="ln s4l">&nbsp;</span>
+            <span class="ln s4l dim">This wallet is the payout account in the Merkle tree. The node never needs its private key.</span>
+          </div>
+        </div>
+        <div class="screen" id="s4-web">
+          <div class="bar"><u></u><u></u><u></u><div class="url" data-layout-ignore>/nodes · link your wallet</div></div>
+          <div class="view" data-layout-allow-overflow>
+            <div id="s4-zoom" style="position: absolute; inset: 0; transform-origin: 40% 50%">
+              <img id="s4-img" src="assets/shots/nodes-link.png" alt="" />
+              <div class="ring" id="s4-ring" style="left: 430px; top: 325px; width: 116px; height: 44px"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5. step 4: start, checked jobs arrive -->
+      <section id="s5" class="clip" data-start="36.5" data-duration="13.5" data-track-index="3">
+        <div class="cap">
+          <div class="chip" id="s5-chip"><i></i>STEP 4 / 4</div>
+          <h2 id="s5-h">Start it. <b>Checked jobs arrive.</b></h2>
+          <p id="s5-p">Two nodes run every job. Only answers that match count, and the epoch's root is posted on-chain for the claim.</p>
+        </div>
+        <div class="screen" id="s5-term">
+          <div class="bar"><u></u><u></u><u></u><div class="url" data-layout-ignore>Windows PowerShell · node-client</div></div>
+          <div class="term" data-layout-ignore>
+            <span class="ln"><span class="ps">PS D:\…\node-client&gt; </span><span class="cmd" id="s5-cmd">node src/agent.ts start --network &lt;scheduler&gt; --owner 0x503e…bD9 --owner-sig 0x… --backend vulkan</span></span>
+            <span class="ln s5l dim">15:23:04 node key 0xB459e1dA8679718DC0b8d6C48485a75ba0627d71 · owner 0x503ecd2D1e47610882D27fD743bfB3a5c7611bD9 · backend vulkan · AMD Radeon(TM) Graphics (Vulkan) · 3932 MB</span>
+            <span class="ln s5l dim">15:23:04 capabilities: text:qwen2.5-1.5b</span>
+            <span class="ln s5l h">15:23:05 registered with http://127.0.0.1:3240/api/v1 · payouts go to 0x503ecd2D1e47610882D27fD743bfB3a5c7611bD9 · chain 46630</span>
+            <span class="ln s5l">15:23:15 text job 0x4852f6b8 done in 2.4 s · 24 tok at 12.1 tok/s -&gt; checking</span>
+            <span class="ln s5l">15:23:20 text job 0x84182afc done in 4.1 s · 48 tok at 13.1 tok/s -&gt; <span class="ok">agreed</span></span>
+            <span class="ln s5l">15:23:23 text job 0x984091df done in 3.3 s · 48 tok at 16.9 tok/s -&gt; <span class="ok">agreed</span></span>
+            <span class="ln s5l"><span class="cursor" id="s5-cursor"></span></span>
+          </div>
+        </div>
+        <div class="screen" id="s5-web">
+          <div class="bar"><u></u><u></u><u></u><div class="url" data-layout-ignore>/app · network status (testnet)</div></div>
+          <div class="view" data-layout-allow-overflow>
+            <img id="s5-img" src="assets/shots/app-epochs.png" alt="" />
+          </div>
+        </div>
+        <div class="tag" id="s5-tag" style="left: 1236px; top: 930px">Epoch 1 root <b>posted on-chain</b>, both nodes claimed</div>
+      </section>
+
+      <!-- 6. end card -->
+      <section id="s6" class="clip" data-start="50" data-duration="11" data-track-index="1">
+        <div class="end">
+          <h1 id="s6-h"><span id="s6-h1" style="color: var(--text)">Your GPU is</span><span id="s6-h2">on the network.</span></h1>
+          <dl class="facts">
+            <div class="fact s6f"><dt>JOBS</dt><dd>Images on NVIDIA. Text on NVIDIA, an iGPU or a CPU.</dd></div>
+            <div class="fact s6f"><dt>PAID</dt><dd>From collected trading fees, claimed with a proof.</dd></div>
+            <div class="fact s6f"><dt>HOLD</dt><dd>Nothing. No token, no stake.</dd></div>
+          </dl>
+          <div class="cta" id="s6-cta">Open the install guide: /nodes</div>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      const tl = gsap.timeline({ paused: true });
+      const out = "power3.out";
+
+      /* ground: slow ambient drift for the whole film */
+      tl.fromTo("#g-grid", { x: 0, y: 0 }, { x: -80, y: -40, duration: 61, ease: "none" }, 0);
+      tl.fromTo("#g-glow", { scale: 0.92, opacity: 0.7 }, { scale: 1.08, opacity: 1, duration: 30.5, ease: "sine.inOut", yoyo: true, repeat: 1 }, 0);
+      tl.fromTo("#g-ghost", { x: 0 }, { x: -220, duration: 61, ease: "none" }, 0);
+
+      /* 1. title */
+      tl.fromTo("#s1-mark", { scale: 1 }, { scale: 1.04, duration: 3.6, ease: "sine.inOut" }, 0);
+      tl.fromTo("#s1-agree", { opacity: 0.15 }, { opacity: 1, duration: 0.4, ease: "power2.out" }, 0.75);
+      tl.fromTo("#s1-chip", { opacity: 0.85 }, { opacity: 1, duration: 0.45, ease: "none" }, 0);
+      tl.fromTo("#s1-h1", { y: 40, opacity: 0 }, { y: 0, opacity: 1, duration: 0.6, ease: "expo.out" }, 0.6);
+      tl.fromTo("#s1-h2", { y: 40, opacity: 0 }, { y: 0, opacity: 1, duration: 0.6, ease: "expo.out" }, 0.78);
+      tl.fromTo("#s1-sub", { y: 16, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5, ease: out }, 0.85);
+      tl.to(["#s1-mark", "#s1-chip", "#s1-h", "#s1-sub"], { y: -30, opacity: 0, duration: 0.3, ease: "power2.in" }, 3.68);
+
+      /* chrome */
+      tl.fromTo("#c-brand", { opacity: 0, x: -16 }, { opacity: 1, x: 0, duration: 0.45, ease: out }, 4.1);
+      tl.fromTo("#c-honest", { opacity: 0 }, { opacity: 1, duration: 0.5, ease: "none" }, 4.4);
+      const steps = [["#p1", 4.2], ["#p2", 12.6], ["#p3", 25.1], ["#p4", 36.6]];
+      steps.forEach(([id, t]) => tl.fromTo(id, { backgroundColor: "rgba(255,255,255,0.16)" }, { backgroundColor: "#00c805", duration: 0.4, ease: "none" }, t));
+      tl.to("#c-brand, #c-honest, .progress", { opacity: 0, duration: 0.4, ease: "power2.in" }, 49.5);
+
+      /* caption + screen entrance/exit shared by the four steps */
+      function stepIn(p, t) {
+        tl.fromTo(`#${p}-chip`, { y: 14, opacity: 0 }, { y: 0, opacity: 1, duration: 0.4, ease: out }, t + 0.1);
+        tl.fromTo(`#${p}-h`, { y: 30, opacity: 0 }, { y: 0, opacity: 1, duration: 0.55, ease: "expo.out" }, t + 0.2);
+        tl.fromTo(`#${p}-p`, { y: 18, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5, ease: out }, t + 0.4);
+      }
+      function capOut(p, t) {
+        tl.to([`#${p}-chip`, `#${p}-h`, `#${p}-p`], { y: -18, opacity: 0, duration: 0.35, ease: "power2.in", stagger: 0.03 }, t);
+      }
+      function screenIn(sel, t) {
+        tl.fromTo(sel, { y: 60, opacity: 0, scale: 0.97 }, { y: 0, opacity: 1, scale: 1, duration: 0.7, ease: "expo.out" }, t);
+      }
+      function screenOut(sel, t) {
+        tl.to(sel, { y: -40, opacity: 0, duration: 0.4, ease: "power2.in" }, t);
+      }
+      function typeIn(sel, t, chars) {
+        tl.fromTo(sel, { clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)", duration: Math.min(1.8, chars * 0.022), ease: `steps(${chars})` }, t);
+      }
+
+      /* 2. step 1 */
+      stepIn("s2", 4);
+      screenIn("#s2-screen", 4.25);
+      tl.fromTo("#s2-a", { y: 0, scale: 1 }, { y: -40, scale: 1.02, duration: 4.4, ease: "sine.inOut" }, 4.6);
+      tl.fromTo("#s2-b", { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.6, ease: out }, 8.6);
+      tl.fromTo("#s2-b", { scale: 1 }, { scale: 1.03, duration: 3.2, ease: "sine.inOut", immediateRender: false }, 9.2);
+      capOut("s2", 12.0);
+      screenOut("#s2-screen", 12.05);
+
+      /* 3. step 2: installer, real output */
+      stepIn("s3", 12.5);
+      screenIn("#s3-screen", 12.75);
+      typeIn("#s3-cmd", 13.4, 68);
+      tl.fromTo(".s3l", { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.25, ease: out, stagger: 0.42 }, 15.2);
+      capOut("s3", 24.5);
+      screenOut("#s3-screen", 24.55);
+
+      /* 4. step 3: link-message, then the in-browser signature */
+      stepIn("s4", 25);
+      screenIn("#s4-term", 25.25);
+      typeIn("#s4-cmd", 25.6, 84);
+      tl.fromTo(".s4l", { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.3, ease: out, stagger: 0.25 }, 27.4);
+      screenOut("#s4-term", 32.4);
+      screenIn("#s4-web", 32.6);
+      tl.fromTo("#s4-zoom", { scale: 1, y: 0 }, { scale: 1.06, y: -8, duration: 3.4, ease: "sine.inOut" }, 32.9);
+      tl.fromTo("#s4-ring", { opacity: 0, scale: 1.25 }, { opacity: 1, scale: 1, duration: 0.45, ease: "back.out(2)" }, 33.5);
+      tl.fromTo("#s4-ring", { boxShadow: "0 0 0 0 rgba(0,200,5,0.45)" }, { boxShadow: "0 0 0 14px rgba(0,200,5,0)", duration: 0.8, ease: "power2.out", repeat: 2 }, 34.0);
+      capOut("s4", 36.0);
+      screenOut("#s4-web", 36.05);
+
+      /* 5. step 4: real node log, then the status page with the posted root */
+      stepIn("s5", 36.5);
+      screenIn("#s5-term", 36.75);
+      typeIn("#s5-cmd", 37.4, 82);
+      tl.fromTo(".s5l", { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.3, ease: out, stagger: 0.55 }, 39.4);
+      tl.fromTo("#s5-cursor", { opacity: 1 }, { opacity: 0, duration: 0.4, ease: "steps(1)", repeat: 3, yoyo: true }, 43.4);
+      screenOut("#s5-term", 44.4);
+      screenIn("#s5-web", 44.6);
+      tl.fromTo("#s5-img", { scale: 1, y: 0 }, { scale: 1.035, y: -10, duration: 4.6, ease: "sine.inOut" }, 45);
+      tl.fromTo("#s5-tag", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.45, ease: out }, 45.8);
+      capOut("s5", 49.4);
+      tl.to(["#s5-web", "#s5-tag"], { y: -40, opacity: 0, duration: 0.4, ease: "power2.in" }, 49.45);
+
+      /* 6. end card */
+      tl.fromTo("#s6-h1", { y: 40, opacity: 0 }, { y: 0, opacity: 1, duration: 0.6, ease: "expo.out" }, 50.15);
+      tl.fromTo("#s6-h2", { y: 40, opacity: 0 }, { y: 0, opacity: 1, duration: 0.6, ease: "expo.out" }, 50.3);
+      tl.fromTo(".s6f", { y: 18, opacity: 0 }, { y: 0, opacity: 1, duration: 0.45, ease: out, stagger: 0.18 }, 50.9);
+      tl.fromTo("#s6-cta", { y: 18, opacity: 0, scale: 0.96 }, { y: 0, opacity: 1, scale: 1, duration: 0.5, ease: "back.out(1.6)" }, 51.7);
+
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>
