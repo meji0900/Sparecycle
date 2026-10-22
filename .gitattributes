@@ -1,0 +1,6 @@
+# Third-party and generated files: excluded from GitHub's language stats and collapsed in diffs.
+src/components/reactbits/** linguist-vendored
+contracts/broadcast/** linguist-generated
+package-lock.json linguist-generated
+src/lib/downloads.json linguist-generated
+public/downloads/** binary
