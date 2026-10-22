@@ -1,5 +1,7 @@
 # Sparecycle
 
+[![CI](https://github.com/meji0900/Sparecycle/actions/workflows/ci.yml/badge.svg)](https://github.com/meji0900/Sparecycle/actions/workflows/ci.yml)
+
 **Sparecycle** is a small network for idle GPUs. GPU owners run a node program, nodes run small AI jobs (Stable Diffusion 1.5 images and Qwen2.5-1.5B text), and every job is run by **two nodes with different owners** whose results are then compared. Nodes whose results match share an on-chain pot on Robinhood Chain, claimed with a Merkle proof. The pot is filled by **verified paid jobs** and by anything sent to the reward contract; there are no team top-ups and no promised returns.
 
 | | |
@@ -20,6 +22,13 @@ Not financial or legal advice. Not a yield product. Tokens can go to zero. The s
 ## Quick start
 
 Requires **Node.js 24** (pinned in `package.json`) and, for the contracts, **Foundry**.
+
+Clone with submodules (Foundry's `forge-std` is a submodule under `contracts/lib`):
+
+```bash
+git clone --recursive https://github.com/meji0900/Sparecycle.git
+# or, in an existing clone: git submodule update --init
+```
 
 ```bash
 npm install
