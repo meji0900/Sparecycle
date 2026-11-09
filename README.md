@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/meji0900/Sparecycle/actions/workflows/ci.yml/badge.svg)](https://github.com/meji0900/Sparecycle/actions/workflows/ci.yml)
 
+[![SpareCycle on HEY Research Lab](https://heyresearch.xyz/api/badge/sparecycle)](https://heyresearch.xyz/project/sparecycle?utm_source=badge&utm_medium=readme)
+
 **Sparecycle** is a small network for idle GPUs. GPU owners run a node program, nodes run small AI jobs (Stable Diffusion 1.5 images and Qwen2.5-1.5B text), and every job is run by **two nodes with different owners** whose results are then compared. Nodes whose results match share an on-chain pot on Robinhood Chain, claimed with a Merkle proof. The pot is filled by **verified paid jobs** and by anything sent to the reward contract; there are no team top-ups and no promised returns.
 
 | | |

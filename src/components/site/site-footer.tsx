@@ -34,6 +34,23 @@ export function SiteFooter() {
         <div className="space-y-3">
           <Wordmark />
           <p className="max-w-xs text-sm text-muted">{FUNDING.short}</p>
+          {/* HEY Research's live badge: it shows only what HEY verifies from public evidence. */}
+          <a
+            href="https://heyresearch.xyz/project/sparecycle?utm_source=badge&utm_medium=html"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-block pt-2"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element -- external live SVG, served by HEY */}
+            <img
+              src="https://heyresearch.xyz/api/badge/sparecycle?theme=dark"
+              alt="SpareCycle on HEY Research Lab"
+              width={440}
+              height={120}
+              loading="lazy"
+              className="h-auto w-full max-w-[330px]"
+            />
+          </a>
         </div>
         <div className="grid gap-8 text-sm sm:grid-cols-3">
           <div className="flex flex-col gap-2.5">
