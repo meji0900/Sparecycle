@@ -6,7 +6,13 @@ type PartnerCard = {
   verified_builder?: boolean;
   hey_status_label?: string;
   meaningful_ships_30d?: number | null;
-  latest_meaningful_ship?: { summary?: string; occurred_at?: string | null; detected_at?: string | null } | null;
+  latest_meaningful_ship?: {
+    title?: string;
+    summary?: string;
+    timestamp?: string | null;
+    occurred_at?: string | null;
+    detected_at?: string | null;
+  } | null;
   latest_change?: { summary?: string; occurred_at?: string | null; detected_at?: string | null } | null;
   as_of?: string;
   project_link?: string;
@@ -49,8 +55,12 @@ export async function HeyBuilderCard() {
   if (!token) return null;
   const card = await readPartnerCard(token.toLowerCase());
   if (!card) return null;
-  const ship = card.latest_meaningful_ship ?? card.latest_change ?? null;
-  const shipWhen = ago(ship?.occurred_at ?? ship?.detected_at);
+  // HEY names a counted ship by `title` + `timestamp`, a plain change by `summary` + `occurred_at`.
+  const meaningful = card.latest_meaningful_ship;
+  const shipText = meaningful?.title ?? meaningful?.summary ?? card.latest_change?.summary ?? null;
+  const shipWhen = meaningful
+    ? ago(meaningful.timestamp ?? meaningful.occurred_at ?? meaningful.detected_at)
+    : ago(card.latest_change?.occurred_at ?? card.latest_change?.detected_at);
   return (
     <section aria-labelledby="hey" className="mt-14">
       <div className="rounded-l border border-line bg-coal px-5 py-4">
@@ -67,7 +77,7 @@ export async function HeyBuilderCard() {
           </div>
           <div>
             <dt className="text-muted">Latest ship</dt>
-            <dd className="text-text">{ship?.summary ? `${ship.summary}${shipWhen ? ` · ${shipWhen}` : ""}` : "None recorded yet"}</dd>
+            <dd className="text-text">{shipText ? `${shipText}${shipWhen ? ` · ${shipWhen}` : ""}` : "None recorded yet"}</dd>
           </div>
           <div>
             <dt className="text-muted">Ships in 30 days</dt>
