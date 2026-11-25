@@ -4,10 +4,10 @@ import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import type { JobDetail, JobStatus } from "@/lib/dapp/api";
 import { TERMINAL } from "@/lib/dapp/jobs";
+import { resultUrl, useJobOutput } from "@/lib/dapp/job-output";
 import { useApiGet } from "@/lib/dapp/use-api";
 import { cn } from "@/lib/utils";
 import { SectionTitle } from "./ui";
-import { outputUrl } from "./use-job-submit";
 
 /** One image job made in this browser's playground. The prompt is kept on this device only. */
 export type PlayItem = {
@@ -23,6 +23,8 @@ export type PlayItem = {
   /** Seed sent with the request; null = picked by the scheduler. */
   seed: number | null;
   paid: boolean;
+  /** The job's read secret (returned once at submit): this browser's key to the output. Absent on older items. */
+  secret?: string | null;
   /** Last status seen, the agreed output path and the seed actually used, filled in as the job settles. */
   status?: JobStatus;
   output?: string | null;
@@ -53,7 +55,12 @@ export function loadItems(): PlayItem[] {
     return Array.isArray(list)
       ? list
           .filter(isItem)
-          .map((i) => ({ ...i, negative: typeof i.negative === "string" ? i.negative : "", guidance: typeof i.guidance === "number" ? i.guidance : 7.5 }))
+          .map((i) => ({
+            ...i,
+            negative: typeof i.negative === "string" ? i.negative : "",
+            guidance: typeof i.guidance === "number" ? i.guidance : 7.5,
+            secret: typeof i.secret === "string" ? i.secret : null,
+          }))
           .slice(0, MAX_ITEMS)
       : [];
   } catch {
@@ -71,10 +78,10 @@ export function saveItems(list: PlayItem[]) {
 
 export const isPending = (i: Pick<PlayItem, "status">) => !i.status || !TERMINAL.includes(i.status);
 
-/** What a settled job adds to its playground item. */
+/** What a settled job adds to its playground item. `output` marks a stored output (the URL is built from the id). */
 export const settledFields = (job: JobDetail): Partial<PlayItem> => ({
   status: job.status,
-  output: job.output ?? null,
+  output: (job.outputAvailable ?? !!job.output) ? resultUrl(job.id) : null,
   usedSeed: typeof job.params?.seed === "number" ? job.params.seed : null,
 });
 
@@ -109,8 +116,20 @@ function Tile({
     else if (job && job.status !== item.status) onSettled(item.id, { status: job.status });
   }, [job, item.id, item.status, onSettled]);
 
-  const img = item.status === "agreed" && item.output ? outputUrl(item.output) : null;
-  const label = item.status === "agreed" ? (img ? null : "Not stored") : (TILE_LABEL[item.status ?? "queued"] ?? "Queued");
+  const out = useJobOutput(item.status === "agreed" && item.output ? item.id : null, item.secret);
+  const img = out.state === "ready" ? out.url : null;
+  const label =
+    item.status === "agreed"
+      ? img
+        ? null
+        : !item.output || out.state === "missing" || out.state === "error"
+          ? "Not stored"
+          : out.state === "loading"
+            ? "Loading"
+            : item.paid
+              ? "Sign in to view"
+              : "Private"
+      : (TILE_LABEL[item.status ?? "queued"] ?? "Queued");
   return (
     <li className="min-w-0">
       <button

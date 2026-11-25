@@ -11,9 +11,11 @@ import {
   type JobStatus,
 } from "@/lib/protocol";
 import type { Hex } from "viem";
-import { getDb, getMeta, nowSec, randomHex, setMeta, tx } from "./db";
+import { ANONYMOUS, newReadSecret, secretMatches, type Viewer } from "./auth";
+import { getDb, nowSec, randomHex, tx } from "./db";
 import { POLICY, serverEnv } from "./env";
-import { ApiError } from "./http";
+import { AUTH_REQUIRED, ApiError } from "./http";
+import { ipSalt, limitBucket, takeHourly } from "./limits";
 import { poolNudge } from "./gpu-pool";
 import { jobPriceWei } from "@/lib/job-payment";
 import { heldFor, priceWeiPerUnit, teamWallets, verifyPayment, type Payment } from "./payments";
@@ -37,19 +39,11 @@ type JobRow = {
   payer: string | null;
   price_wei: string | null;
   charge_status: string | null;
+  read_secret_hash: string | null;
 };
 
 /** Paid jobs per payer wallet per hour (queue protection; payment itself is the anti-abuse for paid jobs). */
 const PAID_JOBS_PER_HOUR = 120;
-
-const ipSalt = () => {
-  let salt = getMeta("ip_salt");
-  if (!salt) {
-    salt = randomHex(32);
-    setMeta("ip_salt", salt);
-  }
-  return salt;
-};
 
 /** Marks jobs that never reached a verdict within the TTL as expired (unpaid) and cancels their tasks. */
 export function expireStaleJobs() {
@@ -62,9 +56,12 @@ export function expireStaleJobs() {
     const now = nowSec();
     const upJob = db.prepare("UPDATE jobs SET status = 'expired', settled_at = ?, note = 'no verdict within the job TTL' WHERE id = ?");
     const upTasks = db.prepare("UPDATE tasks SET status = 'cancelled' WHERE job_id = ? AND status IN ('open','leased')");
+    // An expired job may hold one node's result: drop that copy of the output too (hash and fingerprint stay).
+    const dropOutputs = db.prepare("UPDATE results SET output = NULL WHERE job_id = ?");
     for (const { id } of stale) {
       upJob.run(now, id);
       upTasks.run(id);
+      dropOutputs.run(id);
     }
   });
 }
@@ -73,8 +70,13 @@ export function expireStaleJobs() {
  * POST /api/v1/jobs. A free job is the request itself (JOB_RATE_LIMIT per IP per hour). A paid job is
  * { request, payment }: the payer's signature over the request at the quoted price, checked against their
  * balance in the payments contract (see ./payments).
+ * Every job gets a read secret (`readSecret`, returned only here): with OUTPUT_AUTH=enforce the output is served to
+ * `Authorization: Bearer <readSecret>` or to a session of the paying wallet (see ./auth).
  */
-export async function submitJob(body: unknown, ip: string): Promise<{ id: Hex; status: "queued"; priceWei: string | null }> {
+export async function submitJob(
+  body: unknown,
+  ip: string,
+): Promise<{ id: Hex; status: "queued"; priceWei: string | null; readSecret: string }> {
   const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const paidRequest = "payment" in b;
   const rawRequest = paidRequest ? b.request : body;
@@ -117,6 +119,7 @@ export async function submitJob(body: unknown, ip: string): Promise<{ id: Hex; s
       }
     }
     const id = randomHex(32);
+    const read = newReadSecret();
     let spec: JobSpec;
     if (req.kind === "image") {
       const seed = req.params.seed ?? globalThis.crypto.getRandomValues(new Uint32Array(1))[0];
@@ -125,8 +128,9 @@ export async function submitJob(body: unknown, ip: string): Promise<{ id: Hex; s
       spec = req;
     }
     db.prepare(
-      `INSERT INTO jobs (id, kind, model, spec, prompt_hash, work_units, status, ip_hash, created_at, payer, price_wei, payment_sig, charge_status)
-       VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, kind, model, spec, prompt_hash, work_units, status, ip_hash, created_at, payer, price_wei, payment_sig, charge_status,
+         read_secret_hash)
+       VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id,
       spec.kind,
@@ -140,6 +144,7 @@ export async function submitJob(body: unknown, ip: string): Promise<{ id: Hex; s
       payment?.priceWei.toString() ?? null,
       payment?.signature ?? null,
       payment ? "pending" : null,
+      read.hash,
     );
     const ins = db.prepare("INSERT INTO tasks (id, job_id, slot, status) VALUES (?, ?, ?, 'open')");
     ins.run(randomHex(16), id, 0);
@@ -148,14 +153,15 @@ export async function submitJob(body: unknown, ip: string): Promise<{ id: Hex; s
       `INSERT INTO rate_limits (bucket, window_start, count) VALUES (?, ?, 1)
        ON CONFLICT(bucket, window_start) DO UPDATE SET count = count + 1`,
     ).run(bucket, window);
-    return { id, status: "queued" as const, priceWei: payment?.priceWei.toString() ?? null };
+    return { id, status: "queued" as const, priceWei: payment?.priceWei.toString() ?? null, readSecret: read.secret };
   });
   poolNudge(); // bootstrap GPU pool: start it if no two owners online can take this job
   return queued;
 }
 
 const SELECT_JOB = `SELECT j.id, j.kind, j.model, j.spec, j.prompt_hash, j.work_units, j.status, j.dev, j.created_at, j.settled_at,
-  j.epoch_id, j.output_type, j.note, e.status AS epoch_status, e.reserved AS epoch_reserved, j.payer, j.price_wei, j.charge_status
+  j.epoch_id, j.output_type, j.note, e.status AS epoch_status, e.reserved AS epoch_reserved, j.payer, j.price_wei, j.charge_status,
+  j.read_secret_hash
   FROM jobs j LEFT JOIN epochs e ON e.id = j.epoch_id`;
 
 function flags(r: JobRow) {
@@ -199,10 +205,29 @@ function getJobRow(id: string): JobRow {
   return row;
 }
 
-/** GET /api/v1/jobs/:id — status, timestamps, non-private parameters and the output URL when agreed. */
-export function jobDetail(id: string) {
+/** Path of the gated output of a job. */
+export const resultPath = (id: string) => `/api/v1/jobs/${id}/result`;
+
+/**
+ * May `viewer` read this job's output? "secret": the job's read secret; "payer": a session of the wallet that paid
+ * (paid and team jobs; a free job has no payer). Jobs created before read secrets existed match no secret.
+ */
+function accessOf(job: { payer: string | null; read_secret_hash: string | null }, viewer: Viewer): "secret" | "payer" | null {
+  if (secretMatches(viewer.secret, job.read_secret_hash)) return "secret";
+  if (viewer.address && job.payer && viewer.address.toLowerCase() === job.payer.toLowerCase()) return "payer";
+  return null;
+}
+
+const hasCredentials = (viewer: Viewer) => viewer.address !== null || viewer.secret !== null;
+
+/**
+ * GET /api/v1/jobs/:id — status, timestamps, non-private parameters, `outputAvailable`, and `output` (the gated
+ * result URL) when agreed and, with OUTPUT_AUTH=enforce, only for a viewer who may read it.
+ */
+export function jobDetail(id: string, viewer: Viewer = ANONYMOUS, mode = serverEnv.outputAuth()) {
   expireStaleJobs();
   const r = getJobRow(id);
+  const available = r.status === "agreed" && !!r.output_type;
   const spec = JSON.parse(r.spec) as JobSpec;
   const params =
     spec.kind === "image"
@@ -212,19 +237,33 @@ export function jobDetail(id: string) {
     ...publicJob(r),
     params,
     note: r.note,
-    output: r.status === "agreed" && r.output_type ? `/api/v1/jobs/${r.id}/output` : null,
+    output: available && (mode === "off" || accessOf(r, viewer) !== null) ? resultPath(r.id) : null,
+    outputAvailable: available,
     outputType: r.status === "agreed" ? r.output_type : null,
   };
 }
 
-/** GET /api/v1/jobs/:id/output */
-export function jobOutput(id: string): { body: Uint8Array; type: string } {
-  const r = getJobRow(id);
-  if (r.status !== "agreed") throw new ApiError(409, "no-output", `job is ${r.status}; output is served only for agreed jobs`);
-  const row = getDb().prepare("SELECT output, output_type FROM jobs WHERE id = ?").get(id) as {
-    output: Uint8Array | null;
-    output_type: string | null;
-  };
+/**
+ * GET /api/v1/jobs/:id/result (and the retired /output while OUTPUT_AUTH=off). With "enforce":
+ *   no credentials -> 401 auth-required (empty body); unknown job -> 404; credentials that can't read this job
+ *   -> 403; not agreed -> 409 no-output; else the output.
+ * Reads are rate limited per viewer: per job for its read secret, per wallet for a payer session, else per IP.
+ */
+export function jobOutput(id: string, viewer: Viewer, opts: { ip: string; mode?: "off" | "enforce" }): { body: Uint8Array; type: string } {
+  const mode = opts.mode ?? serverEnv.outputAuth();
+  if (!isJobId(id)) throw new ApiError(400, "invalid-job-id", "job id must be 0x + 64 lowercase hex characters");
+  const row = getDb().prepare("SELECT status, payer, read_secret_hash, output, output_type FROM jobs WHERE id = ?").get(id) as
+    | { status: JobStatus; payer: string | null; read_secret_hash: string | null; output: Uint8Array | null; output_type: string | null }
+    | undefined;
+  const access = row ? accessOf(row, viewer) : null;
+  const key = access === "secret" ? ["job", id] : access === "payer" && viewer.address ? ["wallet", viewer.address.toLowerCase()] : ["ip", opts.ip];
+  takeHourly(limitBucket("output", ...key), serverEnv.outputRateLimit(), "output reads");
+  if (mode === "enforce" && !hasCredentials(viewer)) {
+    throw new ApiError(401, AUTH_REQUIRED, "send the job's read secret (Authorization: Bearer) or sign in with the paying wallet");
+  }
+  if (!row) throw new ApiError(404, "unknown-job", "no job with this id");
+  if (mode === "enforce" && !access) throw new ApiError(403, "forbidden", "these credentials can't read this job's output");
+  if (row.status !== "agreed") throw new ApiError(409, "no-output", `job is ${row.status}; output is served only for agreed jobs`);
   if (!row.output || !row.output_type) throw new ApiError(404, "no-output", "output not stored");
   return { body: row.output, type: row.output_type };
 }

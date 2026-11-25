@@ -59,7 +59,10 @@ export type PaymentAccount = {
 export type JobDetail = ApiJob & {
   params?: Record<string, number | undefined>;
   note?: string | null;
+  /** URL of the output; with private outputs on, only when this caller may read it. */
   output?: string | null;
+  /** An agreed output is stored (whether or not this caller may read it). Absent on older schedulers. */
+  outputAvailable?: boolean;
   outputType?: string | null;
 };
 
@@ -114,6 +117,8 @@ export type StatusResponse = Omit<SchedulerStatus, "epoch" | "lastSettled"> & {
     provisional?: boolean;
     note?: string | null;
   } | null;
+  /** "enforce": outputs are readable only with the job's read secret or the paying wallet's sign-in. Absent on older schedulers. */
+  outputAuth?: "off" | "enforce";
   /** Bootstrap GPU pool (project-run nodes started on demand). Absent on older schedulers. */
   gpuPool?: { configured: boolean; state?: "unknown" | "starting" | "running" | "stopping" | "stopped"; idleMinutes?: number; error?: string | null };
   lastSettled: {

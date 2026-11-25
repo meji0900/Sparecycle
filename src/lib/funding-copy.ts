@@ -9,14 +9,14 @@ export const feesToTeamWallet = config.creatorFeeWallet !== null;
 
 export const FUNDING = feesToTeamWallet
   ? {
-      tagline: "Idle GPUs, paid per verified job.",
+      tagline: "Your idle GPU, paid when two machines agree.",
       short: "Idle GPUs paid per verified job, on Robinhood Chain.",
       metaDescription:
-        "Idle GPUs run a small set of checked AI jobs. Nodes are paid from customers' payments for verified jobs. No fixed return, no passive-yield product.",
+        "Sparecycle runs AI jobs on computers that would otherwise sit idle. You pay for a job, two separate machines run it, and their owners are paid only if the results match. There is no fixed return.",
       bannerLead: "Nodes are paid from verified job payments.",
       bannerRest: "The token's creator fees go to the team wallet, not to the node pot.",
       heroBody:
-        "Sparecycle is a small network that runs checked AI jobs on machines that would otherwise sit idle. Nodes are paid from what customers pay for jobs that two GPUs agree on. The token's creator fees go to the team wallet, shown on the proof page. There is no fixed return and no passive-yield product.",
+        "Sparecycle runs AI jobs on computers that would otherwise sit idle. You pay for a job, two separate machines run it, and the people who ran them get paid only if the results match. There is no fixed return.",
       noTopUp:
         "The pot is filled by job payments (and by any fees sent to the reward contract, all visible on-chain). Test jobs the team pays for itself are labelled team-funded on the jobs page.",
       potBody:

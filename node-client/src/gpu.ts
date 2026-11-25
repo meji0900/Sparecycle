@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpus, hostname, totalmem } from "node:os";
 import { promisify } from "node:util";
-import type { Backend } from "#protocol";
+import type { Backend, DeviceInfo } from "#protocol";
 
 const run = promisify(execFile);
 
@@ -20,19 +20,78 @@ export async function probeGpu(): Promise<Gpu> {
   return { name, uuid: process.env.SPARECYCLE_GPU_UUID ?? uuid, vramMb: Number(mem) };
 }
 
-/** First non-CPU Vulkan device from `vulkaninfo --summary` (null if vulkaninfo is missing or lists none). */
-export async function vulkanDeviceName(): Promise<string | null> {
+export type VulkanDevice = NonNullable<DeviceInfo["vulkan"]> & { deviceName: string };
+
+const VULKAN_KEYS: Record<string, keyof VulkanDevice> = {
+  vendorID: "vendorId",
+  deviceID: "deviceId",
+  deviceType: "deviceType",
+  deviceName: "deviceName",
+  driverName: "driverName",
+  driverInfo: "driverInfo",
+  apiVersion: "apiVersion",
+};
+
+/** Devices listed by `vulkaninfo --summary` (one "GPUn:" block each, "key = value" lines). */
+export function parseVulkanSummary(stdout: string): VulkanDevice[] {
+  return stdout
+    .split(/\r?\n(?=GPU\d+:)/)
+    .filter((b) => /^GPU\d+:/.test(b))
+    .map((b) => {
+      const d: Partial<VulkanDevice> = {};
+      for (const line of b.split(/\r?\n/)) {
+        const m = /^\s*(\w+)\s*=\s*(.*?)\s*$/.exec(line);
+        const key = m ? VULKAN_KEYS[m[1]] : undefined;
+        if (m && key && m[2]) d[key] = m[2];
+      }
+      return d;
+    })
+    .filter((d): d is VulkanDevice => Boolean(d.deviceName));
+}
+
+/** The Vulkan device a node uses: the first non-CPU device (null if vulkaninfo is missing or lists none). */
+export async function vulkanDevice(): Promise<VulkanDevice | null> {
   try {
     const { stdout } = await run("vulkaninfo", ["--summary"], { timeout: 20_000, windowsHide: true });
-    const blocks = stdout.split(/\n(?=GPU\d+:)/);
-    const devices = blocks
-      .map((b) => ({ name: /deviceName\s*=\s*(.+)/.exec(b)?.[1]?.trim(), type: /deviceType\s*=\s*(\S+)/.exec(b)?.[1] }))
-      .filter((d): d is { name: string; type: string | undefined } => Boolean(d.name));
-    const real = devices.find((d) => d.type !== "PHYSICAL_DEVICE_TYPE_CPU") ?? devices[0];
-    return real?.name ?? null;
+    const devices = parseVulkanSummary(stdout);
+    return devices.find((d) => d.deviceType !== "PHYSICAL_DEVICE_TYPE_CPU") ?? devices[0] ?? null;
   } catch {
     return null;
   }
+}
+
+/** First non-CPU Vulkan device name from `vulkaninfo --summary` (null if vulkaninfo is missing or lists none). */
+export async function vulkanDeviceName(): Promise<string | null> {
+  return (await vulkanDevice())?.deviceName ?? null;
+}
+
+const VENDORS: Record<string, string> = { "0x10de": "nvidia", "0x1002": "amd", "0x1022": "amd", "0x8086": "intel", "0x10005": "software" };
+
+/**
+ * Structured device info sent at registration (node client 0.3.0+): compute capability and driver from nvidia-smi
+ * (cuda), the chosen device's vendor / type / driver from vulkaninfo (vulkan), the CPU model (cpu). Never throws: a
+ * missing tool just leaves fields out. Self-reported; the scheduler's challenge checks what the device computes.
+ */
+export async function probeDeviceInfo(backend: Backend): Promise<DeviceInfo> {
+  if (backend === "cuda") {
+    try {
+      const { stdout } = await run("nvidia-smi", ["--query-gpu=compute_cap,driver_version", "--format=csv,noheader,nounits"], {
+        timeout: 20_000,
+        windowsHide: true,
+      });
+      const [computeCap, driver] = stdout.trim().split("\n")[0].split(",").map((x) => x.trim());
+      return { vendor: "nvidia", ...(computeCap ? { computeCap } : {}), ...(driver ? { driver } : {}) };
+    } catch {
+      return { vendor: "nvidia" };
+    }
+  }
+  if (backend === "vulkan") {
+    const d = await vulkanDevice();
+    if (!d) return {};
+    const vendor = d.vendorId ? (VENDORS[d.vendorId.toLowerCase()] ?? "other") : undefined;
+    return { ...(vendor ? { vendor } : {}), vulkan: d };
+  }
+  return { cpu: cpus()[0]?.model?.trim() || "unknown CPU" };
 }
 
 /**

@@ -1,0 +1,110 @@
+{
+  "thresholds": {
+    "imageMaxBits": 12,
+    "textMinSimilarity": 0.9
+  },
+  "only": "image",
+  "devices": [
+    {
+      "dir": "bench/results/2026-11-22-cuda-ampere-ada/RTX-3060-cuda",
+      "label": "NVIDIA GeForce RTX 3060 [cuda cc8.6]",
+      "software": {
+        "node": "v24.22.1",
+        "llamaCpp": [
+          "version: 1.0.0-dev (build 12404, commit cf9a9957d)"
+        ],
+        "python": {
+          "torch": "2.8.0+cu128",
+          "cuda": "12.8",
+          "cudnn": 91002,
+          "diffusers": "0.35.1",
+          "transformers": "4.56.1"
+        }
+      },
+      "imageMedianMs": 2585.5,
+      "textMedianTokPerS": null,
+      "selfImageMaxBits": 0,
+      "selfTextMinSimilarity": null,
+      "controlImageMinBits": 25,
+      "nsfwFlags": 0
+    },
+    {
+      "dir": "bench/results/2026-11-22-cuda-ampere-ada/RTX-4060-cuda",
+      "label": "NVIDIA GeForce RTX 4060 [cuda cc8.9]",
+      "software": {
+        "node": "v24.22.1",
+        "llamaCpp": [
+          "version: 1.0.0-dev (build 12404, commit cf9a9957d)"
+        ],
+        "python": {
+          "torch": "2.8.0+cu128",
+          "cuda": "12.8",
+          "cudnn": 91002,
+          "diffusers": "0.35.1",
+          "transformers": "4.56.1"
+        }
+      },
+      "imageMedianMs": 2058,
+      "textMedianTokPerS": null,
+      "selfImageMaxBits": 0,
+      "selfTextMinSimilarity": null,
+      "controlImageMinBits": 24,
+      "nsfwFlags": 0
+    }
+  ],
+  "pairs": [
+    {
+      "a": "NVIDIA GeForce RTX 3060 [cuda cc8.6]",
+      "b": "NVIDIA GeForce RTX 4060 [cuda cc8.9]",
+      "sameBackend": true,
+      "image": [
+        {
+          "id": "lighthouse",
+          "value": 1,
+          "agree": true
+        },
+        {
+          "id": "lighthouse-seed2",
+          "value": 0,
+          "agree": true
+        },
+        {
+          "id": "bicycle",
+          "value": 4,
+          "agree": true
+        },
+        {
+          "id": "ramen",
+          "value": 0,
+          "agree": true
+        },
+        {
+          "id": "village",
+          "value": 0,
+          "agree": true
+        },
+        {
+          "id": "village-seed2",
+          "value": 2,
+          "agree": true
+        },
+        {
+          "id": "cat",
+          "value": 0,
+          "agree": true
+        },
+        {
+          "id": "sunflowers",
+          "value": 0,
+          "agree": true
+        }
+      ],
+      "text": []
+    }
+  ],
+  "imageThreshold": {
+    "sameJobMaxBits": 4,
+    "controlMinBits": 24,
+    "current": 12
+  }
+}

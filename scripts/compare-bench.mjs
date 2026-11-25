@@ -2,7 +2,11 @@
 // Compares bench folders from different devices (made with `node src/agent.ts bench` in the node client): would
 // two honest nodes on these devices pass the scheduler's two-node check, and how much margin do the thresholds have?
 //
-//   node scripts/compare-bench.mjs <bench-folder> <bench-folder> [...] [--json summary.json]
+//   node scripts/compare-bench.mjs <bench-folder> <bench-folder> [...] [--only image|text] [--json summary.json]
+//
+// --only keeps one job kind (e.g. for a folder whose text jobs ran with older settings). Image items are fingerprinted
+// from their PNG; when the PNG is not there (published folders under bench/results/ keep only bench.json) the item's
+// `fingerprint` field is used, computed from the PNG with the same code by scripts/bench-fingerprints.mjs.
 //
 // Uses the scheduler's own fingerprints and thresholds (src/server/verify.ts):
 //   image: dHash bits that differ, agree when <= IMAGE_MAX_BITS
@@ -19,9 +23,11 @@ const { decodePng, imageFingerprint, hammingHex, textFingerprint, textSimilarity
 const args = process.argv.slice(2);
 const jsonAt = args.indexOf("--json");
 const jsonOut = jsonAt >= 0 ? args[jsonAt + 1] : null;
-const dirs = args.filter((a, i) => !a.startsWith("--") && !(jsonAt >= 0 && i === jsonAt + 1));
-if (dirs.length < 1) {
-  console.error("usage: node scripts/compare-bench.mjs <bench-folder> <bench-folder> [...] [--json summary.json]");
+const onlyAt = args.indexOf("--only");
+const only = onlyAt >= 0 ? args[onlyAt + 1] : null;
+const dirs = args.filter((a, i) => !a.startsWith("--") && !(jsonAt >= 0 && i === jsonAt + 1) && !(onlyAt >= 0 && i === onlyAt + 1));
+if (dirs.length < 1 || (onlyAt >= 0 && !["image", "text"].includes(only))) {
+  console.error("usage: node scripts/compare-bench.mjs <bench-folder> <bench-folder> [...] [--only image|text] [--json summary.json]");
   process.exit(1);
 }
 
@@ -37,13 +43,22 @@ function load(dir) {
   const file = join(dir, "bench.json");
   if (!existsSync(file)) throw new Error(`${file} not found`);
   const b = JSON.parse(readFileSync(file, "utf8"));
-  const items = b.items.map((it) => {
-    if (it.kind === "image") {
-      const png = decodePng(readFileSync(join(dir, it.file)));
-      return { ...it, fp: png ? imageFingerprint(png) : null };
-    }
-    return { ...it, fp: textFingerprint(it.text) };
-  });
+  const items = b.items
+    .filter((it) => !only || it.kind === only)
+    .map((it) => {
+      if (it.kind === "image") {
+        const png = join(dir, it.file);
+        if (existsSync(png)) {
+          const img = decodePng(readFileSync(png));
+          const fp = img ? imageFingerprint(img) : null;
+          if (it.fingerprint && fp !== it.fingerprint) console.warn(`warning: ${png}: stored fingerprint ${it.fingerprint}, computed ${fp}`);
+          return { ...it, fp };
+        }
+        if (typeof it.fingerprint === "string") return { ...it, fp: it.fingerprint };
+        throw new Error(`${png} not found and the item has no stored fingerprint`);
+      }
+      return { ...it, fp: textFingerprint(it.text) };
+    });
   const label = `${b.device?.name ?? "?"} [${b.backend}${b.device?.computeCap ? ` cc${b.device.computeCap}` : ""}]`;
   return { dir, label, suite: b.suite, backend: b.backend, device: b.device, software: b.software, items };
 }
@@ -56,9 +71,9 @@ const first = (b, kind) => b.items.filter((i) => i.kind === kind && i.run === 1)
 const dist = (kind, a, b) => (kind === "image" ? (a && b ? hammingHex(a, b) : 64) : textSimilarity(a, b));
 const agrees = (kind, d) => (kind === "image" ? d <= IMAGE_MAX_BITS : d >= TEXT_MIN_SIMILARITY);
 
-const summary = { thresholds: { imageMaxBits: IMAGE_MAX_BITS, textMinSimilarity: TEXT_MIN_SIMILARITY }, devices: [], pairs: [] };
+const summary = { thresholds: { imageMaxBits: IMAGE_MAX_BITS, textMinSimilarity: TEXT_MIN_SIMILARITY }, ...(only ? { only } : {}), devices: [], pairs: [] };
 
-console.log(`Thresholds: image <= ${IMAGE_MAX_BITS} differing bits of 64, text similarity >= ${TEXT_MIN_SIMILARITY}\n`);
+console.log(`Thresholds: image <= ${IMAGE_MAX_BITS} differing bits of 64, text similarity >= ${TEXT_MIN_SIMILARITY}${only ? ` (${only} jobs only)` : ""}\n`);
 console.log("Devices (same device, run 2+ against run 1):");
 for (const b of benches) {
   const img = b.items.filter((i) => i.kind === "image");

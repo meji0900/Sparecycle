@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import { accountFailureText, Eth } from "./job-balance";
 import { loadItems, MAX_ITEMS, PlaygroundHistory, saveItems, type PlayItem } from "./playground-history";
 import { PlaygroundResult } from "./playground-result";
+import { OutputPrivacyNotice } from "./private-output";
 import { RadioCard, Row } from "./ui";
 import { nowMs, submitFailureText, useJobSubmit } from "./use-job-submit";
 import { WalletButton } from "./wallet-button";
@@ -187,7 +188,7 @@ export function Playground({ rateLimit }: { rateLimit: number | null }) {
       setSignError(res.signError);
       return;
     }
-    const item: PlayItem = { id: res.id, at: nowMs(), ...s, paid };
+    const item: PlayItem = { id: res.id, at: nowMs(), ...s, paid, secret: res.readSecret };
     update((list) => [item, ...list.filter((i) => i.id !== res.id)]);
     setCurrentId(res.id);
   }
@@ -489,9 +490,14 @@ export function Playground({ rateLimit }: { rateLimit: number | null }) {
           </fieldset>
         ) : null}
 
-        <Notice tone="warn" title="Prompts and images are not private.">
-          Anyone with the job id can see the prompt and the image. Do not enter names, personal details or anything sensitive.
-        </Notice>
+        <OutputPrivacyNotice
+          subject="image"
+          fallback={
+            <Notice tone="warn" title="Prompts and images are not private.">
+              Anyone with the job id can see the prompt and the image. Do not enter names, personal details or anything sensitive.
+            </Notice>
+          }
+        />
 
         {msg ? (
           <Notice tone="error" title={msg.title}>

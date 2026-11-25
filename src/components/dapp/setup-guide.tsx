@@ -70,7 +70,7 @@ function requirements(os: Os, backend: Backend): [string, ReactNode][] {
   const linux = os === "linux";
   const pc = linux ? "Ubuntu 24.04 or newer (x64)" : "Windows 10 or 11 (x64)";
   const gpu: Record<Backend, string> = {
-    cuda: "NVIDIA RTX 30-series or newer, 4 GB VRAM or more for image jobs. Driver 525.60.13 or newer, 570+ recommended.",
+    cuda: "NVIDIA GeForce RTX 30 or 40 series (benched and supported; RTX 20 and 50 series are not benched yet), 4 GB VRAM or more for image jobs. Driver 525.60.13 or newer, 570+ recommended.",
     vulkan: linux
       ? "AMD or Intel GPU, or an integrated GPU, with a Vulkan driver: sudo apt install libvulkan1 mesa-vulkan-drivers"
       : "AMD or Intel GPU, or an integrated GPU (for example a Ryzen laptop's Radeon), with the vendor's current driver.",

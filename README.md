@@ -261,7 +261,7 @@ node src/agent.ts start --network https://sparecycle.tech --owner 0xYOUR_WALLET 
 | `--key-file <path>` | another node key file (default `~/.sparecycle-node/key.json`) |
 | `--dev-runner` | local tests only |
 
-Other commands: `init` (create a node key), `bench --backend … --repeat 2` (cross-GPU match test). `Ctrl+C` finishes the running job, then stops. All nodes must run the same node client version (**0.2.0**), because the `-ub 1` setting affects text output.
+Other commands: `init` (create a node key), `bench --backend … --repeat 2` (cross-GPU match test). `Ctrl+C` finishes the running job, then stops. Nodes must run node client **0.2.0 or newer** (0.3.0 adds device info and GPU challenges; inference settings are unchanged), because the `-ub 1` setting affects text output.
 
 **Nodes without an NVIDIA GPU**: `--backend vulkan` (AMD/Intel, including iGPUs) or `--backend cpu` runs text jobs only. On a Ryzen 7 5700U: Vulkan ~27 tok/s (alone), ~13 tok/s per node when two nodes share the iGPU, CPU ~33 tok/s. Vulkan and CPU outputs differ (median similarity 0.65), which is why the scheduler only pairs the same backend.
 
@@ -463,9 +463,9 @@ Not yet tested: Vulkan on NVIDIA (not available in Vast containers), other AMD/I
 - The different-owner/GPU check relies on what nodes report (GPU UUIDs can be faked); an operator with several wallets can still run both copies of a job.
 - The post-graduation sweep path (hook) is untested. `sweepCurve`/`feeSweepOperator` are not in the Pons docs — they were taken from bytecode and a fork.
 - Pons v2 was not audited as of 20 November 2026.
-- Output of `agreed` jobs can be read by anyone who knows the job id — do not submit private prompts.
+- Job results are private (`OUTPUT_AUTH=enforce`, live since 25 Nov 2026): only the browser that created the job (its per-job read secret) or the wallet that paid (after a wallet sign-in) can read them; see [docs/private-outputs.md](docs/private-outputs.md). The two GPU nodes still see the prompt and the output while they work, and that cannot be recalled. `CustomerCharged` events and the per-epoch charge list are public. Outputs made before this change were readable by anyone with the job id and may already have been viewed or cached; those copies cannot be recalled, and older free outputs are no longer readable by anyone.
 - Database snapshots live on the same volume. If the volume is lost, only trees already downloaded with `backup-trees.mjs` (or by someone else) remain claimable.
-- Cross-GPU matching is untested on Vulkan on NVIDIA, other AMD/Intel GPUs, and the RTX 20 and 50 series.
+- Cross-GPU matching is benched and passing only for NVIDIA GeForce RTX 30 (Ampere, RTX 3060) and RTX 40 (Ada, RTX 4060) on CUDA (22 Nov 2026: images 8/8, worst 4 of 64 dHash bits against the 12-bit threshold; text 10/10 identical with node client 0.2.0+). Not benched yet: RTX 50 (Blackwell), RTX 20 (Turing), NVIDIA on Vulkan, AMD and Intel GPUs, integrated GPUs and CPU; they register as untested and, once the allowlist is enforced, get no paid jobs. The allowlist runs in observe mode and the periodic GPU challenge is off for now. Results: [bench/results/INDEX.md](bench/results/INDEX.md); how it works: [docs/gpu-support.md](docs/gpu-support.md).
 
 ## Known gaps
 

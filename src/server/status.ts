@@ -8,6 +8,8 @@ import { clockMode, ensureEpoch, epochJson, getEpochRow, lastClosedEpochRow, lis
 import { expireStaleJobs, jobCounts } from "./jobs";
 import { nodeCounts } from "./nodes";
 import { poolStatus } from "./gpu-pool";
+import { serverEnv } from "./env";
+import { GPU_SUPPORT_URL } from "./gpu-allowlist";
 
 export async function statusJson() {
   expireStaleJobs();
@@ -29,6 +31,8 @@ export async function statusJson() {
     },
     nodes: nodeCounts(),
     gpuPool: poolStatus(),
+    /** GPU gate modes (docs/gpu-support.md): allowlist observe | enforce, challenge off | observe | enforce. */
+    gpuGate: { allowlist: serverEnv.gpuAllowlistMode(), challenge: serverEnv.challengeMode(), supported: GPU_SUPPORT_URL },
     jobs: jobCounts(open.id),
     lastSettled: last
       ? {
@@ -42,6 +46,8 @@ export async function statusJson() {
       : null,
     rootPosting: rootPostingConfigured() ? "configured" : "not-configured",
     trust: "centralized-scheduler",
+    /** OUTPUT_AUTH: "enforce" = outputs readable only with the job's read secret or the paying wallet's sign-in. */
+    outputAuth: serverEnv.outputAuth(),
   };
 }
 

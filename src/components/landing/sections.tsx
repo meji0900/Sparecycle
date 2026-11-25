@@ -6,9 +6,9 @@ import { FeatureBento } from "./feature-bento";
 import { config, tickerLabel } from "@/lib/config";
 import { EM_DASH, formatAmount, formatBps, formatInt } from "@/lib/format";
 import { chainSnapshot } from "@/lib/onchain";
-import { PONS_DOCS_URL } from "@/lib/pons";
+import { PONS, PONS_DOCS_URL } from "@/lib/pons";
 import { cn } from "@/lib/utils";
-import { FUNDING } from "@/lib/funding-copy";
+import { FUNDING, feesToTeamWallet } from "@/lib/funding-copy";
 
 function Section({
   id,
@@ -61,7 +61,7 @@ export function Features() {
       <div className="mx-auto max-w-[1200px] px-4 py-20 sm:px-6">
         <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
           <h2 id="features-title" className="text-title font-semibold text-text">
-            What the MVP includes
+            What you get
           </h2>
           <p className="max-w-[380px] text-muted">Small on purpose. Each item is something you can check.</p>
         </div>
@@ -75,37 +75,29 @@ export function Features() {
 
 /* ---------- Where the money comes from ---------- */
 const FLOW = [
-  "A trader pays the standard Pons fee on the quote asset, plus any creator tax fixed at launch. The tax cannot be raised later.",
-  "Pons takes its share of the standard fee first. With buybacks off, the rest of that fee, plus the entire creator tax, is the creator share.",
-  "That share stays on the curve or the hook until someone sweeps it into the Pons fee escrow.",
-  "The reward contract, set as creatorFeeRecipient if that path works, otherwise funded by a multisig that claims and forwards, pulls the escrow balance into the current epoch pot.",
-  "The scheduler may assign payouts only for jobs that passed the two-node check, and only up to the pot. It then posts a Merkle root. Nodes claim. The remainder rolls over.",
+  "A customer puts ETH into the payments contract. It stays theirs: they can take back what they haven't spent, after two payout periods (at most two days).",
+  "They send a job. Two GPUs with different owners run it, and the scheduler compares the two results.",
+  "Only jobs whose results matched are charged, once per six-hour period: 95% goes into the node pot, 5% to the project treasury (a Safe wallet).",
+  "The scheduler splits the pot by the work each node did in matching jobs, never more than the pot holds, and publishes the split.",
+  "Each node claims its share from the contract with a proof. Anything unused rolls into the next period.",
 ];
 
 export function Mechanics() {
   return (
     <Section
       id="fees"
-      title="Where the money comes from"
-      intro="One trade, followed all the way to a node. Rates are read live from the token's curve once it exists; none are promised here."
+      title="Who pays the nodes"
+      intro="Customers do, for checked jobs. One payment, followed all the way to a node."
     >
-      {/* schematic of one trade's fee; widths are not to scale and carry no rate */}
       <figure className="rounded-l border border-line p-5">
-        <figcaption className="text-sm text-muted">What a trader pays, split by who receives it (schematic, not to scale)</figcaption>
+        <figcaption className="text-sm text-muted">Where one job payment goes</figcaption>
         <div className="mt-4 flex h-10 w-full overflow-hidden rounded-s border border-line text-xs">
-          <div className="flex basis-[30%] items-center justify-center bg-slate px-2 text-muted">Pons share</div>
-          <div className="flex basis-[45%] items-center justify-center border-l border-line bg-signal-soft px-2 text-text">
-            Rest of the standard fee
-          </div>
-          <div className="flex basis-[25%] items-center justify-center border-l border-dashed border-line-strong px-2 text-muted">
-            Creator tax, if set
-          </div>
+          <div className="flex basis-[95%] items-center justify-center bg-signal-soft px-2 text-text">95% node pot</div>
+          <div className="flex basis-[5%] min-w-[64px] items-center justify-center border-l border-line bg-slate px-2 text-muted">5%</div>
         </div>
-        <div className="mt-2 flex text-xs">
-          <span className="basis-[30%] text-faint">Kept by Pons</span>
-          <span className="basis-[70%] border-t border-signal/40 pt-1.5 text-text">
-            Creator share: the only money that can reach the pot
-          </span>
+        <div className="mt-2 flex justify-between text-xs">
+          <span className="text-text">Shared by the nodes whose results matched</span>
+          <span className="text-faint">Project treasury</span>
         </div>
       </figure>
 
@@ -118,8 +110,7 @@ export function Mechanics() {
         ))}
       </ol>
       <p className="mt-8 text-muted">
-        Sparecycle does not hold a discretionary team wallet that can refill the pot. If the claim from escrow returns
-        nothing, the pot does not grow.
+        {FUNDING.noTopUp} {feesToTeamWallet ? "The token's creator fees go to the team wallet, not into this pot; the proof page shows both." : ""}
       </p>
     </Section>
   );
@@ -142,7 +133,7 @@ export function RunANode() {
             MIT-licensed starting point; they are not a hosted cloud image we operate for you.
           </>,
           "The node pulls jobs from the scheduler, runs the allowed models, and submits a result. A second node runs the same job. Agreement is required for payment eligibility.",
-          "Payment, if any, shows up as a Merkle claim after the epoch closes. There is no hourly wage and no advertised rate of return.",
+          "Payment, if any, is claimed from the contract after the six-hour period closes. There is no hourly wage and no advertised rate of return.",
           "You do not need to hold the token.",
         ].map((t, i) => (
           <li key={i} className="py-5 text-muted">
@@ -170,11 +161,12 @@ export function RunANode() {
 
 /* ---------- The token, stated plainly ---------- */
 const TOKEN_FACTS = [
-  "The token is created on Pons v2 in a single launchToken transaction. Until that transaction confirms, there is no token address. Always check the address when it exists.",
-  "The entire supply is minted to the bonding curve. The creator receives no reserved allocation.",
-  "If the curve sells out, Pons graduates the launch into a Uniswap v4 pool with a Pons hook. Liquidity is permanently locked by Pons. Sparecycle does not provide or unlock LP of its own.",
-  "Creator trading fees fund the job pot. Buybacks are off. This is not a reason the token should go up, and it is not a yield on holding.",
-  "An optional creator tax, if set, is fixed at launch and cannot be raised. The live rates belong on the token page as reads from the curve, not as slogans.",
+  "You don't need the token for anything here: not to run a node, and not to pay for a job.",
+  feesToTeamWallet
+    ? "The token's creator fees and creator tax go to the team wallet set at launch, not to the node pot. Node payouts come from job payments."
+    : "Creator trading fees fund the job pot. Buybacks are off. This is not a reason the token should go up, and it is not a yield on holding.",
+  "It was launched on Pons v2 in one transaction. The whole supply went to the bonding curve; there is no team allocation.",
+  "If the curve sells out, Pons moves it into a Uniswap v4 pool and locks that liquidity. Sparecycle holds no LP it can pull.",
   `Pons v2 was still unaudited as of ${config.factsCheckedOn}. The token can lose all of its value.`,
 ];
 
@@ -212,7 +204,25 @@ export async function TokenSection() {
         ))}
       </ul>
 
-      <div className="mt-10 rounded-l border border-line">
+      <dl className="mt-10 divide-y divide-line rounded-l border border-line text-sm">
+        {(
+          [
+            ["Token (CA)", config.tokenAddress],
+            ["Reward contract", config.rewardContract],
+            ["Payments contract", config.jobPayments],
+            ["Pons v2 factory", PONS.factory],
+          ] as const
+        )
+          .filter(([, a]) => a)
+          .map(([k, a]) => (
+            <div key={k} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-5 py-3">
+              <dt className="text-muted">{k}</dt>
+              <dd className="num min-w-0 break-all text-text">{a}</dd>
+            </div>
+          ))}
+      </dl>
+
+      <div className="mt-6 rounded-l border border-line">
         <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-line px-5 py-4">
           <p className="font-medium text-text">Pons v2 factory, read live</p>
           <p className="text-xs text-faint">
@@ -255,14 +265,10 @@ export async function TokenSection() {
 const ROADMAP = [
   [
     "Now",
-    "Landing page, status page, claim page, node install guide, limited job submit. Reward contract and tests. Scheduler and node client adapted from the MIT prototype, rebranded.",
+    "Paid image and text jobs on Robinhood Chain mainnet, two GPUs per job, payouts every six hours. A free trial, a playground, the node client for Windows and Linux, and a public proof page.",
   ],
-  [
-    "Launch, only after checks",
-    "canLaunch on the launching wallet, live fee and config reads, a working claim path into the pot (contract recipient tested, or multisig fallback).",
-  ],
-  ["MVP models", "Stable Diffusion 1.5 and one small text model. Two-node checks. Pay in the chosen payout asset."],
-  ["Later, only if the pot actually supports it", "More models or a less centralized scheduler. Not promised. No global GPU fabric phase."],
+  ["Next", "Shared control of the reward contract and treasury (more than one signer), more graphics cards once each one has published match results, and job results private to the person who paid."],
+  ["Later, only if jobs actually support it", "More models or a less centralized scheduler. Not promised."],
 ] as const;
 
 export function Roadmap() {
@@ -292,15 +298,15 @@ export function Roadmap() {
 
 /* ---------- FAQ ---------- */
 const FAQ: [string, string][] = [
-  ["Is this a yield product?", "No. Nodes may receive a payout if fees were collected and their jobs passed a check. There is no fixed return, no APY, and no payment for simply holding the token."],
-  ["Where does the money come from?", "From creator trading fees on the Pons v2 token, after the protocol share, with buybacks off. If nobody trades, the pot does not fill."],
-  ["Do you top up rewards?", "No. The contract is specified without a team withdrawal or refill function for the pot."],
-  ["Do I have to hold the token to run a node?", "No."],
-  ["What jobs can I submit?", "In the MVP, only the listed models, with a rate limit. This is not an open marketplace and not a general-purpose GPU cloud."],
-  ["Who locks the liquidity?", "Pons, at graduation, in its launch locker. We do not hold a Sparecycle LP we can pull."],
-  ["Does the creator get a token allocation?", "No. Supply is minted to the curve."],
+  ["What is Sparecycle?", "A small network that runs AI jobs on computers that would otherwise sit idle. Every job runs on two machines, and their owners are paid only if the results match."],
+  ["Who pays the nodes?", "Customers, for checked jobs: 95% of each job's price goes to the node pot and 5% to the project treasury. The token's creator fees go to the team wallet, not to the pot."],
+  ["What does a job cost?", "The price is shown before you pay. A 512×512 image at 15 steps is 0.0000012 ETH today. The free trial gives 5 images an hour with no wallet."],
+  ["What if the two machines disagree?", "Neither is paid for that job and you are not charged for it."],
+  ["Is this a yield product?", "No. Nodes are paid for checked work that customers paid for. There is no fixed return, no APY, and nothing is paid for holding the token."],
+  ["Do I need the token?", "No. Not to run a node and not to pay for a job."],
+  ["Do you top up the pot?", "No. The team does not refill it. Test jobs the team pays for itself are labelled team-funded."],
+  ["Is the scheduler decentralized?", "Not yet. One scheduler hands out jobs, compares results and publishes each period's payouts. That is a trust assumption, disclosed on the status page; settled payouts cannot be changed afterwards."],
   ["Is Pons audited?", `As of ${config.factsCheckedOn}, official docs said reviews were in progress and that v2 should be treated as unaudited until reports are published.`],
-  ["Is the scheduler decentralized?", "Not in the MVP. A single scheduler closes epochs and posts the Merkle root. That is a trust assumption, and it is disclosed on the status page."],
   ["Is this financial advice?", "No."],
 ];
 

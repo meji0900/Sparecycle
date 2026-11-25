@@ -65,7 +65,7 @@ videos/*/.hyperframes/
 videos/*/snapshots/
 videos/*/node_modules/
 
-# GPU agreement bench outputs (node-client bench)
+# GPU agreement bench outputs (node-client bench): local scratch. Published results live in bench/ (committed).
 .bench/
 node-client/bench-*/
 

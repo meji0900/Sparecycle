@@ -11,10 +11,10 @@ import { CaChip } from "@/components/brand/ca-chip";
 
 const NAV = [
   { href: "/#how-it-works", label: "How it works" },
-  { href: "/#fees", label: "Fees" },
+  { href: "/#fees", label: "Who pays" },
   { href: "/#run-a-node", label: "Run a node" },
-  { href: "/#token", label: "Token" },
   { href: "/#faq", label: "FAQ" },
+  { href: "/token", label: "Token" },
   { href: "/proof", label: "Proof" },
 ];
 
@@ -104,8 +104,8 @@ export function SiteHeader() {
         <div className="flex items-center gap-2">
           <CaChip className="hidden lg:inline-flex" />
           <XLink />
-          <ButtonLink href="/nodes" size="sm" className="hidden sm:inline-flex">
-            Launch App
+          <ButtonLink href="/playground" size="sm" className="hidden sm:inline-flex">
+            Run a job
           </ButtonLink>
           <button
             ref={buttonRef}
@@ -137,8 +137,11 @@ export function SiteHeader() {
               <CaChip />
             </div>
             <XLink withLabel className="border-b border-line py-4 text-lg" />
-            <ButtonLink href="/nodes" size="lg" className="mt-6" onClick={() => setOpen(false)}>
-              Launch App
+            <ButtonLink href="/playground" size="lg" className="mt-6" onClick={() => setOpen(false)}>
+              Run a job
+            </ButtonLink>
+            <ButtonLink href="/nodes" size="lg" variant="secondary" className="mt-3" onClick={() => setOpen(false)}>
+              Run a node
             </ButtonLink>
           </nav>
         </div>

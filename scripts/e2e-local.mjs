@@ -12,14 +12,21 @@
 //  4. `next dev` on 127.0.0.1:3210 from a throw-away copy of the app (so it never collides with another
 //     `next dev` lock and never reads the user's .env files), env passed inline, scratch DB under data/
 //  5. two node clients with --dev-runner (synthetic outputs, no GPU), owners = anvil accounts 2 and 3,
-//     distinct node keys and fake GPU UUIDs
+//     distinct node keys and fake GPU UUIDs; the scheduler runs GPU_ALLOWLIST_MODE=enforce and CHALLENGE_MODE=enforce,
+//     so both nodes must first pass a GPU challenge (dev-runner reference) before they get jobs
+//  5b. GPU gate round with signed requests from this script: a challenge-capable node fails -> cooldown, fails again
+//     -> suspended, is re-issued by the admin endpoint and passes; an old 0.2.0-style node never gets a challenge; a
+//     software rasterizer is refused (403 gpu-not-supported); an untested family registers as untested
 //  6. submit 2 image + 1 text jobs, wait until both nodes agree
 //  7. warp anvil past the epoch end, POST /api/v1/epochs/close (posts the root on-chain)
 //  8. each owner fetches its proof and claims; balances must rise by exactly the leaf amount; a second claim
 //     must revert AlreadyClaimed; reserved <= pot; the rollover lands in epoch 1
-//  9. rate limit; restart the scheduler on the same DB with SCHEDULER_AUTOCLOSE=1 and let the timer close a funded
-//     epoch and then an empty one (root 0x00…00, reserved 0)
-// 10. PASS / FAIL summary; every process started here is stopped, even on failure
+//  9. rate limit; restart the scheduler on the same DB with SCHEDULER_AUTOCLOSE=1 and OUTPUT_AUTH=enforce and let the
+//     timer close a funded epoch and then an empty one (root 0x00…00, reserved 0)
+// 10. private outputs (OUTPUT_AUTH=enforce, nodes stopped): the 401/403/404/409/200 route matrix with read secrets and
+//     wallet sign-in (EOA and an ERC-1271 smart wallet), the retired /output URL (410), and no /api/v1/jobs/* response
+//     ever carrying a `public` cache directive
+// 11. PASS / FAIL summary; every process started here is stopped, even on failure
 //
 // The anvil keys below are the well-known public anvil/hardhat dev keys. They are for this local test only and
 // must never be used anywhere else.
@@ -27,7 +34,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { cpSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   BaseError,
   ContractFunctionRevertedError,
@@ -38,6 +45,7 @@ import {
 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { foundry } from "viem/chains";
+import { createSiweMessage } from "viem/siwe";
 import { srcImport } from "../src/server/node-ts-hooks.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -48,6 +56,7 @@ const SITE = `http://127.0.0.1:${NEXT_PORT}`;
 const API = `${SITE}/api/v1`;
 const ADMIN_TOKEN = "test";
 const EPOCH_LENGTH = 30;
+const CHALLENGE_COOLDOWN_S = 20; // CHALLENGE_COOLDOWN_HOURS for this test, in seconds (longer than one 8 s long poll)
 const exe = (name) => (process.platform === "win32" ? `${name}.exe` : name);
 const FOUNDRY_BIN = process.env.FOUNDRY_BIN ?? join(homedir(), ".foundry", "bin");
 const ANVIL = join(FOUNDRY_BIN, exe("anvil"));
@@ -121,7 +130,7 @@ function cleanup() {
   cleaned = true;
   for (const { child } of children.reverse()) killTree(child);
   // The app copy holds a full src/ tree; never leave it behind for lint / tsc to pick up. Forge output is scratch.
-  for (const dir of [APP_DIR, join(RUN_DIR, "forge-out"), join(RUN_DIR, "forge-cache"), join(RUN_DIR, "sweep-mocks")]) {
+  for (const dir of [APP_DIR, join(RUN_DIR, "forge-out"), join(RUN_DIR, "forge-cache"), join(RUN_DIR, "sweep-mocks"), join(RUN_DIR, "auth-mocks")]) {
     try {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
     } catch {
@@ -163,6 +172,9 @@ async function waitFor(label, fn, { timeoutMs = 60_000, intervalMs = 500 } = {})
   throw new Error(`timed out waiting for ${label}${last ? `: ${last.message ?? last}` : ""}`);
 }
 
+// Cache-Control of every /api/v1/jobs* response this test saw: none may carry a `public` directive.
+const jobsCacheHeaders = [];
+
 async function api(method, path, body, headers = {}) {
   const res = await fetch(`${API}${path}`, {
     method,
@@ -170,10 +182,13 @@ async function api(method, path, body, headers = {}) {
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(120_000),
   });
+  if (path.startsWith("/jobs")) jobsCacheHeaders.push({ method, path, status: res.status, cc: res.headers.get("cache-control") ?? "" });
   const type = res.headers.get("content-type") ?? "";
-  const data = type.includes("application/json") ? await res.json() : Buffer.from(await res.arrayBuffer());
-  return { status: res.status, type, data };
+  const data = method === "HEAD" ? Buffer.alloc(0) : type.includes("application/json") ? await res.json() : Buffer.from(await res.arrayBuffer());
+  return { status: res.status, type, data, headers: res.headers };
 }
+
+const isPrivate = (r) => r.headers.get("cache-control") === "private, no-store" && /Authorization/.test(r.headers.get("vary") ?? "") && /Cookie/.test(r.headers.get("vary") ?? "");
 
 function revertName(e) {
   if (e instanceof BaseError) {
@@ -193,7 +208,7 @@ function cleanEnv(extra) {
   const env = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (/^(NEXT_PUBLIC_|SCHEDULER_|SWEEP_|SPARECYCLE_)/.test(k)) continue;
-    if (["DB_PATH", "PAYOUT_CAP_PER_UNIT", "JOB_RATE_LIMIT", "LAUNCHER_WALLET", "EPOCH_POST_GAS_COST", "NODE_OPTIONS"].includes(k)) continue;
+    if (["DB_PATH", "PAYOUT_CAP_PER_UNIT", "JOB_RATE_LIMIT", "LAUNCHER_WALLET", "EPOCH_POST_GAS_COST", "NODE_OPTIONS", "OUTPUT_AUTH", "OUTPUT_RATE_LIMIT", "AUTH_DOMAIN"].includes(k)) continue;
     env[k] = v;
   }
   return { ...env, NEXT_TELEMETRY_DISABLED: "1", ...extra };
@@ -260,6 +275,27 @@ contract SweepMockHook {
 
     constructor(address op) {
         feeSweepOperator = op;
+    }
+}
+`;
+
+// A minimal ERC-1271 smart wallet for the sign-in test: valid when the owner EOA signed the hash. Local anvil only.
+const AUTH_MOCKS_SOL = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
+
+contract Mock1271Wallet {
+    address public immutable owner;
+
+    constructor(address owner_) {
+        owner = owner_;
+    }
+
+    function isValidSignature(bytes32 hash, bytes calldata sig) external view returns (bytes4) {
+        if (sig.length != 65) return 0xffffffff;
+        bytes32 r = bytes32(sig[0:32]);
+        bytes32 s = bytes32(sig[32:64]);
+        uint8 v = uint8(sig[64]);
+        return ecrecover(hash, v, r, s) == owner ? bytes4(0x1626ba7e) : bytes4(0xffffffff);
     }
 }
 `;
@@ -418,7 +454,7 @@ async function main() {
 
   step("7. scheduler (next dev) from an isolated app copy");
   mkdirSync(APP_DIR, { recursive: true });
-  for (const f of ["src", "public", "next.config.ts", "tsconfig.json", "package.json", "postcss.config.mjs"]) {
+  for (const f of ["src", "public", "bench", "next.config.ts", "tsconfig.json", "package.json", "postcss.config.mjs"]) {
     if (existsSync(join(ROOT, f))) cpSync(join(ROOT, f), join(APP_DIR, f), { recursive: true });
   }
   const dbPath = join(RUN_DIR, "sparecycle.db");
@@ -437,6 +473,9 @@ async function main() {
         SCHEDULER_SIGNER_KEY: ANVIL_KEYS[1],
         SCHEDULER_ADMIN_TOKEN: ADMIN_TOKEN,
         SCHEDULER_ALLOW_DEV_RUNNER: "1",
+        GPU_ALLOWLIST_MODE: "enforce",
+        CHALLENGE_MODE: "enforce",
+        CHALLENGE_COOLDOWN_HOURS: String(CHALLENGE_COOLDOWN_S / 3600),
         JOB_RATE_LIMIT: "4",
         DB_PATH: dbPath,
         ...extra,
@@ -479,6 +518,105 @@ async function main() {
   }, { timeoutMs: 60_000 });
   check("both nodes registered and online", true);
 
+  step("8b. GPU gate: allowlist + challenge round");
+  const proto = await srcImport("lib/protocol.ts");
+  const { devText } = await import(pathToFileURL(join(ROOT, "node-client", "src", "dev-runner.ts")).href);
+  /** A signed node request, as the node client sends it. */
+  const nodeCall = async (account, path, body = {}) => {
+    const text = JSON.stringify({ ...body, nonce: proto.requestNonce() });
+    const headers = await proto.signRequest(account, "POST", new URL(API + path).pathname, text);
+    const res = await fetch(API + path, { method: "POST", headers, body: text, signal: AbortSignal.timeout(60_000) });
+    return { status: res.status, data: res.status === 204 ? null : await res.json().catch(() => null) };
+  };
+  const registerManual = async (account, owner, extra) =>
+    nodeCall(account, "/nodes/register", {
+      gpuUuid: `E2E-GPU-${account.address.slice(2, 8)}`,
+      vramMb: 8192,
+      caps: ["text:qwen2.5-1.5b"],
+      owner: owner.address,
+      ownerSig: await owner.signMessage({ message: proto.linkMessage(account.address, owner.address) }),
+      backend: "cuda",
+      ...extra,
+    });
+  const answerChallenge = async (account, c, text, chainId) => {
+    const outputHash = proto.sha256Hex(text);
+    const signature = await proto.signChallengeResult(account, chainId, { challengeId: c.challengeId, node: account.address, outputHash, gpuMs: 5n });
+    return nodeCall(account, `/challenges/${c.challengeId}/result`, { text, outputHash, gpuMs: 5, signature, dev: true, runner: "dev" });
+  };
+  const fresh = () => privateKeyToAccount(generatePrivateKey());
+  const gate = (await api("GET", "/status")).data.gpuGate;
+  check("status: GPU allowlist and challenge both enforce", gate?.allowlist === "enforce" && gate?.challenge === "enforce", JSON.stringify(gate));
+  await waitFor("both dev nodes pass their first GPU challenge", async () => {
+    const r = await api("GET", "/nodes");
+    return r.data.nodes.filter((x) => x.dev && x.challengeState === "eligible").length === 2;
+  }, { timeoutMs: 60_000 });
+  const devNodes = (await api("GET", "/nodes")).data.nodes.filter((x) => x.dev);
+  check("dev nodes: family dev-runner, gpuStatus eligible, challenge passed", devNodes.every((x) => x.gpuFamily === "dev-runner" && x.gpuStatus === "eligible"));
+
+  // C: a challenge-capable node with a "faulty GPU": fail -> cooldown, fail -> suspended, admin re-issue, pass.
+  const nodeC = fresh();
+  const regC = await registerManual(nodeC, fresh(), { gpu: "dev-runner (no GPU, cuda)", dev: true, version: "sparecycle-node/0.3.0", features: [proto.CHALLENGE_FEATURE] });
+  check("node C (0.3.0, challenge feature) registers pending-challenge", regC.status === 200 && regC.data.challenge?.state === "pending-challenge", JSON.stringify(regC.data?.challenge));
+  const chainId = Number(regC.data.chainId);
+  const c1 = await nodeCall(nodeC, "/nodes/poll");
+  check("node C: the poll hands out a challenge (not a job)", c1.status === 200 && c1.data.type === "challenge" && /^0x[0-9a-f]{64}$/.test(c1.data.challengeId) && !c1.data.jobId, c1.data?.caseId);
+  const f1 = await answerChallenge(nodeC, c1.data, "a wrong answer from a broken GPU", chainId);
+  const failedAt = Date.now();
+  check("node C: wrong answer -> not passed, cooldown", f1.status === 200 && f1.data.passed === false && f1.data.state === "cooldown", JSON.stringify(f1.data));
+  const coolPoll = await nodeCall(nodeC, "/nodes/poll"); // a full long poll (8 s) inside the cooldown
+  check("node C: no challenge and no job during the cooldown (204)", coolPoll.status === 204);
+  await sleep(Math.max(0, failedAt + CHALLENGE_COOLDOWN_S * 1000 + 1500 - Date.now()));
+  const c2 = await nodeCall(nodeC, "/nodes/poll");
+  check("node C: re-challenged after the cooldown", c2.status === 200 && c2.data.type === "challenge" && c2.data.challengeId !== c1.data.challengeId);
+  const f2 = await answerChallenge(nodeC, c2.data, "still wrong", chainId);
+  check("node C: second consecutive fail -> suspended", f2.status === 200 && f2.data.passed === false && f2.data.state === "suspended", JSON.stringify(f2.data));
+  await sleep(CHALLENGE_COOLDOWN_S * 1000 + 1500);
+  check("node C: suspended -> nothing at all, even after the cooldown time (204)", (await nodeCall(nodeC, "/nodes/poll")).status === 204);
+  const noAuth = await api("POST", "/admin/challenges", { nodeKey: nodeC.address, action: "reissue" });
+  check("challenge admin without the token -> 401", noAuth.status === 401 && noAuth.data.error === "unauthorized");
+  const adminHdr = { authorization: `Bearer ${ADMIN_TOKEN}` };
+  const re = await api("POST", "/admin/challenges", { nodeKey: nodeC.address, action: "reissue", note: "e2e re-qualify" }, adminHdr);
+  check("admin re-issue: suspended -> pending-challenge", re.status === 200 && re.data.before.state === "suspended" && re.data.after.state === "pending-challenge", JSON.stringify(re.data));
+  const c3 = await nodeCall(nodeC, "/nodes/poll");
+  check("node C: re-issued challenge handed out", c3.status === 200 && c3.data.type === "challenge");
+  const p3 = await answerChallenge(nodeC, c3.data, devText(c3.data.spec.params).text, chainId);
+  check("node C: correct answer -> passed, eligible", p3.status === 200 && p3.data.passed === true && p3.data.state === "eligible", JSON.stringify(p3.data));
+  const report = await api("GET", `/admin/challenges?nodeKey=${nodeC.address}`, undefined, adminHdr);
+  check(
+    "admin report: 3 challenges (failed, failed, passed), one audit row, job-eligible",
+    report.status === 200 &&
+      report.data.challenges.map((c) => c.status).join(",") === "passed,failed,failed" &&
+      report.data.log.length === 1 &&
+      report.data.log[0].action === "reissue" &&
+      report.data.jobEligible === true,
+    JSON.stringify({ c: report.data.challenges?.map((c) => c.status), log: report.data.log?.length }),
+  );
+  const jobsNow = (await api("GET", "/jobs?limit=50")).data.jobs;
+  check("challenges never show up as jobs", jobsNow.length === 0 && [c1, c2, c3].every((c) => !JSON.stringify(jobsNow).includes(c.data.challengeId)));
+
+  // D: an old 0.2.0-style registration (no device, no features): accepted as before, never challenged.
+  const nodeD = fresh();
+  const regD = await registerManual(nodeD, fresh(), { gpu: "dev-runner (no GPU, cuda)", dev: true, version: "sparecycle-node/0.2.0" });
+  check("node D (0.2.0 body) registers unchanged, no challenge state", regD.status === 200 && regD.data.challenge?.feature === false && regD.data.challenge?.state === null);
+  check("node D: never gets a challenge (204)", (await nodeCall(nodeD, "/nodes/poll")).status === 204);
+
+  // E: a software rasterizer is refused; F: an untested family registers but is marked untested.
+  const regE = await registerManual(fresh(), fresh(), {
+    gpu: "llvmpipe (LLVM 15.0.7, 256 bits) (Vulkan)",
+    backend: "vulkan",
+    version: "sparecycle-node/0.3.0",
+    device: { vendor: "software", vulkan: { deviceType: "PHYSICAL_DEVICE_TYPE_CPU", deviceName: "llvmpipe (LLVM 15.0.7, 256 bits)" } },
+  });
+  check("software rasterizer -> 403 gpu-not-supported with the support link", regE.status === 403 && regE.data.error === "gpu-not-supported" && /^https:\/\//.test(regE.data.supported ?? ""), JSON.stringify(regE.data));
+  const nodeF = fresh();
+  const regF = await registerManual(nodeF, fresh(), { gpu: "NVIDIA GeForce RTX 2080", version: "sparecycle-node/0.2.0" });
+  check("RTX 2080 (Turing, not benched) registers as untested", regF.status === 200 && regF.data.gpu?.status === "untested" && regF.data.gpu?.family === "nvidia-rtx20-turing", JSON.stringify(regF.data?.gpu));
+  const listed = (await api("GET", "/nodes")).data.nodes;
+  check(
+    "node list shows family / gpuStatus / challengeState",
+    listed.find((x) => x.nodeKey === nodeC.address)?.challengeState === "eligible" && listed.find((x) => x.nodeKey === nodeF.address)?.gpuStatus === "untested",
+  );
+
   step("9. submit 2 image + 1 text jobs and wait for agreement");
   const specs = [
     { kind: "image", params: { model: "sd15", prompt: "a lighthouse at dusk, oil painting", width: 256, height: 256, steps: 10 } },
@@ -486,11 +624,14 @@ async function main() {
     { kind: "text", params: { model: "qwen2.5-1.5b", prompt: "Explain an epoch in one sentence.", system: "Be brief.", maxTokens: 64 } },
   ];
   const jobIds = [];
+  const secrets = {}; // job id -> read secret (never printed)
   for (const s of specs) {
     const r = await api("POST", "/jobs", s);
     check(`POST /jobs ${s.kind}`, r.status === 201 && r.data.status === "queued", r.data.id ?? JSON.stringify(r.data));
     jobIds.push(r.data.id);
+    secrets[r.data.id] = r.data.readSecret;
   }
+  check("every job gets a read secret", jobIds.every((id) => /^[A-Za-z0-9_-]{43}$/.test(secrets[id] ?? "")));
   const bad = await api("POST", "/jobs", { kind: "image", params: { model: "sdxl", prompt: "x", width: 256, height: 256, steps: 10 } });
   check("non-MVP model rejected", bad.status === 400 && bad.data.error === "invalid-job");
   await waitFor("all jobs agreed", async () => {
@@ -502,12 +643,17 @@ async function main() {
   const list = (await api("GET", "/jobs?limit=20")).data.jobs;
   check("3 jobs agreed in epoch 0, eligible, not yet paid", list.filter((j) => jobIds.includes(j.id)).every((j) => j.epochId === 0 && j.eligible && !j.paid));
   check("job list never carries prompts", !JSON.stringify(list).includes("lighthouse"));
-  const img = await api("GET", `/jobs/${jobIds[0]}/output`);
-  check("image output is a PNG", img.status === 200 && img.type === "image/png" && img.data.subarray(1, 4).toString() === "PNG");
-  const txt = await api("GET", `/jobs/${jobIds[2]}/output`);
-  check("text output served", txt.status === 200 && txt.type.startsWith("text/plain") && txt.data.toString().length > 0);
+  const bearer = (id) => ({ authorization: `Bearer ${secrets[id]}` });
+  const img = await api("GET", `/jobs/${jobIds[0]}/result`, undefined, bearer(jobIds[0]));
+  check("image result is a PNG, private, no-store", img.status === 200 && img.type === "image/png" && img.data.subarray(1, 4).toString() === "PNG" && isPrivate(img));
+  const txt = await api("GET", `/jobs/${jobIds[2]}/result`, undefined, bearer(jobIds[2]));
+  check("text result served", txt.status === 200 && txt.type.startsWith("text/plain") && txt.data.toString().length > 0);
+  const oldOff = await api("GET", `/jobs/${jobIds[0]}/output`);
+  check("OUTPUT_AUTH=off: old /output still serves, never public/immutable again", oldOff.status === 200 && isPrivate(oldOff) && !/public|immutable/.test(oldOff.headers.get("cache-control")));
+  const anonOff = await api("GET", `/jobs/${jobIds[0]}/result`);
+  check("OUTPUT_AUTH=off: /result serves without credentials", anonOff.status === 200 && isPrivate(anonOff));
   const detail = await api("GET", `/jobs/${jobIds[1]}`);
-  check("job detail: seed kept, output url, no prompt", detail.data.params.seed === 42 && detail.data.output?.endsWith("/output") && !JSON.stringify(detail.data).includes("bicycle"));
+  check("job detail: seed kept, result url, outputAvailable, no prompt, private", detail.data.params.seed === 42 && detail.data.output?.endsWith("/result") && detail.data.outputAvailable === true && !JSON.stringify(detail.data).includes("bicycle") && isPrivate(detail));
 
   step("9b. paid job: deposit, signed payment, held balance");
   const { jobPaymentsAbi } = await srcImport("contracts/jobPayments.ts");
@@ -530,7 +676,8 @@ async function main() {
   });
   const payment = await signPayment(customer, paidReq, paidPrice);
   const paid = await api("POST", "/jobs", { request: paidReq, payment });
-  check("paid job accepted with the quoted price", paid.status === 201 && paid.data.priceWei === paidPrice.toString(), JSON.stringify(paid.data));
+  check("paid job accepted with the quoted price", paid.status === 201 && paid.data.priceWei === paidPrice.toString(), paid.data.id ?? paid.data.error);
+  secrets[paid.data.id] = paid.data.readSecret;
   const replay = await api("POST", "/jobs", { request: paidReq, payment });
   check("same payment signature twice -> 409 payment-used", replay.status === 409 && replay.data.error === "payment-used", replay.data.error);
   const wrongPrice = await api("POST", "/jobs", { request: paidReq, payment: await signPayment(customer, paidReq, paidPrice - 1n) });
@@ -635,13 +782,13 @@ async function main() {
   await waitFor("4th job agreed", async () => (await api("GET", `/jobs/${fourth.data.id}`)).data.status === "agreed", { timeoutMs: 60_000 });
   check("4th job agreed in epoch 1", (await api("GET", `/jobs/${fourth.data.id}`)).data.epochId === 1);
 
-  step("14. restart on the same DB with SCHEDULER_AUTOCLOSE=1");
+  step("14. restart on the same DB with SCHEDULER_AUTOCLOSE=1 and OUTPUT_AUTH=enforce");
   await write(admin, "fund", [], parseEther("0.1"));
   const pot1 = (await read("getEpoch", [1n])).pot;
   check("epoch 1 pot = 1 wei rollover + 0.1 ETH", pot1 === e0.pot - e0.reserved + parseEther("0.1"), `${pot1}`);
   killTree(nextProc);
   await waitFor("next stopped", async () => !(await portBusy(NEXT_PORT)), { timeoutMs: 30_000 });
-  nextProc = await startNext("next-restart", { SCHEDULER_AUTOCLOSE: "1" });
+  nextProc = await startNext("next-restart", { SCHEDULER_AUTOCLOSE: "1", OUTPUT_AUTH: "enforce" });
   const afterRestart = (await api("GET", "/epochs")).data.epochs;
   check("state survived the restart (epoch 0 posted, epoch 1 open)", afterRestart.find((e) => e.id === 0)?.status === "posted" && afterRestart.find((e) => e.id === 1)?.status === "open");
   check("jobs survived the restart", (await api("GET", "/jobs?limit=20")).data.jobs.filter((j) => j.status === "agreed").length === 5); // 3 + 1 free from the rate-limit step + 1 paid
@@ -675,7 +822,98 @@ async function main() {
     const text = readFileSync(join(RUN_DIR, `${n.name}.log`), "utf8");
     check(`${n.name}: no rejected requests (replay / signature / dev-runner)`, !/replayed-request|bad-signature|stale-request|bad-receipt|dev-runner-not-accepted|failed:/.test(text));
     check(`${n.name}: log shows the dev-runner banner`, text.includes("DEV RUNNER") && text.includes("NEVER paid"));
+    check(`${n.name}: log shows a passed GPU challenge`, /GPU challenge \S+ \((image|text)\) done in .* -> passed \(eligible\)/.test(text));
   }
+
+  step("17. private outputs (OUTPUT_AUTH=enforce; nodes stopped so a new job stays queued)");
+  for (const n of children.filter((c) => c.name.startsWith("node-"))) killTree(n.child);
+  check("status reports outputAuth = enforce", (await api("GET", "/status")).data.outputAuth === "enforce");
+  const [freeImg, , freeTxt] = jobIds;
+  const paidId = paid.data.id;
+  const anon = await api("GET", `/jobs/${freeImg}/result`);
+  check("anonymous -> 401, empty body, private, no-store", anon.status === 401 && anon.data.length === 0 && isPrivate(anon));
+  const anonHead = await api("HEAD", `/jobs/${freeImg}/result`);
+  check("anonymous HEAD -> 401, no-store", anonHead.status === 401 && isPrivate(anonHead));
+  const oldGet = await api("GET", `/jobs/${freeImg}/output`);
+  const oldHead = await api("HEAD", `/jobs/${freeImg}/output`);
+  check("old /output -> 410, private, no-store (GET and HEAD, even with the secret)", oldGet.status === 410 && oldHead.status === 410 && isPrivate(oldGet) && isPrivate(oldHead) && (await api("GET", `/jobs/${freeImg}/output`, undefined, bearer(freeImg))).status === 410);
+  const own = await api("GET", `/jobs/${freeImg}/result`, undefined, bearer(freeImg));
+  check("free job, its read secret -> 200 PNG, private, no-store", own.status === 200 && own.type === "image/png" && isPrivate(own));
+  const other = await api("GET", `/jobs/${freeImg}/result`, undefined, bearer(freeTxt));
+  check("another job's secret -> 403", other.status === 403 && other.data.error === "forbidden" && isPrivate(other));
+  const unknown = await api("GET", `/jobs/0x${"ab".repeat(32)}/result`, undefined, bearer(freeImg));
+  check("unknown id -> 404", unknown.status === 404 && isPrivate(unknown));
+  // A paid job (the free hourly limit is used up): with the nodes stopped it stays queued.
+  const queuedReq = { ...paidReq, params: { ...paidReq.params, prompt: "a paid lighthouse that stays queued" } };
+  const pending = await api("POST", "/jobs", { request: queuedReq, payment: await signPayment(customer, queuedReq, paidPrice) });
+  check("a new paid job is accepted and stays queued", pending.status === 201 && pending.data.status === "queued", pending.data.error ?? "");
+  const notYet = await api("GET", `/jobs/${pending.data.id}/result`, undefined, { authorization: `Bearer ${pending.data.readSecret}` });
+  check("not agreed -> 409 no-output", notYet.status === 409 && notYet.data.error === "no-output" && isPrivate(notYet));
+  const dAnon = await api("GET", `/jobs/${freeImg}`);
+  const dOwn = await api("GET", `/jobs/${freeImg}`, undefined, bearer(freeImg));
+  check("job detail: no output url for a stranger, the result url for the secret, outputAvailable for both", dAnon.data.output === null && dAnon.data.outputAvailable === true && dOwn.data.output?.endsWith(`/jobs/${freeImg}/result`) && isPrivate(dAnon));
+  const nodeKeyFile = JSON.parse(readFileSync(nodes[0].keyFile, "utf8"));
+  const { signRequest } = await srcImport("lib/protocol.ts");
+  const nodeHeaders = await signRequest(privateKeyToAccount(nodeKeyFile.privateKey), "GET", `/api/v1/jobs/${freeImg}/result`, "");
+  check("a node's signed request is not a credential -> 401", (await api("GET", `/jobs/${freeImg}/result`, undefined, nodeHeaders)).status === 401);
+
+  // Wallet sign-in (EIP-4361) through the real routes; the session cookie is carried by hand.
+  const signInAs = async (address, signer, { reuse } = {}) => {
+    const n = reuse ? null : await api("GET", "/auth/nonce");
+    const message =
+      reuse?.message ??
+      createSiweMessage({
+        address,
+        chainId: n.data.chainId,
+        domain: new URL(SITE).host,
+        uri: `${SITE}/playground`,
+        nonce: n.data.nonce,
+        version: "1",
+        statement: n.data.statement,
+        issuedAt: new Date(),
+        expirationTime: new Date(n.data.expiresAt * 1000),
+      });
+    const signature = reuse?.signature ?? (await signer.signMessage({ message }));
+    const r = await api("POST", "/auth/verify", { message, signature });
+    const cookie = /^sc_session=([^;]+)/.exec(r.headers.get("set-cookie") ?? "")?.[1];
+    return { r, message, signature, setCookie: r.headers.get("set-cookie") ?? "", headers: cookie ? { cookie: `sc_session=${cookie}` } : {} };
+  };
+  const payerIn = await signInAs(customer.address, customer);
+  check("payer signs in: 200, HttpOnly SameSite=Strict cookie, private", payerIn.r.status === 200 && /HttpOnly/.test(payerIn.setCookie) && /SameSite=Strict/.test(payerIn.setCookie) && isPrivate(payerIn.r));
+  const paidOwn = await api("GET", `/jobs/${paidId}/result`, undefined, payerIn.headers);
+  check("payer session -> 200 PNG, private, no-store", paidOwn.status === 200 && paidOwn.type === "image/png" && isPrivate(paidOwn));
+  check("paid job: its read secret also reads it", (await api("GET", `/jobs/${paidId}/result`, undefined, bearer(paidId))).status === 200);
+  check("payer session can't read a free job -> 403", (await api("GET", `/jobs/${freeImg}/result`, undefined, payerIn.headers)).status === 403);
+  const replayIn = await signInAs(customer.address, customer, { reuse: payerIn });
+  check("nonce reuse -> 401 bad-nonce", replayIn.r.status === 401 && replayIn.r.data.error === "bad-nonce");
+  const strangerIn = await signInAs(ownerA.address, ownerA);
+  check("another wallet's session -> 403 on the paid job", strangerIn.r.status === 200 && (await api("GET", `/jobs/${paidId}/result`, undefined, strangerIn.headers)).status === 403);
+
+  // ERC-1271: a contract wallet owned by ownerB signs in through the chain (anvil).
+  const authDir = join(RUN_DIR, "auth-mocks");
+  mkdirSync(join(authDir, "src"), { recursive: true });
+  writeFileSync(join(authDir, "src", "AuthMocks.sol"), AUTH_MOCKS_SOL);
+  const ab = spawnSync(FORGE, ["build", "--root", authDir], { cwd: authDir, encoding: "utf8" });
+  check("ERC-1271 wallet mock compiled", ab.status === 0, (ab.stderr || "").trim().split("\n").slice(-1)[0]);
+  const walletArt = artifact(join(authDir, "out"), "AuthMocks.sol", "Mock1271Wallet");
+  const scw = await deploy(walletArt, [ownerB.address]);
+  const scwIn = await signInAs(scw, ownerB);
+  check("ERC-1271 smart wallet signs in (owner's signature checked on-chain)", scwIn.r.status === 200 && scwIn.r.data.address?.toLowerCase() === scw.toLowerCase(), scw);
+  const scwForged = await signInAs(scw, ownerA);
+  check("ERC-1271: a signature from a non-owner -> 401 bad-signature", scwForged.r.status === 401 && scwForged.r.data.error === "bad-signature");
+  // Test-only: make the smart wallet the payer of the text job (a paid submit needs an EOA signature today).
+  const { DatabaseSync } = await import("node:sqlite");
+  const sdb = new DatabaseSync(dbPath);
+  sdb.exec("PRAGMA busy_timeout = 5000");
+  sdb.prepare("UPDATE jobs SET payer = ? WHERE id = ?").run(scw, freeTxt);
+  sdb.close();
+  const scwRead = await api("GET", `/jobs/${freeTxt}/result`, undefined, scwIn.headers);
+  check("ERC-1271 wallet session reads the job it paid -> 200", scwRead.status === 200 && scwRead.type.startsWith("text/plain"));
+  const out = await api("POST", "/auth/logout", undefined, payerIn.headers);
+  check("logout clears the cookie; the old session -> 401", out.status === 200 && /Max-Age=0/.test(out.headers.get("set-cookie") ?? "") && (await api("GET", `/jobs/${paidId}/result`, undefined, payerIn.headers)).status === 401);
+
+  const leaky = jobsCacheHeaders.filter((h) => /public|immutable/i.test(h.cc));
+  check(`no /api/v1/jobs/* response carried a public cache directive (${jobsCacheHeaders.length} responses)`, leaky.length === 0, leaky.map((h) => `${h.method} ${h.path} ${h.cc}`).join(", "));
 }
 
 let failed = null;

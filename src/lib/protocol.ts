@@ -357,3 +357,81 @@ export async function recoverReceiptSigner(chainId: number, r: Receipt, signatur
 /** JSON with bigint support (bigints become decimal strings). */
 export const toJson = (v: unknown, space?: number) =>
   JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x), space);
+
+// ---- GPU challenge (periodic re-check of a node against published reference fingerprints) -------------
+/**
+ * Node features, sent at registration in `features` (NOT in `caps`: schedulers before the GPU allowlist validate
+ * `caps` strictly and would reject an unknown tag, so a newer node still registers with an older scheduler).
+ * "challenge-1": the node runs challenge tasks handed out through the poll. A node without it never gets one.
+ */
+export const CHALLENGE_FEATURE = "challenge-1";
+export const NODE_FEATURES: readonly string[] = [CHALLENGE_FEATURE];
+
+/**
+ * Structured device info a node reports at registration (node client 0.3.0+), next to the free-text `gpu` name.
+ * Self-reported, so the scheduler uses it to classify the device, never as proof of the hardware.
+ */
+export type DeviceInfo = {
+  /** nvidia | amd | intel | software | other */
+  vendor?: string;
+  /** CUDA compute capability from nvidia-smi, e.g. "8.6". */
+  computeCap?: string;
+  /** NVIDIA driver version from nvidia-smi. */
+  driver?: string;
+  /** The Vulkan device the node uses, from `vulkaninfo --summary`. */
+  vulkan?: {
+    vendorId?: string;
+    deviceId?: string;
+    deviceType?: string;
+    deviceName?: string;
+    driverName?: string;
+    driverInfo?: string;
+    apiVersion?: string;
+  };
+  /** CPU model (cpu backend). */
+  cpu?: string;
+};
+
+/**
+ * A challenge handed out by the poll instead of a job (only to nodes that advertise CHALLENGE_FEATURE): one fixed
+ * case of the published bench suite. Unpaid, never charged, never a job, never in a payout tree.
+ */
+export type ChallengeAssignment = {
+  type: "challenge";
+  challengeId: Hex;
+  suite: number;
+  caseId: string;
+  spec: JobSpec;
+  chainId: number;
+  leaseExpiresAt: number;
+};
+
+/** A node's signed challenge answer. A separate EIP-712 type, so it can never be mistaken for a job receipt. */
+export type ChallengeReceipt = { challengeId: Hex; node: Address; outputHash: Hex; gpuMs: bigint };
+
+export const CHALLENGE_TYPES = {
+  ChallengeResult: [
+    { name: "challengeId", type: "bytes32" },
+    { name: "node", type: "address" },
+    { name: "outputHash", type: "bytes32" },
+    { name: "gpuMs", type: "uint64" },
+  ],
+} as const;
+
+export const signChallengeResult = (account: LocalAccount, chainId: number, r: ChallengeReceipt) =>
+  account.signTypedData({ domain: receiptDomain(chainId), types: CHALLENGE_TYPES, primaryType: "ChallengeResult", message: r });
+
+/** Address that signed a challenge answer, or null if the signature is malformed. */
+export async function recoverChallengeSigner(chainId: number, r: ChallengeReceipt, signature: Hex): Promise<Address | null> {
+  try {
+    return await recoverTypedDataAddress({
+      domain: receiptDomain(chainId),
+      types: CHALLENGE_TYPES,
+      primaryType: "ChallengeResult",
+      message: r,
+      signature,
+    });
+  } catch {
+    return null;
+  }
+}

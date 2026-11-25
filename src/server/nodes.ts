@@ -7,12 +7,16 @@
 //   - the node needs the model's capability tag, enough VRAM and a backend that runs the model (SD 1.5 = CUDA only);
 //   - the first task of a job is handed out only if a compatible peer (same backend, other owner, other GPU,
 //     capable, online) exists to take the second one, so a lone node can't strand a job;
-//   - a lease expires after POLICY.taskLeaseSeconds and the task goes back to the queue.
+//   - a lease expires after POLICY.taskLeaseSeconds and the task goes back to the queue;
+//   - only nodes that pass the GPU gate get job tasks, and the peer check counts only such peers: the allowlist
+//     (GPU_ALLOWLIST_MODE, src/server/gpu-allowlist.ts) and the periodic challenge (CHALLENGE_MODE,
+//     src/server/challenge.ts). A due challenge is handed out before any new job task.
 import { getAddress, isAddress, verifyMessage, type Address, type Hex } from "viem";
 import { publicClient, targetChain } from "@/lib/chain";
 import {
   BACKENDS,
   CAPABILITY_TAGS,
+  CHALLENGE_FEATURE,
   capabilityTagsFor,
   isBackend,
   linkMessage,
@@ -20,7 +24,9 @@ import {
   MODEL_IDS,
   modelRunsOn,
   type Backend,
+  type ChallengeAssignment,
   type JobSpec,
+  type JobStatus,
   type ModelId,
 } from "@/lib/protocol";
 import { getDb, nowSec, tx } from "./db";
@@ -28,8 +34,10 @@ import { POLICY, serverEnv } from "./env";
 import { ApiError } from "./http";
 import { ensureEpoch } from "./epochs";
 import { expireStaleJobs } from "./jobs";
+import { challengeable, eligibilityParams, eligibleSql, jobEligible, nextChallenge, type ChallengeState } from "./challenge";
+import { classifyDevice, GPU_SUPPORT_URL, gpuStatusOf, sanitizeDeviceInfo, type GpuStatus } from "./gpu-allowlist";
 
-type NodeRow = {
+export type NodeRow = {
   node_key: Address;
   owner: Address;
   gpu: string;
@@ -40,6 +48,15 @@ type NodeRow = {
   backend: Backend;
   last_seen: number;
   agreed_jobs: number;
+  family: string | null;
+  gpu_status: GpuStatus | null;
+  device_info: string | null;
+  challenge_cap: number;
+  challenge_state: ChallengeState | null;
+  challenge_fails: number;
+  challenge_due_at: number | null;
+  cooldown_until: number | null;
+  allow_until: number | null;
 };
 
 type Obj = Record<string, unknown>;
@@ -104,26 +121,86 @@ export async function registerNode(nodeKey: Address, body: unknown) {
   if (dev && !serverEnv.allowDevRunner()) {
     throw new ApiError(403, "dev-runner-not-accepted", "this scheduler does not accept dev-runner nodes (no GPU, synthetic outputs)");
   }
+  // Optional fields of node client 0.3.0+ (older bodies have neither and register exactly as before).
+  const device = sanitizeDeviceInfo(b.device);
+  const challengeCap = Array.isArray(b.features) && b.features.includes(CHALLENGE_FEATURE) ? 1 : 0;
+  const cls = classifyDevice({ backend, gpu, device, dev });
+  const allowlistMode = serverEnv.gpuAllowlistMode();
+  console.log(
+    `[sparecycle] gpu-allowlist ${allowlistMode}: node ${nodeKey} ${JSON.stringify(gpu)} ${backend}${device?.computeCap ? ` cc${device.computeCap}` : ""} -> ${cls.family} (${cls.status}, rule ${cls.rule})`,
+  );
+  if (cls.status === "blocked" && allowlistMode === "enforce") {
+    throw new ApiError(403, "gpu-not-supported", `this device (${cls.family}) is not supported by the Sparecycle network`, {
+      supported: GPU_SUPPORT_URL,
+      family: cls.family,
+    });
+  }
+  const gpuStatus = gpuStatusOf(cls.status);
   if (!(await ownerSigValid(nodeKey, owner, b.ownerSig as Hex))) {
     throw new ApiError(401, "bad-owner-signature", `ownerSig must be the owner's signature of: ${linkMessage(nodeKey, owner)}`);
   }
   const version = typeof b.version === "string" ? b.version.slice(0, 32) : null;
   const now = nowSec();
-  tx((db) => {
+  const challenge = challengeable({ challenge_cap: challengeCap, backend, caps: JSON.stringify(caps), vram_mb: vramMb, dev: dev ? 1 : 0 });
+  const state = tx((db) => {
     const clash = db
       .prepare("SELECT owner FROM nodes WHERE gpu_uuid = ? AND owner != ? AND node_key != ? LIMIT 1")
       .get(gpuUuid, owner, nodeKey) as { owner: string } | undefined;
     if (clash) throw new ApiError(409, "gpu-linked-to-other-wallet", "this GPU is already registered to a different owner wallet");
+    // A new node key on a GPU whose other node key is suspended starts suspended too.
+    const suspendedTwin = db
+      .prepare("SELECT 1 AS x FROM nodes WHERE gpu_uuid = ? AND node_key != ? AND challenge_state = 'suspended' LIMIT 1")
+      .get(gpuUuid, nodeKey);
+    const initialState: ChallengeState | null = suspendedTwin ? "suspended" : challenge ? "pending-challenge" : null;
+    // Re-registering never clears a challenge state (a cooldown or suspension sticks to the node key).
     db.prepare(
-      `INSERT INTO nodes (node_key, owner, owner_sig, gpu, gpu_uuid, vram_mb, caps, dev, backend, version, registered_at, last_seen)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO nodes (node_key, owner, owner_sig, gpu, gpu_uuid, vram_mb, caps, dev, backend, version, registered_at, last_seen,
+         family, gpu_status, device_info, challenge_cap, challenge_state, challenge_due_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(node_key) DO UPDATE SET owner = excluded.owner, owner_sig = excluded.owner_sig, gpu = excluded.gpu,
          gpu_uuid = excluded.gpu_uuid, vram_mb = excluded.vram_mb, caps = excluded.caps, dev = excluded.dev,
-         backend = excluded.backend, version = excluded.version, last_seen = excluded.last_seen`,
-    ).run(nodeKey, owner, b.ownerSig as string, gpu, gpuUuid, vramMb, JSON.stringify(caps), dev ? 1 : 0, backend, version, now, now);
+         backend = excluded.backend, version = excluded.version, last_seen = excluded.last_seen,
+         family = excluded.family, gpu_status = excluded.gpu_status, device_info = excluded.device_info,
+         challenge_cap = excluded.challenge_cap,
+         challenge_due_at = CASE WHEN nodes.challenge_state IS NULL THEN excluded.challenge_due_at ELSE nodes.challenge_due_at END,
+         challenge_state = COALESCE(nodes.challenge_state, excluded.challenge_state)`,
+    ).run(
+      nodeKey,
+      owner,
+      b.ownerSig as string,
+      gpu,
+      gpuUuid,
+      vramMb,
+      JSON.stringify(caps),
+      dev ? 1 : 0,
+      backend,
+      version,
+      now,
+      now,
+      cls.family,
+      gpuStatus,
+      device ? JSON.stringify(device) : null,
+      challengeCap,
+      initialState,
+      initialState ? now : null,
+    );
+    const row = db.prepare("SELECT challenge_state FROM nodes WHERE node_key = ?").get(nodeKey) as { challenge_state: ChallengeState | null };
+    return row.challenge_state;
   });
   const epoch = await ensureEpoch().catch(() => null);
-  return { ok: true, nodeKey, owner, caps, dev, backend, chainId: targetChain.id, epoch: epoch?.id ?? null };
+  return {
+    ok: true,
+    nodeKey,
+    owner,
+    caps,
+    dev,
+    backend,
+    chainId: targetChain.id,
+    epoch: epoch?.id ?? null,
+    // Additive fields (older nodes ignore them).
+    gpu: { family: cls.family, status: gpuStatus, allowlistMode, supported: GPU_SUPPORT_URL },
+    challenge: { mode: serverEnv.challengeMode(), feature: challengeCap === 1, challengeable: challenge, state },
+  };
 }
 
 function getNode(nodeKey: Address): NodeRow {
@@ -137,27 +214,37 @@ export type Assignment = { taskId: string; jobId: string; epoch: number; spec: J
 /** SQL CASE giving each model's VRAM need (for the peer check). Built from MODELS, no user input. */
 const VRAM_CASE = `CASE j.model ${MODEL_IDS.map((m) => `WHEN '${m}' THEN ${MODELS[m].vramMb}`).join(" ")} ELSE 1000000000 END`;
 
-/** One assignment attempt (synchronous, in a transaction). */
-function tryLease(node: NodeRow, epochId: number): Assignment | null {
+/**
+ * Job statuses whose spec a node may receive. The SQL below already filters on them; this second check makes sure a
+ * settled job (agreed | disagreed | expired | rejected) is never handed to a node, whatever the query returns.
+ */
+const SERVABLE: readonly JobStatus[] = ["queued", "running", "checking"];
+
+/** A live job lease this node already holds (e.g. it restarted): hand the same task back. */
+function heldLease(node: NodeRow): Assignment | null {
+  const now = nowSec();
+  const held = getDb()
+    .prepare(
+      `SELECT t.id, t.job_id, t.epoch, t.lease_expires, j.spec, j.status FROM tasks t JOIN jobs j ON j.id = t.job_id
+       WHERE t.node_key = ? AND t.status = 'leased' AND t.lease_expires >= ? AND j.status IN ('running','checking') LIMIT 1`,
+    )
+    .get(node.node_key, now) as { id: string; job_id: string; epoch: number; lease_expires: number; spec: string; status: JobStatus } | undefined;
+  if (!held || !SERVABLE.includes(held.status)) return null;
+  return {
+    taskId: held.id,
+    jobId: held.job_id,
+    epoch: held.epoch,
+    spec: JSON.parse(held.spec) as JobSpec,
+    chainId: targetChain.id,
+    leaseExpiresAt: held.lease_expires,
+  };
+}
+
+/** One job assignment attempt (synchronous, in a transaction). Only for nodes that pass the GPU gate. */
+export function tryLease(node: NodeRow, epochId: number): Assignment | null {
   return tx((db) => {
     const now = nowSec();
-    // Already holding a live lease (e.g. the node restarted): hand the same task back.
-    const held = db
-      .prepare(
-        `SELECT t.id, t.job_id, t.epoch, t.lease_expires, j.spec FROM tasks t JOIN jobs j ON j.id = t.job_id
-         WHERE t.node_key = ? AND t.status = 'leased' AND t.lease_expires >= ? AND j.status IN ('running','checking') LIMIT 1`,
-      )
-      .get(node.node_key, now) as { id: string; job_id: string; epoch: number; lease_expires: number; spec: string } | undefined;
-    if (held) {
-      return {
-        taskId: held.id,
-        jobId: held.job_id,
-        epoch: held.epoch,
-        spec: JSON.parse(held.spec) as JobSpec,
-        chainId: targetChain.id,
-        leaseExpiresAt: held.lease_expires,
-      };
-    }
+    if (!jobEligible(node.node_key, now)) return null;
     const caps = JSON.parse(node.caps) as string[];
     const backend: Backend = isBackend(node.backend) ? node.backend : "cuda";
     const models = MODEL_IDS.filter(
@@ -173,11 +260,12 @@ function tryLease(node: NodeRow, epochId: number): Assignment | null {
       backend,
       dev: node.dev ? 1 : 0,
       allowDev: serverEnv.allowDevRunner() ? 1 : 0,
+      ...eligibilityParams(),
     };
     models.forEach((m, i) => (params[`m${i}`] = m));
     const cand = db
       .prepare(
-        `SELECT t.id, t.job_id, j.spec FROM tasks t JOIN jobs j ON j.id = t.job_id
+        `SELECT t.id, t.job_id, j.spec, j.status FROM tasks t JOIN jobs j ON j.id = t.job_id
          WHERE j.status IN ('queued','running','checking')
            AND j.model IN (${models.map((_, i) => `$m${i}`).join(",")})
            AND (t.status = 'open' OR (t.status = 'leased' AND t.lease_expires < $now))
@@ -195,13 +283,14 @@ function tryLease(node: NodeRow, epochId: number): Assignment | null {
                        WHERE p.backend = $backend AND p.dev = $dev AND (p.dev = 0 OR $allowDev = 1)
                          AND p.node_key != $node AND p.owner != $owner AND p.gpu_uuid != $gpu
                          AND p.last_seen >= $online
+                         AND ${eligibleSql("p")}
                          AND p.caps LIKE '%"' || j.kind || ':' || j.model || '"%'
                          AND p.vram_mb >= ${VRAM_CASE})
            )
          ORDER BY j.created_at ASC, t.slot ASC LIMIT 1`,
       )
-      .get(params) as { id: string; job_id: string; spec: string } | undefined;
-    if (!cand) return null;
+      .get(params) as { id: string; job_id: string; spec: string; status: JobStatus } | undefined;
+    if (!cand || !SERVABLE.includes(cand.status)) return null;
     const expires = now + POLICY.taskLeaseSeconds;
     db.prepare(
       `UPDATE tasks SET status = 'leased', node_key = ?, owner = ?, gpu_uuid = ?, backend = ?, dev = ?, epoch = ?, leased_at = ?,
@@ -219,19 +308,32 @@ function tryLease(node: NodeRow, epochId: number): Assignment | null {
   });
 }
 
-/** POST /api/v1/nodes/poll — waits up to POLICY.pollWaitMs for work; null = nothing (204). */
-export async function pollForTask(nodeKey: Address, signal?: AbortSignal): Promise<Assignment | null> {
+/** Nodes registered before the allowlist existed are classified from their stored name at their first poll. */
+function classifyIfNeeded(node: NodeRow) {
+  if (node.gpu_status !== null) return;
+  const backend: Backend = isBackend(node.backend) ? node.backend : "cuda";
+  const device = node.device_info ? sanitizeDeviceInfo(JSON.parse(node.device_info)) : null;
+  const cls = classifyDevice({ backend, gpu: node.gpu, device, dev: node.dev === 1 });
+  node.family = cls.family;
+  node.gpu_status = gpuStatusOf(cls.status);
+  getDb().prepare("UPDATE nodes SET family = ?, gpu_status = ? WHERE node_key = ?").run(node.family, node.gpu_status, node.node_key);
+  console.log(`[sparecycle] gpu-allowlist: classified existing node ${node.node_key} ${JSON.stringify(node.gpu)} ${backend} -> ${cls.family} (${cls.status})`);
+}
+
+/** POST /api/v1/nodes/poll — waits up to POLICY.pollWaitMs for work (a held lease, a due challenge or a job). */
+export async function pollForTask(nodeKey: Address, signal?: AbortSignal): Promise<Assignment | ChallengeAssignment | null> {
   const node = getNode(nodeKey);
   if (node.dev && !serverEnv.allowDevRunner()) {
     throw new ApiError(403, "dev-runner-not-accepted", "this scheduler does not accept dev-runner nodes");
   }
   const touch = () => getDb().prepare("UPDATE nodes SET last_seen = ? WHERE node_key = ?").run(nowSec(), nodeKey);
   touch();
+  classifyIfNeeded(node);
   expireStaleJobs();
   const epoch = await ensureEpoch();
   const deadline = Date.now() + POLICY.pollWaitMs;
   for (;;) {
-    const a = tryLease(node, epoch.id);
+    const a = heldLease(node) ?? nextChallenge(node.node_key) ?? tryLease(node, epoch.id);
     if (a) return a;
     if (Date.now() >= deadline || signal?.aborted) break;
     await new Promise((r) => setTimeout(r, 400));
@@ -267,6 +369,11 @@ export function listNodes(epochId: number | null) {
       agreedJobs: r.agreed_jobs,
       epochAgreedJobs: r.epoch_agreed,
       dev: r.dev === 1,
+      /** GPU allowlist family and status (null = registered before the allowlist and not polled since). */
+      gpuFamily: r.family,
+      gpuStatus: r.gpu_status,
+      /** Periodic challenge state (null = the node does not take challenges). */
+      challengeState: r.challenge_state,
       /** Run by the project (bootstrap GPU pool): never paid. */
       project: project.has(r.owner.toLowerCase()),
       /** A project node that is paid, for the team's openly labelled payout test. */

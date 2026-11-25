@@ -6,6 +6,7 @@ import { Hex } from "@/components/ui/address";
 import { config, tickerLabel } from "@/lib/config";
 import { PONS, PONS_DOCS_URL } from "@/lib/pons";
 import { FUNDING, paidJobsLive } from "@/lib/funding-copy";
+import { serverEnv } from "@/server/env";
 
 export const metadata: Metadata = {
   title: "Disclosures",
@@ -13,7 +14,11 @@ export const metadata: Metadata = {
     "Not advice, not a yield product, fees-only funding, a centralized scheduler, an untested fee-recipient path and Pons v2 unaudited as of 20 November 2026.",
 };
 
+// What it says about job results follows the scheduler's OUTPUT_AUTH setting, read per request.
+export const dynamic = "force-dynamic";
+
 export default function DisclosuresPage() {
+  const privateResults = serverEnv.outputAuth() === "enforce";
   const ticker = config.ticker ? <span className="num text-text">{tickerLabel()}</span> : <Placeholder>[TICKER]</Placeholder>;
   const checked = config.factsCheckedOn;
   return (
@@ -103,7 +108,10 @@ export default function DisclosuresPage() {
       <LegalSection title="Job results and GPU software are not guaranteed">
         <p>
           Models can fail, disagree, or produce unusable output. Only jobs that pass the two-node check are eligible for
-          payment, and even those payments depend on the pot. Job prompts and agreed results are not private.
+          payment, and even those payments depend on the pot.{" "}
+          {privateResults
+            ? "An agreed result is visible only to the browser that created the job or the wallet that paid, but the two nodes that run a job see its prompt and result, and results made before results became private may already have been viewed or cached."
+            : "Job prompts and agreed results are not private."}
         </p>
       </LegalSection>
 

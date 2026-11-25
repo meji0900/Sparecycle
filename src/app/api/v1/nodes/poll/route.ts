@@ -5,7 +5,7 @@ import { pollForTask } from "@/server/nodes";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** POST /api/v1/nodes/poll (signed) — 204, or { taskId, jobId, epoch, spec } (long poll, a few seconds). */
+/** POST /api/v1/nodes/poll (signed) — 204, { taskId, jobId, epoch, spec }, or a challenge { type: "challenge", challengeId, spec } (only for nodes with the challenge feature). Long poll, a few seconds. */
 export const POST = handle(async (req: Request) => {
   const text = await readBody(req, POLICY.maxJobBodyBytes);
   const nodeKey = await verifyNodeRequest(req, text);

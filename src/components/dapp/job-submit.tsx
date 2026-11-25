@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Notice, StatusTag } from "@/components/ui/status";
 import { config } from "@/lib/config";
 import { apiDown, type ApiFailure, type JobDetail } from "@/lib/dapp/api";
+import { useJobOutput } from "@/lib/dapp/job-output";
 import { jobTag, lifecycleStage, modelLabel, TERMINAL } from "@/lib/dapp/jobs";
 import { chargeNote, formatEth, formatGwei, paymentTag, quoteJob, showPayment } from "@/lib/dapp/paid-jobs";
 import { useApiGet } from "@/lib/dapp/use-api";
@@ -14,8 +15,9 @@ import { LIMITS } from "@/lib/protocol";
 import { cn } from "@/lib/utils";
 import { accountFailureText, Eth } from "./job-balance";
 import { JobLifecycle } from "./job-lifecycle";
+import { OutputPrivacyNotice, outputLockText, SignInToView } from "./private-output";
 import { RadioCard, Row } from "./ui";
-import { nowMs, outputUrl, submitFailureText, useJobSubmit } from "./use-job-submit";
+import { nowMs, submitFailureText, useJobSubmit } from "./use-job-submit";
 import { WalletButton } from "./wallet-button";
 
 type Kind = "image" | "text";
@@ -50,7 +52,8 @@ const INITIAL: Form = {
   maxTokens: "256",
 };
 
-type Submitted = { id: string; kind: Kind; at: number };
+/** A job sent from this browser. `secret`: its read secret (returned once at submit), the key to its output. */
+type Submitted = { id: string; kind: Kind; at: number; secret?: string | null };
 type Pay = "free" | "paid";
 
 /** The job request as POST /api/v1/jobs takes it (a paid job sends this same object as `request`). */
@@ -154,7 +157,7 @@ export function JobSubmit({ rateLimit, side }: { rateLimit: number | null; side?
       setSignError(res.signError);
       return;
     }
-    const next = [{ id: res.id, kind: form.kind, at: nowMs() }, ...mine.filter((m) => m.id !== res.id)];
+    const next = [{ id: res.id, kind: form.kind, at: nowMs(), secret: res.readSecret }, ...mine.filter((m) => m.id !== res.id)];
     setMine(next);
     saveMine(next);
     // Keep the settings, clear only the prompt that was sent.
@@ -270,9 +273,14 @@ export function JobSubmit({ rateLimit, side }: { rateLimit: number | null; side?
             </div>
           </fieldset>
 
-          <Notice tone="warn" title="Prompts and results are not private.">
-            Anyone with the job id can view an agreed result. Do not submit personal or sensitive text.
-          </Notice>
+          <OutputPrivacyNotice
+            subject="result"
+            fallback={
+              <Notice tone="warn" title="Prompts and results are not private.">
+                Anyone with the job id can view an agreed result. Do not submit personal or sensitive text.
+              </Notice>
+            }
+          />
 
           {form.kind === "image" ? (
             <div className="space-y-5">
@@ -502,7 +510,7 @@ export function JobSubmit({ rateLimit, side }: { rateLimit: number | null; side?
         {mine.length ? (
           <div className="space-y-4">
             {mine.map((m) => (
-              <JobCard key={m.id} id={m.id} />
+              <JobCard key={m.id} id={m.id} secret={typeof m.secret === "string" ? m.secret : null} />
             ))}
           </div>
         ) : (
@@ -529,7 +537,7 @@ export function JobSubmit({ rateLimit, side }: { rateLimit: number | null; side?
   );
 }
 
-function JobCard({ id }: { id: string }) {
+function JobCard({ id, secret }: { id: string; secret: string | null }) {
   const [done, setDone] = useState(false);
   const q = useApiGet<JobDetail>(`/jobs/${id}`, done ? 30_000 : 3_000);
   const job = q.result?.ok ? q.result.data : null;
@@ -540,7 +548,7 @@ function JobCard({ id }: { id: string }) {
   const tag = job ? jobTag(job) : null;
   const pay = job && showPayment(job, !!config.jobPayments) ? paymentTag(job) : null;
   const failed = !!job && (job.status === "disagreed" || job.status === "expired" || job.status === "rejected");
-  const out = job?.output ? outputUrl(job.output) : null;
+  const hasOutput = job?.status === "agreed" && (job.outputAvailable ?? !!job.output);
 
   return (
     <article className="rounded-l border border-line">
@@ -591,8 +599,10 @@ function JobCard({ id }: { id: string }) {
               ) : null}
             </dl>
             {job.note ? <p className="text-xs text-muted">Scheduler note: {job.note}</p> : null}
-            {out && job.outputType ? <Output url={out} type={job.outputType} /> : null}
-            {job.status === "agreed" && !out ? <p className="text-sm text-muted">Agreed. The output is not stored.</p> : null}
+            {hasOutput && job.outputType ? (
+              <Output id={id} secret={secret} type={job.outputType} hasPayer={job.payment === "paid" || job.payment === "team"} />
+            ) : null}
+            {job.status === "agreed" && !hasOutput ? <p className="text-sm text-muted">Agreed. The output is not stored.</p> : null}
           </>
         ) : fail ? (
           <p className="text-sm text-muted">
@@ -606,20 +616,23 @@ function JobCard({ id }: { id: string }) {
   );
 }
 
-function Output({ url, type }: { url: string; type: string }) {
+/** The agreed output, fetched with this browser's read secret or the wallet session (see job-output.ts). */
+function Output({ id, secret, type, hasPayer }: { id: string; secret: string | null; type: string; hasPayer: boolean }) {
   const isImage = type.startsWith("image/");
-  const [text, setText] = useState<{ url: string; body: string | null } | null>(null);
-  useEffect(() => {
-    if (isImage) return;
-    const ctrl = new AbortController();
-    fetch(url, { signal: ctrl.signal })
-      .then((r) => (r.ok ? r.text() : null))
-      .then((body) => setText({ url, body }))
-      .catch(() => undefined);
-    return () => ctrl.abort();
-  }, [url, isImage]);
+  const out = useJobOutput(id, secret, { text: !isImage });
+  const lock = outputLockText(out.state, hasPayer);
+  if (lock) {
+    return (
+      <div className="rounded-m border border-line px-4 py-3 text-sm">
+        <p className="font-medium text-text">{lock.title}</p>
+        <p className="mt-1 text-muted">{lock.body}</p>
+        {hasPayer ? <SignInToView className="mt-3" /> : null}
+      </div>
+    );
+  }
+  const url = out.url;
 
-  if (isImage) {
+  if (isImage && url) {
     return (
       <figure className="space-y-2">
         {/* eslint-disable-next-line @next/next/no-img-element -- scheduler output, size known only at runtime */}
@@ -633,7 +646,10 @@ function Output({ url, type }: { url: string; type: string }) {
       </figure>
     );
   }
-  const body = text && text.url === url ? text.body : undefined;
+  if (isImage) {
+    return <p className="text-sm text-muted">{out.state === "loading" ? "Loading output…" : "Could not load the output."}</p>;
+  }
+  const body = out.state === "loading" ? undefined : out.state === "ready" ? out.text : null;
   return (
     <figure className="space-y-2">
       <pre className="max-h-[360px] overflow-auto rounded-m border border-line bg-graphite px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap text-text">

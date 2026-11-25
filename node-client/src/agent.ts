@@ -19,11 +19,13 @@ import { getAddress, isAddress, verifyMessage, type Address, type Hex, type Loca
 import {
   BACKENDS,
   capabilityTagsFor,
+  CHALLENGE_FEATURE,
   isBackend,
   linkMessage,
   MODELS,
   requestNonce,
   sha256Hex,
+  signChallengeResult,
   signReceipt,
   signRequest,
   validateSpec,
@@ -31,12 +33,14 @@ import {
   type JobSpec,
 } from "#protocol";
 import { DEFAULT_KEY_FILE, loadKey, loadOrCreateKey } from "#keys";
-import { gpuBusyOrHot, inHours, parseHours, probeDevice, sharedMemoryMb, type Gpu } from "#gpu";
+import { gpuBusyOrHot, inHours, parseHours, probeDevice, probeDeviceInfo, sharedMemoryMb, type Gpu } from "#gpu";
 import { ImageRunner, TextRunner } from "#runners";
 import { DEV_BANNER, devImage, devText } from "#dev-runner";
 import { bench } from "#bench";
 
-const VERSION = "sparecycle-node/0.2.0";
+// 0.3.0: device info + GPU challenge support at registration. Inference settings are unchanged from 0.2.0
+// (llama.cpp -ub 1, same models and runtimes), so 0.2.0 and 0.3.0 nodes produce the same outputs and pair normally.
+const VERSION = "sparecycle-node/0.3.0";
 
 const argv = process.argv.slice(2);
 const arg = (name: string, fallback?: string) => {
@@ -149,10 +153,21 @@ async function start(opts: StartOptions) {
     dev: opts.dev,
     backend: opts.backend,
     version: VERSION,
+    // 0.3.0+: structured device info for the scheduler's GPU allowlist, and the challenge feature. Both are extra
+    // fields: older schedulers ignore them.
+    ...(opts.dev ? {} : { device: await probeDeviceInfo(opts.backend) }),
+    features: [CHALLENGE_FEATURE],
   });
-  if (reg.status !== 200 || !reg.data) throw new Error(`register failed: ${errText(reg)}`);
+  if (reg.status !== 200 || !reg.data) {
+    const support = typeof reg.data?.supported === "string" ? ` (supported GPUs: ${reg.data.supported})` : "";
+    throw new Error(`register failed: ${errText(reg)}${support}`);
+  }
   const chainId = Number(reg.data.chainId);
   say(`registered with ${base} · payouts go to ${String(reg.data.owner)} · chain ${chainId}`);
+  const gpuGate = reg.data.gpu as { family?: string; status?: string } | undefined;
+  if (gpuGate?.status === "untested") {
+    say(`GPU family ${gpuGate.family}: not benched yet, so this node may get no paid jobs (see ${String((reg.data.gpu as { supported?: string }).supported ?? "the GPU support list")})`);
+  }
   if (opts.backend !== "cuda" && !opts.dev) {
     say(`${opts.backend}: no reliable cross-vendor GPU temperature / VRAM reading, so the busy/hot pause is off (--hours still applies)`);
   }
@@ -208,9 +223,6 @@ async function start(opts: StartOptions) {
       await sleep(task.status === 403 ? 30_000 : 5_000, stop.signal);
       continue;
     }
-    const taskId = String(task.data.taskId);
-    const jobId = String(task.data.jobId) as Hex;
-    const epoch = Number(task.data.epoch);
     let spec: JobSpec;
     try {
       spec = validateSpec(task.data.spec);
@@ -218,24 +230,37 @@ async function start(opts: StartOptions) {
       say(`bad job spec from scheduler: ${e instanceof Error ? e.message : String(e)}`);
       continue;
     }
-    try {
-      let body: Record<string, unknown>;
-      let outputHash: Hex;
-      let gpuMs: number;
-      let speed = "";
-      if (spec.kind === "image") {
-        const r = opts.dev ? devImage(spec.params) : await image.run(spec.params);
-        outputHash = sha256Hex(r.png);
-        gpuMs = r.gpuMs;
-        body = { png: r.png.toString("base64"), nsfw: r.nsfw };
-      } else {
-        const r = opts.dev ? devText(spec.params) : await text.run(spec.params, say);
-        outputHash = sha256Hex(r.text);
-        gpuMs = r.gpuMs;
-        if (r.tokens !== null) speed = ` · ${r.tokens} tok${r.tokensPerSecond ? ` at ${r.tokensPerSecond.toFixed(1)} tok/s` : ""}`;
-        body = { text: r.text };
+    const runRunner = async (s: JobSpec) => {
+      if (s.kind === "image") {
+        const r = opts.dev ? devImage(s.params) : await image.run(s.params);
+        return { outputHash: sha256Hex(r.png), gpuMs: Math.round(r.gpuMs), speed: "", body: { png: r.png.toString("base64"), nsfw: r.nsfw } };
       }
-      gpuMs = Math.round(gpuMs);
+      const r = opts.dev ? devText(s.params) : await text.run(s.params, say);
+      const speed = r.tokens !== null ? ` · ${r.tokens} tok${r.tokensPerSecond ? ` at ${r.tokensPerSecond.toFixed(1)} tok/s` : ""}` : "";
+      return { outputHash: sha256Hex(r.text), gpuMs: Math.round(r.gpuMs), speed, body: { text: r.text } as Record<string, unknown> };
+    };
+    const runner = opts.dev ? "dev" : spec.kind === "image" ? "sd15-diffusers" : `llama.cpp-${opts.backend}`;
+
+    // A GPU challenge (one fixed bench case, compared with published reference outputs). Unpaid; not a job.
+    if (task.data.type === "challenge") {
+      const challengeId = String(task.data.challengeId) as Hex;
+      try {
+        const { outputHash, gpuMs, body } = await runRunner(spec);
+        const signature = await signChallengeResult(account, chainId, { challengeId, node: account.address, outputHash, gpuMs: BigInt(gpuMs) });
+        const done = await call(account, base, `/challenges/${challengeId}/result`, { ...body, outputHash, gpuMs, signature, dev: opts.dev, runner });
+        const verdict = done.status === 200 ? `${done.data?.passed ? "passed" : "did not match the reference"} (${String(done.data?.state ?? "-")})` : errText(done);
+        say(`GPU challenge ${String(task.data.caseId)} (${spec.kind}) done in ${(gpuMs / 1000).toFixed(1)} s -> ${verdict}`);
+      } catch (e) {
+        say(`GPU challenge ${challengeId.slice(0, 10)} could not run: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      continue;
+    }
+
+    const taskId = String(task.data.taskId);
+    const jobId = String(task.data.jobId) as Hex;
+    const epoch = Number(task.data.epoch);
+    try {
+      const { outputHash, gpuMs, speed, body } = await runRunner(spec);
       const signature = await signReceipt(account, chainId, {
         jobId,
         node: account.address,
@@ -250,7 +275,7 @@ async function start(opts: StartOptions) {
         epoch,
         signature,
         dev: opts.dev,
-        runner: opts.dev ? "dev" : spec.kind === "image" ? "sd15-diffusers" : `llama.cpp-${opts.backend}`,
+        runner,
       });
       const verdict = done.status === 200 ? String(done.data?.status) : errText(done);
       say(`${spec.kind} job ${jobId.slice(0, 10)} done in ${(gpuMs / 1000).toFixed(1)} s${speed} -> ${verdict}`);
@@ -321,6 +346,7 @@ async function main() {
       image: !flag("no-image"),
       text: !flag("no-text"),
       log: say,
+      client: VERSION,
     });
     return;
   }

@@ -11,6 +11,13 @@ function intEnv(name: string, fallback: number, min = 0): number {
   return Number.isInteger(n) && n >= min ? n : fallback;
 }
 
+/** A duration given in hours (fractions allowed, e.g. 0.5), returned in whole seconds (at least 1). */
+function hoursEnv(name: string, fallbackHours: number): number {
+  const s = str(process.env[name]);
+  const h = s === null ? fallbackHours : Number(s);
+  return Number.isFinite(h) && h > 0 ? Math.max(1, Math.round(h * 3600)) : Math.round(fallbackHours * 3600);
+}
+
 export const serverEnv = {
   dbPath: () => str(process.env.DB_PATH) ?? "./data/sparecycle.db",
   autoclose: () => process.env.SCHEDULER_AUTOCLOSE === "1",
@@ -25,6 +32,22 @@ export const serverEnv = {
   /** Fallback epoch length of the scheduler-local clock (no reward contract). */
   localEpochLength: () => intEnv("NEXT_PUBLIC_EPOCH_LENGTH", 21_600, 1),
   adminToken: () => str(process.env.SCHEDULER_ADMIN_TOKEN),
+  /**
+   * Private job outputs (docs/private-outputs.md). "off" (default): outputs are served to anyone, with private,
+   * no-store headers. "enforce": only the job's read secret or a session of the paying wallet can read an output.
+   */
+  outputAuth: (): "off" | "enforce" => (str(process.env.OUTPUT_AUTH)?.toLowerCase() === "enforce" ? "enforce" : "off"),
+  /** Output reads per viewer per hour (per job for a read secret, per wallet for a session, else per IP). */
+  outputRateLimit: () => intEnv("OUTPUT_RATE_LIMIT", 600, 1),
+  /**
+   * Hosts a sign-in message may name as its EIP-4361 domain, comma-separated (e.g. sparecycle.tech). Unset = the
+   * host the request was sent to.
+   */
+  authDomains: (): string[] =>
+    (str(process.env.AUTH_DOMAIN) ?? "")
+      .split(",")
+      .map((s) => s.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, ""))
+      .filter(Boolean),
   /** Owner wallets of nodes the project runs itself (bootstrap GPU pool): never paid, marked on the status page. */
   projectOwners: (): Set<string> =>
     new Set(
@@ -44,6 +67,24 @@ export const serverEnv = {
         .map((s) => s.trim().toLowerCase())
         .filter((s) => /^0x[0-9a-f]{40}$/.test(s)),
     ),
+  /**
+   * GPU allowlist (src/server/gpu-allowlist.json). observe (default) = classify, log and store, block nothing.
+   * enforce = blocked families get 403 gpu-not-supported at registration; untested families register but get no jobs.
+   */
+  gpuAllowlistMode: (): "observe" | "enforce" => (str(process.env.GPU_ALLOWLIST_MODE) === "enforce" ? "enforce" : "observe"),
+  /**
+   * Periodic GPU challenge (src/server/challenge.ts). off (default) = none. observe = issue challenges to nodes that
+   * support them and record pass / fail, never change eligibility. enforce = pending-challenge -> eligible on a pass;
+   * a fail -> cooldown; a second consecutive fail -> suspended (admin re-qualify only).
+   */
+  challengeMode: (): "off" | "observe" | "enforce" => {
+    const v = str(process.env.CHALLENGE_MODE);
+    return v === "observe" || v === "enforce" ? v : "off";
+  },
+  /** Seconds between two challenges of a node that passed (CHALLENGE_INTERVAL_HOURS, default 24). */
+  challengeIntervalSeconds: () => hoursEnv("CHALLENGE_INTERVAL_HOURS", 24),
+  /** Seconds a node waits after a failed challenge before the next one (CHALLENGE_COOLDOWN_HOURS, default 6). */
+  challengeCooldownSeconds: () => hoursEnv("CHALLENGE_COOLDOWN_HOURS", 6),
   /** The root-posting key. Returns null unless it is a well-formed 32-byte hex key. */
   signerKey: (): Hex | null => {
     const s = str(process.env.SCHEDULER_SIGNER_KEY);
@@ -69,6 +110,10 @@ export const POLICY = {
   maxTextOutputChars: 16_000,
   /** How often the autoclose timer checks whether the open epoch can close. */
   autocloseCheckMs: 15_000,
+  /** Wallet sign-in (src/server/auth.ts): nonce lifetime, session lifetime, nonces per IP per hour. */
+  authNonceSeconds: 10 * 60,
+  sessionSeconds: 12 * 60 * 60,
+  authNoncesPerHour: 60,
   /** Cache of on-chain epoch reads. */
   chainSyncMs: 5_000,
 };

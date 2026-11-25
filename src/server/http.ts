@@ -30,17 +30,59 @@ export function errorResponse(status: number, code: string, message: string, ext
   return json({ error: code, message, ...extra }, status);
 }
 
+/** ApiError -> its JSON error, anything else -> 500 internal-error (logged, not returned). */
+function errorFrom(e: unknown): Response {
+  if (e instanceof ApiError) return errorResponse(e.status, e.code, e.message, e.extra);
+  const msg = e instanceof Error ? e.message : String(e);
+  console.error(`[sparecycle] internal error: ${msg}`);
+  return errorResponse(500, "internal-error", "The scheduler hit an internal error.");
+}
+
 /** Wraps a handler: ApiError -> its JSON error, anything else -> 500 internal-error (logged, not returned). */
 export function handle<A extends unknown[]>(fn: (...args: A) => Promise<Response> | Response) {
   return async (...args: A): Promise<Response> => {
     try {
       return await fn(...args);
     } catch (e) {
-      if (e instanceof ApiError) return errorResponse(e.status, e.code, e.message, e.extra);
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error(`[sparecycle] internal error: ${msg}`);
-      return errorResponse(500, "internal-error", "The scheduler hit an internal error.");
+      return errorFrom(e);
     }
+  };
+}
+
+/**
+ * Headers of every response that depends on who asks (job outputs, job detail, sign-in): never stored by a shared
+ * cache, never reused for another viewer. Never `public` or `immutable` on these routes.
+ */
+export const PRIVATE_HEADERS = { "cache-control": "private, no-store", vary: "Authorization, Cookie" } as const;
+
+/** Error code of a missing credential: answered as an empty 401 by handlePrivate. */
+export const AUTH_REQUIRED = "auth-required";
+
+export function privateJson(body: unknown, status = 200, headers: Record<string, string> = {}) {
+  return json(body, status, { ...PRIVATE_HEADERS, ...headers });
+}
+
+export function privateBinary(body: Uint8Array, type: string, headers: Record<string, string> = {}) {
+  return new Response(Buffer.from(body), { status: 200, headers: { "content-type": type, ...headers, ...PRIVATE_HEADERS } });
+}
+
+/**
+ * Like handle(), and every response (errors included) carries PRIVATE_HEADERS. An ApiError with code
+ * AUTH_REQUIRED becomes an empty 401 (no credentials were sent, so there is nothing to explain to a stranger).
+ */
+export function handlePrivate<A extends unknown[]>(fn: (...args: A) => Promise<Response> | Response) {
+  return async (...args: A): Promise<Response> => {
+    let res: Response;
+    try {
+      res = await fn(...args);
+    } catch (e) {
+      res =
+        e instanceof ApiError && e.status === 401 && e.code === AUTH_REQUIRED
+          ? new Response(null, { status: 401, headers: { "www-authenticate": 'Bearer realm="sparecycle"' } })
+          : errorFrom(e);
+    }
+    for (const [k, v] of Object.entries(PRIVATE_HEADERS)) res.headers.set(k, v);
+    return res;
   };
 }
 

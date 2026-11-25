@@ -1,5 +1,5 @@
 import { POLICY, serverEnv } from "@/server/env";
-import { clientIp, handle, json, parseJson, readBody } from "@/server/http";
+import { clientIp, handle, json, parseJson, privateJson, readBody } from "@/server/http";
 import { listJobs, submitJob } from "@/server/jobs";
 
 export const runtime = "nodejs";
@@ -12,9 +12,12 @@ export const GET = handle(async (req: Request) => {
   return json(listJobs(limit));
 });
 
-/** POST /api/v1/jobs — submit an SD 1.5 or Qwen2.5-1.5B job: free (JOB_RATE_LIMIT per IP per hour) or paid ({ request, payment }). */
+/**
+ * POST /api/v1/jobs — submit an SD 1.5 or Qwen2.5-1.5B job: free (JOB_RATE_LIMIT per IP per hour) or paid
+ * ({ request, payment }). The answer carries the job's `readSecret` (shown once, never stored in clear).
+ */
 export const POST = handle(async (req: Request) => {
   const body = parseJson(await readBody(req, POLICY.maxJobBodyBytes));
   const res = await submitJob(body, clientIp(req));
-  return json(res, 201, { "x-sc-rate-limit": String(serverEnv.jobRateLimit()) });
+  return privateJson(res, 201, { "x-sc-rate-limit": String(serverEnv.jobRateLimit()) });
 });

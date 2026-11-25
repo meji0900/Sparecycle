@@ -1,7 +1,7 @@
 "use client";
 
 // Job submission shared by /jobs (the technical form) and /playground: free requests, paid requests signed from
-// the connected wallet's balance, the scheduler's error messages, and output URLs.
+// the connected wallet's balance, and the scheduler's error messages. Outputs are read with src/lib/dapp/job-output.
 import { useState } from "react";
 import { useSignMessage } from "wagmi";
 import { targetChain } from "@/lib/chain";
@@ -36,15 +36,9 @@ export function failureText(f: ApiFailure, limit: number | null): { title: strin
 /** The message for a failed submission: payment-specific when the job was paid, otherwise the general one. */
 export const submitFailureText = (f: ApiFailure, paid: boolean, limit: number | null) => (paid ? paidFailureText(f) : null) ?? failureText(f, limit);
 
-/** Absolute URL of an output path the API returns (it is relative to the scheduler API's host). */
-export function outputUrl(path: string) {
-  const api = config.schedulerApiUrl;
-  if (/^https?:\/\//.test(api)) return new URL(path, api).toString();
-  return path;
-}
-
 export type SubmitResult =
-  | { ok: true; id: string }
+  /** `readSecret`: the job's read secret, returned once; keep it with the job to view the output later. */
+  | { ok: true; id: string; readSecret: string | null }
   /** `failure`: the scheduler's (or the local spec check's) answer; `signError`: the wallet did not sign. */
   | { ok: false; failure: ApiFailure | null; signError: string | null };
 
@@ -104,13 +98,15 @@ export function useJobSubmit() {
         body = JSON.stringify(request);
       }
       setStage("send");
-      const res = await apiFetch<{ id: string; status: string }>("/jobs", {
+      const res = await apiFetch<{ id: string; status: string; readSecret?: string }>("/jobs", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body,
       });
       if (paid) acct?.reload();
-      return res.ok ? { ok: true, id: res.data.id } : { ok: false, failure: res.failure, signError: null };
+      return res.ok
+        ? { ok: true, id: res.data.id, readSecret: typeof res.data.readSecret === "string" ? res.data.readSecret : null }
+        : { ok: false, failure: res.failure, signError: null };
     } finally {
       setBusy(false);
       setStage(null);

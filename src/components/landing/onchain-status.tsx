@@ -51,7 +51,7 @@ export function OnchainStatus() {
               On-chain status
             </h2>
             <p className="mt-4 text-muted">
-              Live reads only. Anything not deployed yet shows a dash, not a zero.
+              Live reads only. Anything that can&apos;t be read right now shows a dash, not a zero.
             </p>
           </div>
           <div className="flex flex-col items-start gap-2.5 sm:items-end">

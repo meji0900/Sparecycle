@@ -1,0 +1,119 @@
+{
+  "thresholds": {
+    "imageMaxBits": 12,
+    "textMinSimilarity": 0.9
+  },
+  "only": "text",
+  "devices": [
+    {
+      "dir": "bench/results/2026-11-22-cuda-ampere-ada/RTX-3060-cuda-ub1",
+      "label": "NVIDIA GeForce RTX 3060 [cuda cc8.6]",
+      "software": {
+        "node": "v24.22.1",
+        "llamaCpp": [
+          "version: 1.0.0-dev (build 12404, commit cf9a9957d)"
+        ],
+        "python": {
+          "torch": "2.8.0+cu128",
+          "cuda": "12.8",
+          "cudnn": 91002,
+          "diffusers": "0.35.1",
+          "transformers": "4.56.1"
+        }
+      },
+      "imageMedianMs": null,
+      "textMedianTokPerS": 196.28562210608146,
+      "selfImageMaxBits": null,
+      "selfTextMinSimilarity": null,
+      "controlImageMinBits": null,
+      "nsfwFlags": 0
+    },
+    {
+      "dir": "bench/results/2026-11-22-cuda-ampere-ada/RTX-4060-cuda-ub1",
+      "label": "NVIDIA GeForce RTX 4060 [cuda cc8.9]",
+      "software": {
+        "node": "v24.22.1",
+        "llamaCpp": [
+          "version: 1.0.0-dev (build 12404, commit cf9a9957d)"
+        ],
+        "python": {
+          "torch": "2.8.0+cu128",
+          "cuda": "12.8",
+          "cudnn": 91002,
+          "diffusers": "0.35.1",
+          "transformers": "4.56.1"
+        }
+      },
+      "imageMedianMs": null,
+      "textMedianTokPerS": 182.09374464157406,
+      "selfImageMaxBits": null,
+      "selfTextMinSimilarity": null,
+      "controlImageMinBits": null,
+      "nsfwFlags": 0
+    }
+  ],
+  "pairs": [
+    {
+      "a": "NVIDIA GeForce RTX 3060 [cuda cc8.6]",
+      "b": "NVIDIA GeForce RTX 4060 [cuda cc8.9]",
+      "sameBackend": true,
+      "image": [],
+      "text": [
+        {
+          "id": "rainbow",
+          "value": 1,
+          "agree": true
+        },
+        {
+          "id": "haiku",
+          "value": 1,
+          "agree": true
+        },
+        {
+          "id": "laptop",
+          "value": 1,
+          "agree": true
+        },
+        {
+          "id": "translate",
+          "value": 1,
+          "agree": true
+        },
+        {
+          "id": "romeo",
+          "value": 1,
+          "agree": true
+        },
+        {
+          "id": "fib",
+          "value": 1,
+          "agree": true
+        },
+        {
+          "id": "gpu-cpu",
+          "value": 1,
+          "agree": true
+        },
+        {
+          "id": "bakery",
+          "value": 1,
+          "agree": true
+        },
+        {
+          "id": "merkle",
+          "value": 1,
+          "agree": true
+        },
+        {
+          "id": "story",
+          "value": 1,
+          "agree": true
+        }
+      ]
+    }
+  ],
+  "textThreshold": {
+    "sameJobMinSimilarity": 1,
+    "current": 0.9
+  }
+}

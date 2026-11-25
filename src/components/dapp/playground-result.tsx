@@ -6,12 +6,13 @@ import { Hex } from "@/components/ui/address";
 import { Button, buttonStyles } from "@/components/ui/button";
 import { StatusTag, type Tone } from "@/components/ui/status";
 import { apiDown, type JobDetail, type StatusResponse } from "@/lib/dapp/api";
+import { useJobOutput } from "@/lib/dapp/job-output";
 import { TERMINAL } from "@/lib/dapp/jobs";
 import { chargeNote } from "@/lib/dapp/paid-jobs";
 import { useApiGet, useNow } from "@/lib/dapp/use-api";
 import { cn } from "@/lib/utils";
 import { settledFields, type PlayItem } from "./playground-history";
-import { outputUrl } from "./use-job-submit";
+import { outputLockText, SignInToView } from "./private-output";
 
 const STEPS = [
   { title: "Queued", sub: "Waiting for two GPUs" },
@@ -139,7 +140,8 @@ export function PlaygroundResult({
   useEffect(() => {
     if (!item || !job) return;
     if (TERMINAL.includes(job.status)) {
-      if (item.status !== job.status || (job.output ?? null) !== (item.output ?? null)) onSettled(item.id, settledFields(job));
+      const fields = settledFields(job);
+      if (item.status !== job.status || (fields.output ?? null) !== (item.output ?? null)) onSettled(item.id, fields);
     } else if (job.status !== item.status) {
       onSettled(item.id, { status: job.status });
     }
@@ -148,8 +150,13 @@ export function PlaygroundResult({
   const w = item?.width ?? shape.width;
   const h = item?.height ?? shape.height;
   const paid = job ? job.payment === "paid" : !!item?.paid;
-  const output = job?.output ?? item?.output ?? null;
-  const img = status === "agreed" && output ? outputUrl(output) : null;
+  // The output is fetched with this browser's read secret (or the wallet session) and shown from a blob: URL.
+  const hasOutput = status === "agreed" && (job ? (job.outputAvailable ?? !!job.output) : !!item?.output);
+  const out = useJobOutput(hasOutput && item ? item.id : null, item?.secret);
+  const img = out.state === "ready" ? out.url : null;
+  // Paid and team jobs have a payer wallet that can sign in to read the output on any device; free jobs don't.
+  const hasPayer = job ? job.payment === "paid" || job.payment === "team" : !!item?.paid;
+  const lock = hasOutput ? outputLockText(out.state, hasPayer) : null;
   const seed = typeof job?.params?.seed === "number" ? job.params.seed : (item?.usedSeed ?? item?.seed ?? null);
   const failKind = status === "disagreed" || status === "expired" || status === "rejected" ? status : null;
   const gone = !job && fail && fail.kind === "http" && fail.code === "unknown-job";
@@ -188,6 +195,21 @@ export function PlaygroundResult({
       <Frame width={w} height={h}>
         {/* eslint-disable-next-line @next/next/no-img-element -- scheduler output, size known only at runtime */}
         <img src={img} alt={`Generated image: ${item.prompt}`} className="size-full object-contain" onError={() => setBroken(img)} />
+      </Frame>
+    );
+  } else if (hasOutput && out.state === "loading") {
+    body = (
+      <Frame width={w} height={h}>
+        <FrameMessage title="Both GPUs agreed">Loading your image.</FrameMessage>
+      </Frame>
+    );
+  } else if (lock) {
+    body = (
+      <Frame width={w} height={h}>
+        <FrameMessage title={lock.title}>
+          <p>{lock.body}</p>
+          {hasPayer ? <SignInToView className="mt-3 flex flex-col items-center" /> : null}
+        </FrameMessage>
       </Frame>
     );
   } else if (status === "agreed") {

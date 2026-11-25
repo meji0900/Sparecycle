@@ -26,34 +26,34 @@ function ArtIcon({ name, zoom = 1.6 }: { name: string; zoom?: number }) {
 
 const ITEMS: MagicBentoItem[] = [
   {
-    title: "Fee-funded payouts",
+    title: "Paid by customers",
     description: paidJobsLive
-      ? "Nodes are paid from collected fees and verified job payments, not from emissions and not from a promised treasury."
-      : "Nodes are paid from collected fees, not from emissions and not from a promised treasury.",
+      ? "Node payouts come from what customers pay for checked jobs: 95% to the node pot, 5% to the project treasury. Not from token emissions, not from trading."
+      : "Node payouts come from collected fees, not from emissions and not from a promised treasury.",
     visual: <ArtIcon name="fee-funded" zoom={1.9} />,
     colSpan: 2,
   },
-  { title: "Two-node checks", description: "A job is eligible for payment only if two nodes agree.", visual: <ArtIcon name="two-node" zoom={1.8} /> },
+  { title: "Two machines per job", description: "Every job runs on two GPUs with different owners. Only matching results are paid.", visual: <ArtIcon name="two-node" zoom={1.8} /> },
   {
-    title: "A public pot",
-    description: "The current epoch pot is a number you can read from the reward contract, not a marketing metric.",
+    title: "Price first",
+    description: "You see what a job costs before you pay, and you are charged only if both GPUs agree.",
     visual: <ArtIcon name="public-pot" zoom={1.05} />,
   },
   {
-    title: "Merkle claims",
-    description: "Each eligible node claims from the contract with a proof. Unused pot rolls to the next epoch.",
+    title: "Claim when the period closes",
+    description: "Every six hours the period closes and each node claims its share from the contract. Anything unused rolls into the next period.",
     visual: <ArtIcon name="merkle" zoom={1.35} />,
   },
   {
-    title: "A short model list",
-    description: "MVP runs Stable Diffusion 1.5 and one small text model. This is not an open marketplace.",
+    title: "Two models, on purpose",
+    description: "Stable Diffusion 1.5 for images and Qwen2.5-1.5B for text. Small enough to check, on a normal gaming GPU.",
     visual: <ArtIcon name="models" zoom={2.1} />,
   },
-  { title: "No holding requirement", description: "You do not have to buy or lock the token to run a node.", visual: <ArtIcon name="no-holding" zoom={1.3} /> },
+  { title: "No token needed", description: "You don't have to buy or lock the token to run a node or pay for a job.", visual: <ArtIcon name="no-holding" zoom={1.3} /> },
   {
-    title: "No team allocation",
+    title: "Everything on-chain",
     description:
-      "At launch, the supply goes to the Pons curve. Liquidity that forms at graduation is locked by Pons, not by a Sparecycle LP we control.",
+      "Customer balances, charges, the pot and every payout live on Robinhood Chain. The proof page lists every contract and transaction.",
     visual: <ArtIcon name="no-allocation" zoom={1.35} />,
     colSpan: 2,
   },

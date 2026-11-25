@@ -1,0 +1,62 @@
+{
+  "$comment": "GPU allowlist read by src/server/gpu-allowlist.ts. Rules are tried in order; the first match wins; otherwise the backend's fallback applies. status: allowed (benched against the live thresholds and passed) | untested (registers, gets no jobs while GPU_ALLOWLIST_MODE=enforce) | blocked (registration refused while GPU_ALLOWLIST_MODE=enforce). name = case-insensitive regular expression tried on the reported GPU name and the Vulkan deviceName. computeCap = when the node reports a compute capability it must be one of these. How to add a family: docs/gpu-support.md.",
+  "version": 1,
+  "supportDoc": "https://github.com/meji0900/Sparecycle/blob/main/docs/gpu-support.md",
+  "rules": [
+    {
+      "id": "software-rasterizer-name",
+      "backends": ["*"],
+      "name": "llvmpipe|lavapipe|swiftshader|microsoft basic render",
+      "family": "software-rasterizer",
+      "status": "blocked",
+      "note": "CPU-emulated graphics drivers, not a GPU."
+    },
+    {
+      "id": "software-rasterizer-vulkan-cpu",
+      "backends": ["vulkan"],
+      "vulkanDeviceType": "PHYSICAL_DEVICE_TYPE_CPU",
+      "family": "software-rasterizer",
+      "status": "blocked",
+      "note": "Vulkan reports a CPU device (software rendering)."
+    },
+    {
+      "id": "nvidia-rtx30-ampere",
+      "backends": ["cuda"],
+      "name": "\\bGeForce RTX 30[0-9]0\\b",
+      "computeCap": ["8.6"],
+      "family": "nvidia-rtx30-ampere",
+      "status": "allowed",
+      "evidence": "bench/results/2026-11-22-cuda-ampere-ada"
+    },
+    {
+      "id": "nvidia-rtx40-ada",
+      "backends": ["cuda"],
+      "name": "\\bGeForce RTX 40[0-9]0\\b",
+      "computeCap": ["8.9"],
+      "family": "nvidia-rtx40-ada",
+      "status": "allowed",
+      "evidence": "bench/results/2026-11-22-cuda-ampere-ada"
+    },
+    {
+      "id": "nvidia-rtx50-blackwell",
+      "backends": ["cuda"],
+      "name": "\\bGeForce RTX 50[0-9]0\\b",
+      "family": "nvidia-rtx50-blackwell",
+      "status": "untested",
+      "note": "Not benched yet (P1)."
+    },
+    {
+      "id": "nvidia-rtx20-turing",
+      "backends": ["cuda"],
+      "name": "\\bGeForce RTX 20[0-9]0\\b",
+      "family": "nvidia-rtx20-turing",
+      "status": "untested",
+      "note": "Not benched yet (P1)."
+    }
+  ],
+  "fallback": {
+    "cuda": { "family": "cuda-other", "status": "untested" },
+    "vulkan": { "family": "vulkan-other", "status": "untested" },
+    "cpu": { "family": "cpu", "status": "untested" }
+  }
+}

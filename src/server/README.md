@@ -31,23 +31,30 @@ exceed `reserved`, there is no withdraw of the pot and no second post. Say so wh
 | `NEXT_PUBLIC_EPOCH_LENGTH` | | `21600` | Local clock only; with a contract the contract's `epochLength()` rules |
 | `DB_PATH` | | `./data/sparecycle.db` | SQLite file |
 | `SCHEDULER_SIGNER_KEY` | **yes** | unset | Key of the contract's `scheduler()`; posts roots. Never logged |
-| `SCHEDULER_ADMIN_TOKEN` | **yes** | unset | Bearer token for `POST /api/v1/epochs/close`. Unset = endpoint disabled (503) |
+| `SCHEDULER_ADMIN_TOKEN` | **yes** | unset | Bearer token for `POST /api/v1/epochs/close` and `/api/v1/admin/challenges`. Unset = endpoints disabled (503) |
 | `SCHEDULER_AUTOCLOSE` | | unset | `1` = check every 15 s and close / retry the post when the chain allows |
 | `SCHEDULER_ALLOW_DEV_RUNNER` | | unset | `1` = accept `--dev-runner` nodes. **Local tests only, never in production** |
 | `PAYOUT_CAP_PER_UNIT` | | unset | Optional cap, wei of the payout asset per work unit |
 | `PROJECT_NODE_OWNERS` | | unset | Owner wallets of project-run nodes: never paid (their share stays in the pot), marked on the status page |
+| `GPU_ALLOWLIST_MODE` | | `observe` | GPU allowlist (`gpu-allowlist.json`): `observe` = classify, log and store, block nothing; `enforce` = blocked families get 403 `gpu-not-supported`, untested families register but get no jobs |
+| `CHALLENGE_MODE` | | `off` | Periodic GPU challenge: `off`; `observe` = issue and record, never change eligibility; `enforce` = pending-challenge → eligible on a pass, fail → cooldown, second fail → suspended |
+| `CHALLENGE_INTERVAL_HOURS` | | `24` | Hours between challenges of a node that passed (fractions allowed) |
+| `CHALLENGE_COOLDOWN_HOURS` | | `6` | Hours without jobs after a failed challenge, before the next one (fractions allowed) |
 | `VAST_API_KEY` | secret | unset | Bootstrap GPU pool (gpu-pool.ts): Vast.ai key used to start and stop the pool instances |
 | `GPU_POOL_INSTANCE_IDS` | | unset | Vast instance ids of the pool, comma-separated (two, linked to two different owners) |
 | `GPU_POOL_IDLE_MINUTES` | | 10 | Pool instances stop after this many minutes without open jobs |
 | `JOB_RATE_LIMIT` | | `5` | Accepted job submissions per IP per hour (`0` closes submissions) |
+| `OUTPUT_AUTH` | | `off` | `enforce` = an output is served only to the job's read secret or a session of the paying wallet; the old `/output` URL answers 410. `off` = served to anyone (still `private, no-store`). See `docs/private-outputs.md` |
+| `OUTPUT_RATE_LIMIT` | | `600` | Output reads per viewer per hour (per job for a read secret, per wallet for a session, else per IP) |
+| `AUTH_DOMAIN` | | unset | Domain(s) a sign-in message may name, comma-separated (e.g. `sparecycle.tech`). Unset = the host the request was sent to |
 | `SWEEP_SIGNER_KEY` | **yes** | unset | Sweep bot key (only for `--send`) |
 | `SWEEP_ENABLED` | | unset | `0` = kill switch: the sweep bot refuses `--send` |
 | `SWEEP_POOL_ID` | | unset | Uniswap v4 pool id after graduation (hook fee checks) |
 | `EPOCH_POST_GAS_COST` | | — | `[EPOCH_POST_GAS_COST]`: a measured number, not computed. Measure the gas of real `closeEpochAndPostRoot` transactions on the target chain before quoting a cost |
 
 `NEXT_PUBLIC_*` values are inlined by `next build` (server code included): set them before building and rebuild
-after changing them. Server-only variables (`DB_PATH`, `SCHEDULER_*`, `PAYOUT_CAP_PER_UNIT`, `JOB_RATE_LIMIT`) are
-read at runtime.
+after changing them. Server-only variables (`DB_PATH`, `SCHEDULER_*`, `PAYOUT_CAP_PER_UNIT`, `JOB_RATE_LIMIT`, `OUTPUT_*`,
+`AUTH_DOMAIN`) are read at runtime.
 
 Rate limiting uses the first `x-forwarded-for` hop, so the host's proxy must overwrite that header (mainstream
 PaaS proxies do). IPs are stored only as salted hashes.
@@ -94,15 +101,31 @@ PaaS proxies do). IPs are stored only as salted hashes.
 
   `GET /nodes` shows each node's `backend`; `GET /status` adds `nodes.byBackend.{cuda,vulkan,cpu}.{registered,online}`.
   Non-CUDA nodes report a quarter of system RAM (max 4096 MB) as `vramMb` and have no busy/hot pause.
+- **GPU gate** ([docs/gpu-support.md](../../docs/gpu-support.md)). Registration classifies the device against
+  `gpu-allowlist.json` (family + `allowed` / `untested` / `blocked`); with `GPU_ALLOWLIST_MODE=enforce` blocked
+  families get `403 gpu-not-supported` and untested families get no job tasks. With `CHALLENGE_MODE=enforce`, nodes
+  that advertise the `challenge-1` feature (node client 0.3.0+) on a backend with a reference
+  (`bench/reference/suite-1-cuda.json`) must pass a challenge (a fixed bench case compared with the reference
+  fingerprints at the live thresholds) before they get jobs, and again every `CHALLENGE_INTERVAL_HOURS`; a fail means
+  `CHALLENGE_COOLDOWN_HOURS` without jobs, a second consecutive fail suspends the node (re-qualify via
+  `/api/v1/admin/challenges`, audit-logged). Ineligible nodes are not counted as the "compatible peer" either.
+  Challenges are unpaid and stored apart from jobs. `GET /nodes` adds `gpuFamily`, `gpuStatus`, `challengeState`;
+  `GET /status` adds `gpuGate`.
 - A result is accepted only from the leased node, with a valid EIP-712 receipt (domain `Sparecycle` v1, target
   chain id) and an `outputHash` the scheduler recomputes from the submitted PNG / text. Images are compared by
   64-bit dHash (≤ 12 bits apart), text by normalized edit-distance similarity (≥ 0.9).
-- Verdicts: `agreed` (one output kept, served at `/api/v1/jobs/:id/output`), `disagreed` (unpaid), `rejected`
-  (a node's SD 1.5 safety checker flagged the image; unpaid, no output), `expired`.
+- Verdicts: `agreed` (one output kept, served at `/api/v1/jobs/:id/result`), `disagreed` (unpaid), `rejected`
+  (a node's SD 1.5 safety checker flagged the image; unpaid, no output), `expired`. The per-node copies of the output
+  (`results.output`) are dropped at the verdict and when a job expires; hashes and fingerprints stay for audit.
 - Prompts stay in the DB and are never returned; public views carry `promptHash =
-  sha256("sparecycle-prompt|" + jobId + "|" + prompt)`. Outputs of agreed jobs are readable by anyone who has the
-  job id, and job ids are listed by `GET /api/v1/jobs` — the job page should tell submitters not to send private
-  prompts.
+  sha256("sparecycle-prompt|" + jobId + "|" + prompt)`.
+- **Private outputs** (`docs/private-outputs.md`). Every job gets a read secret, returned once by `POST /jobs`
+  (`readSecret`; only its sha256 is stored). With `OUTPUT_AUTH=enforce` an output is served only to
+  `Authorization: Bearer <readSecret>` or to a wallet session (EIP-4361 sign-in, cookie `sc_session`) of the job's
+  payer (paid and team jobs). Job ids are public (`GET /api/v1/jobs`), so knowing one is not enough. Node request
+  signatures are never accepted as credentials, and a node only receives a job's spec while the job is queued,
+  running or checking. With `OUTPUT_AUTH=off` (the default until switched) outputs are served to anyone, but always
+  with `Cache-Control: private, no-store`. The two nodes of a job still see its prompt and output while they work.
 - Node requests are signed: headers `x-sc-from`, `x-sc-ts`, `x-sc-sig` = EIP-191 signature of
   `sparecycle|METHOD|PATH|TS|sha256(body)`, 60 s window, each signature accepted once.
 - Distinct owner / GPU checks rely on what nodes report (GPU UUIDs can be faked); a determined operator with
@@ -111,7 +134,10 @@ PaaS proxies do). IPs are stored only as salted hashes.
 ## Endpoints (`/api/v1`)
 
 Public: `GET health`, `GET status`, `GET epochs`, `GET epochs/:id/tree`, `GET epochs/:id/proof?account=`,
-`GET jobs?limit=`, `POST jobs`, `GET jobs/:id`, `GET jobs/:id/output`, `GET nodes`.
+`GET jobs?limit=`, `POST jobs`, `GET jobs/:id`, `GET nodes`.
+Viewer-dependent (always `Cache-Control: private, no-store`, `Vary: Authorization, Cookie`): `GET jobs/:id`,
+`GET jobs/:id/result` (read secret or payer session when `OUTPUT_AUTH=enforce`), `GET jobs/:id/output` (retired: 410
+when enforced), `GET auth/nonce`, `POST auth/verify`, `POST auth/logout`.
 Nodes (signed): `POST nodes/register`, `POST nodes/poll`, `POST tasks/:taskId/result`.
 Operator: `POST epochs/close`. Errors are always `{ "error": "<kebab-code>", "message": "…" }`. Shapes:
 `docs/SPEC.md`. Amounts are decimal strings (wei), timestamps unix seconds.
@@ -154,6 +180,12 @@ needed) keep exit 0, a run with errors (RPC, unexpected reverts) exits 1.
   key anvil has NOT unlocked: `sweepCurve` → `claimFeesFromEscrow`), `next dev` (3210) from a throw-away copy of the
   app, two `--dev-runner` nodes, jobs, close, both claims with exact balance checks, restart + autoclose. No GPU, no
   real funds; it stops everything it started.
+  With `OUTPUT_AUTH=enforce` after the restart it also runs the private-output route matrix (401/403/404/409/200, read
+  secrets, EOA and ERC-1271 wallet sign-in, old `/output` -> 410) and checks that no `/api/v1/jobs/*` response
+  carried a `public` cache directive.
+- `npm run test:private-outputs` (`scripts/test-private-outputs.mjs`): in-process route and unit tests of private
+  outputs (no chain, no GPU, scratch DB under `data/`): the enforce matrix, sign-in (nonce reuse, domain, chain,
+  forged signature, expired session, logout), team wallets, legacy jobs, the rate limit and node isolation.
 - `node scripts/e2e-backends.mjs`: real hardware, no chain. Two `--backend vulkan` nodes on the local GPU, the
   like-for-like pairing checks with CUDA dev-runner nodes, and Vulkan-vs-CPU similarity. Needs
   `node-client/bin/llama-vulkan`, `node-client/bin/llama-cpu` and the GGUF.

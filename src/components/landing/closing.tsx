@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import Cubes from "@/components/reactbits/Cubes";
 import { ButtonLink } from "@/components/ui/button";
 
@@ -11,19 +10,19 @@ export function Closing() {
       <div className="mx-auto grid max-w-[1200px] items-center gap-12 px-4 py-20 sm:px-6 md:grid-cols-[1fr_minmax(0,460px)] md:py-24">
         <div className="max-w-[560px]">
           <h2 id="closing-title" className="text-title font-semibold text-text">
-            Read the pot. Run a node. Claim with a proof.
+            Run a job. Run a node. Check every payout.
           </h2>
           <p className="mt-5 text-muted">
-            Launch App opens the node guide with a one-minute demo of the whole setup. Everything the network pays out
-            is visible on Robinhood Chain before anyone claims it.
+            Try a free image job in the playground, or set up a node in a few minutes. Every payment and every payout is on
+            Robinhood Chain before anyone claims it.
           </p>
-          <div className="mt-8 flex flex-wrap items-center gap-x-6 gap-y-3">
-            <ButtonLink href="/nodes" size="lg">
-              Launch App
+          <div className="mt-8 flex flex-wrap items-center gap-3">
+            <ButtonLink href="/playground" size="lg">
+              Run a job
             </ButtonLink>
-            <Link href="/app" className="link text-sm">
-              Open the status page
-            </Link>
+            <ButtonLink href="/nodes" size="lg" variant="secondary">
+              Run a node
+            </ButtonLink>
           </div>
         </div>
         <div className="relative mx-auto aspect-square w-full max-w-[460px]" aria-hidden>

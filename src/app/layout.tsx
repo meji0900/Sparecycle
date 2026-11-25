@@ -11,7 +11,7 @@ const description =
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"),
-  title: { default: `Sparecycle — ${FUNDING.tagline.replace(/^Idle/, "idle").replace(/\.$/, "")}`, template: "%s · Sparecycle" },
+  title: { default: `Sparecycle — ${FUNDING.tagline.replace(/^(Idle|Your)\b/, (w) => w.toLowerCase()).replace(/\.$/, "")}`, template: "%s · Sparecycle" },
   description,
   openGraph: {
     title: "Sparecycle",
@@ -20,6 +20,8 @@ export const metadata: Metadata = {
     images: [{ url: "/og.jpg", width: 1200, height: 630, alt: `Sparecycle: ${FUNDING.tagline}` }],
   },
   twitter: { card: "summary_large_image", title: "Sparecycle", description, images: ["/og.jpg"] },
+  // HEY Research (heyresearch.xyz) ownership check for sparecycle.tech; the same code is in /.well-known/hey-research.txt.
+  other: { "hey-research-verification": "pcG-9Qu1WPmMDpZRlQ1ShysEQ-SlXRyv" },
 };
 
 export const viewport: Viewport = {

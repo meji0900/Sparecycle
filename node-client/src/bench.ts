@@ -12,7 +12,7 @@ import { cpus, platform, release, totalmem } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { Backend, ImageParams, TextParams } from "#protocol";
-import { probeDevice } from "#gpu";
+import { probeDevice, vulkanDevice } from "#gpu";
 import { ImageRunner, PATHS, TextRunner } from "#runners";
 
 const run = promisify(execFile);
@@ -79,9 +79,16 @@ async function describe(backend: Backend) {
     const [name, cc, driver, mem] = (l ?? "").split(",").map((s) => s.trim());
     Object.assign(out, { name, computeCap: cc, driver, vramMb: Number(mem) || dev.vramMb });
   } else if (backend === "vulkan") {
-    const lines = await firstLine("vulkaninfo", ["--summary"]);
-    const pick = (k: string) => lines.find((l) => l.startsWith(`${k} `) || l.startsWith(`${k}=`))?.split("=").slice(1).join("=").trim();
-    Object.assign(out, { vulkanDriver: pick("driverName"), driverInfo: pick("driverInfo"), apiVersion: pick("apiVersion") });
+    // The same device the node uses (first non-CPU device), not just the first one vulkaninfo lists.
+    const vk = await vulkanDevice();
+    Object.assign(out, {
+      vulkanDriver: vk?.driverName,
+      driverInfo: vk?.driverInfo,
+      apiVersion: vk?.apiVersion,
+      vendorId: vk?.vendorId,
+      deviceId: vk?.deviceId,
+      deviceType: vk?.deviceType,
+    });
   }
   const server = PATHS.llamaServer(backend);
   const ld = platform() === "win32" ? process.env : { ...process.env, LD_LIBRARY_PATH: [dirname(server), process.env.LD_LIBRARY_PATH].filter(Boolean).join(":") };
@@ -101,7 +108,16 @@ async function describe(backend: Backend) {
   return { device: out, software, host: { os: `${platform()} ${release()}`, cpu: cpus()[0]?.model?.trim(), ramMb: Math.round(totalmem() / 1048576) } };
 }
 
-export async function bench(opts: { backend: Backend; out: string; repeat: number; image: boolean; text: boolean; log: (m: string) => void }) {
+export async function bench(opts: {
+  backend: Backend;
+  out: string;
+  repeat: number;
+  image: boolean;
+  text: boolean;
+  log: (m: string) => void;
+  /** Node client version (bench results are comparable only between the same client settings). */
+  client: string;
+}) {
   const { backend, out, repeat, log } = opts;
   mkdirSync(out, { recursive: true });
   const info = await describe(backend);
@@ -110,7 +126,7 @@ export async function bench(opts: { backend: Backend; out: string; repeat: numbe
   const save = () =>
     writeFileSync(
       join(out, "bench.json"),
-      JSON.stringify({ suite: BENCH_SUITE, createdAt: new Date().toISOString(), backend, ...info, items }, null, 2) + "\n",
+      JSON.stringify({ suite: BENCH_SUITE, createdAt: new Date().toISOString(), backend, client: opts.client, ...info, items }, null, 2) + "\n",
     );
 
   if (opts.image && backend !== "cuda") log("image jobs skipped: Stable Diffusion 1.5 runs on --backend cuda only");

@@ -89,11 +89,11 @@ export function NetworkNow() {
         </div>
 
         <dl className="mt-10 grid grid-cols-2 gap-px overflow-hidden rounded-l border border-line bg-line lg:grid-cols-5">
-          <Stat label="GPUs online" value={reachable ? online : null} />
-          <Stat label="On standby" value={reachable ? standby : null} note="Start when a job waits" />
+          <Stat label="GPUs online" value={reachable ? online : null} note="A job needs two, with different owners" />
+          <Stat label="On standby" value={reachable ? standby : null} note="Start by themselves when a job waits" />
           <Stat label="Jobs in queue" value={s ? s.jobs.queued : null} />
           <Stat label="Running now" value={s ? s.jobs.running : null} note="Each job runs on two GPUs" />
-          <Stat label="Verified this epoch" value={s ? s.jobs.agreedThisEpoch : null} note="Both GPUs agreed" />
+          <Stat label="Verified this period" value={s ? s.jobs.agreedThisEpoch : null} note="Both GPUs agreed" />
         </dl>
 
         <div className="mt-6 overflow-hidden rounded-l border border-line bg-coal">
@@ -111,7 +111,7 @@ export function NetworkNow() {
                     </div>
                     <div className="flex items-center gap-4 text-sm">
                       <span className="text-muted">
-                        <span className="num text-text">{formatInt(n.epochAgreedJobs)}</span> verified this epoch
+                        <span className="num text-text">{formatInt(n.epochAgreedJobs)}</span> verified this period
                       </span>
                       <span className={n.project ? "text-text" : "text-muted"}>{n.project ? (n.paidTest ? "Sparecycle GPU, paid test node" : "Sparecycle GPU") : "Community"}</span>
                     </div>

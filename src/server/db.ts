@@ -158,6 +158,68 @@ const MIGRATIONS: string[] = [
     created_at INTEGER NOT NULL
   );
   `,
+  // v4 (private outputs): a per-job read secret (only its sha256 is kept; NULL = a job created before this change),
+  // single-use sign-in nonces and wallet sessions (only the sha256 of the session id is kept). Additive only.
+  `
+  ALTER TABLE jobs ADD COLUMN read_secret_hash TEXT;
+  CREATE TABLE auth_nonces (
+    nonce      TEXT PRIMARY KEY,
+    address    TEXT,                          -- the wallet that used it (NULL while unused)
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    used       INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX auth_nonces_expires ON auth_nonces(expires_at);
+  CREATE TABLE sessions (
+    id_hash    TEXT PRIMARY KEY,              -- sha256 of the session id; the id itself exists only in the cookie
+    address    TEXT NOT NULL,                 -- checksummed wallet
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+  CREATE INDEX sessions_expires ON sessions(expires_at);
+  `,
+  // v5 (gpu): GPU allowlist classification (src/server/gpu-allowlist.ts) and the periodic challenge
+  // (src/server/challenge.ts). Challenges live in their own table: never jobs, never paid, never in a payout tree.
+  `
+  ALTER TABLE nodes ADD COLUMN family TEXT;                                -- allowlist family; NULL = not classified yet
+  ALTER TABLE nodes ADD COLUMN gpu_status TEXT;                            -- eligible | untested | blocked (allowlist)
+  ALTER TABLE nodes ADD COLUMN device_info TEXT;                           -- JSON, self-reported device info (0.3.0+)
+  ALTER TABLE nodes ADD COLUMN challenge_cap INTEGER NOT NULL DEFAULT 0;   -- 1 = node advertised "challenge-1"
+  ALTER TABLE nodes ADD COLUMN challenge_state TEXT;                       -- pending-challenge | eligible | cooldown | suspended
+  ALTER TABLE nodes ADD COLUMN challenge_fails INTEGER NOT NULL DEFAULT 0; -- consecutive failed challenges
+  ALTER TABLE nodes ADD COLUMN challenge_due_at INTEGER;                   -- next challenge at or after (NULL = now)
+  ALTER TABLE nodes ADD COLUMN cooldown_until INTEGER;
+  ALTER TABLE nodes ADD COLUMN allow_until INTEGER;                        -- operator temporary allow (challenge gate only)
+  CREATE TABLE challenges (
+    id            TEXT PRIMARY KEY,           -- bytes32 hex
+    node_key      TEXT NOT NULL,
+    owner         TEXT NOT NULL,
+    backend       TEXT NOT NULL,
+    dev           INTEGER NOT NULL DEFAULT 0,
+    suite         INTEGER NOT NULL,           -- BENCH_SUITE of the reference
+    case_id       TEXT NOT NULL,
+    kind          TEXT NOT NULL,              -- image | text
+    spec          TEXT NOT NULL,              -- JSON JobSpec (a public bench case, no private prompt)
+    expected      TEXT NOT NULL,              -- JSON array of the reference fingerprints at issue time
+    mode          TEXT NOT NULL,              -- observe | enforce (CHALLENGE_MODE when issued)
+    status        TEXT NOT NULL,              -- issued | passed | failed | expired
+    issued_at     INTEGER NOT NULL,
+    lease_expires INTEGER NOT NULL,
+    answered_at   INTEGER,
+    output_hash   TEXT,
+    fingerprint   TEXT,
+    detail        TEXT                        -- JSON: distance to each reference fingerprint, state before / after
+  );
+  CREATE INDEX challenges_node ON challenges(node_key, status);
+  CREATE TABLE gpu_admin_log (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    at        INTEGER NOT NULL,
+    action    TEXT NOT NULL,                  -- reissue | allow | revoke-allow
+    node_key  TEXT NOT NULL,
+    detail    TEXT NOT NULL,                  -- JSON: challenge state before / after
+    note      TEXT
+  );
+  `,
 ];
 
 type Holder = { db: DatabaseSync; path: string; txDepth: number };

@@ -50,10 +50,36 @@ iGPU caveats:
 - Several backends can live on one machine (`bin/llama-cuda`, `bin/llama-vulkan`, `bin/llama-cpu`), but each running
   node needs its own owner wallet and GPU to be paired; one wallet's nodes are never paired with each other.
 
+## Supported GPUs
+
+A GPU family is supported once a published bench shows it matches the reference devices of its backend under the
+scheduler's live thresholds. Full list, statuses and evidence: [docs/gpu-support.md](../docs/gpu-support.md) in the
+Sparecycle repo (rules: `src/server/gpu-allowlist.json`).
+
+| Family | Backend | Status |
+| --- | --- | --- |
+| NVIDIA GeForce RTX 30 series (Ampere) | `cuda` | supported (benched 22 Nov 2026) |
+| NVIDIA GeForce RTX 40 series (Ada) | `cuda` | supported (benched 22 Nov 2026) |
+| NVIDIA GeForce RTX 50 (Blackwell) and RTX 20 (Turing) series | `cuda` | not benched yet |
+| Other NVIDIA cards (workstation, datacenter, GTX) | `cuda` | not benched |
+| AMD, Intel, integrated GPUs and NVIDIA cards on Vulkan | `vulkan` | not benched (no Vulkan reference yet) |
+| CPU | `cpu` | not benched |
+| Software rasterizers (llvmpipe, lavapipe, SwiftShader, Microsoft Basic Render) | any | not supported |
+
+When the scheduler enforces the list, a not-benched family still registers but gets no paid jobs, and a software
+rasterizer is refused (`gpu-not-supported`, with a link to the list). The node prints its family at start.
+
+Node client 0.3.0 and later also send structured device info at registration (CUDA compute capability and driver, or
+the Vulkan vendor / device type / driver) and take part in the scheduler's periodic **GPU challenge**: now and then the
+poll hands the node one fixed case of the bench suite instead of a job; the node runs it like a job and the scheduler
+compares the answer with the published reference outputs. Challenges are unpaid and never count as jobs. A node that
+keeps failing them stops getting jobs. 0.3.0 runs the models with exactly the same settings as 0.2.0, so the two
+versions pair normally; 0.2.0 nodes are never sent a challenge.
+
 ## Requirements
 
 - Node.js 24 LTS (22.18 or newer works)
-- `cuda`: NVIDIA GPU with a current driver (RTX 30-series or newer recommended), Python 3.10–3.13 (with `venv` on
+- `cuda`: NVIDIA GPU with a current driver (RTX 30 or 40 series: see Supported GPUs), Python 3.10–3.13 (with `venv` on
   Linux), ~15 GB free disk; on Linux glibc 2.38+ (Ubuntu 24.04+)
 - `vulkan`: a Vulkan driver (Linux: `libvulkan1` plus the vendor or Mesa driver), ~1.5 GB free disk
 - `cpu`: ~1.5 GB free disk
