@@ -20,8 +20,8 @@
 | Network | **Robinhood Chain** (EVM, Arbitrum Orbit L2), chain id **4663**; testnet 46630 |
 | Official token | **SpareCycle (SPARE)**, CA `0x012d695b94377e0c7b9edee3d824259baa37cf3a`, launched on **Pons v2** (factory `0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e`). Its creator fees go to the team wallet set at launch, **not** to the node pot; the site says so. |
 | Earlier launch | **Sparecycle (CYCLE)** `0x2DbDcAf731ed6fDD55176183Ae7202a0D77F3A02`; its creator fees go to the reward contract |
-| Reward contract | `SparecycleRewards` `0x68A0569130551154FC1aABD71d99f65681c58Fe9`: pot per epoch, Merkle claims, **no withdraw function**. Verified on Sourcify. |
-| Payments contract | `SparecycleJobPayments` `0x420716931E5Ff2a984840C6E95837d826a8BE7eB`: non-custodial prepaid balances; 95% of each verified job's charge to the node pot, 5% to a 2-of-2 Safe treasury `0xb262E4436aD6760F91e987f14e2fAc5D6550c71B` (both keys held by the team today). Verified on Sourcify. |
+| Reward contract | `SparecycleRewards` `0x68A0569130551154FC1aABD71d99f65681c58Fe9`: pot per epoch, Merkle claims, **no withdraw function**. Verified on Sourcify. Owner: the treasury Safe (2 of 3) since 25 Nov 2026. |
+| Payments contract | `SparecycleJobPayments` `0x420716931E5Ff2a984840C6E95837d826a8BE7eB`: non-custodial prepaid balances; 95% of each verified job's charge to the node pot, 5% to the treasury Safe `0xb262E4436aD6760F91e987f14e2fAc5D6550c71B` (2 of 3 signers; all three keys held by the project owner). Verified on Sourcify. |
 | Node pay | Verified paid jobs (**0.5 gwei per work unit**) plus anything sent to the reward contract. Free trial jobs (5 per hour per IP) share the same pot. |
 | Repo | `github.com/meji0900/Sparecycle` |
 
@@ -46,7 +46,7 @@ Screenshots of the live site on 25 Nov 2026. Every number in them is read live f
 
 - **Private job outputs, live.** A result can be read only by the browser that created the job (a per-job read secret) or by the wallet that paid (after a gasless sign-in). Knowing a job id is no longer enough; the old public `/output` link returns `410`. Details: [docs/private-outputs.md](docs/private-outputs.md).
 - **GPU allowlist and periodic GPU challenge.** Nodes report their device; families that passed the cross-GPU bench are allowed, the rest are "untested". Both run in safe defaults for now (allowlist observe-only, challenge off). Details: [docs/gpu-support.md](docs/gpu-support.md), results in [bench/results/INDEX.md](bench/results/INDEX.md). Node client **0.3.0**.
-- **Multisig ownership, rehearsed on testnet.** The reward contract's owner moved from one wallet to a 2-of-3 Safe; the old wallet lost every owner power, and jobs kept being charged and epochs kept closing. **On mainnet the owner is still one wallet**; the cut-over waits on the final signer list. Log: [docs/ops/multisig-rehearsal.md](docs/ops/multisig-rehearsal.md), steps: [docs/ops/multisig-runbook.md](docs/ops/multisig-runbook.md).
+- **Multisig ownership, live on mainnet.** The reward contract's owner is now the treasury Safe `0xb262E4436aD6760F91e987f14e2fAc5D6550c71B`, which needs 2 of its 3 signers ([signers changed](https://robinhoodchain.blockscout.com/tx/0x5082b606238c7fdfaf1aafcfa42b7726200664da84769e2105b22f45270e4c3d), [transfer](https://robinhoodchain.blockscout.com/tx/0xeafcacd3cdb3f50445ff6cace234756c9f21990a7d0def014eab64596afdb5a0), [accept](https://robinhoodchain.blockscout.com/tx/0x49470d4978f9ee6ff73a6d339c06a876fe98b5bcf20ad3c8287eccf14bdc4346)). The launch wallet's owner calls now revert. All three keys are held by the project owner, so this guards against one lost or leaked key, not against the project owner. Rehearsed first on testnet: [docs/ops/multisig-rehearsal.md](docs/ops/multisig-rehearsal.md).
 - **First payout on mainnet (24 Nov 2026).** Job payments charged ([`0x7ef05c0e…`](https://robinhoodchain.blockscout.com/tx/0x7ef05c0e4126770474abbbcf8c58043e1ee771109a87d8ea669044488ce07db2)), payout root posted ([`0x7178cd00…`](https://robinhoodchain.blockscout.com/tx/0x7178cd00506c9a4f34263ba05312bd87dded8bf6c1bdfe7c820d3bf8e56f2df1)), a node claimed its share ([`0x251cc610…`](https://robinhoodchain.blockscout.com/tx/0x251cc6104160579bd282405392df6f2c28c7b2d6012d9df5cc136bb87ee413a0)). The claim went to the team's own GPU, openly labelled as a paid test node.
 
 ---
@@ -123,7 +123,7 @@ The pot in `SparecycleRewards` has two sources:
 customer ──deposit──▶ SparecycleJobPayments (prepaid balance, only the customer can withdraw)
                          │  once per epoch the scheduler charges verified jobs (0.5 gwei per work unit)
                          ├──▶ 95% ──fund()──▶ SparecycleRewards (open epoch pot)
-                         └──▶  5% ─────────▶ treasury Safe (2-of-2, team keys)
+                         └──▶  5% ─────────▶ treasury Safe (2 of 3)
 
 trader ──buy/sell CYCLE──▶ Pons bonding curve (standard fee + optional creator tax, buyback OFF)
                          │  Pons protocol share is taken first (protocolFeeShareBps, 30% when measured)
@@ -155,7 +155,7 @@ trader ──buy/sell CYCLE──▶ Pons bonding curve (standard fee + optional
 - **Live on-chain status** on the landing page and in the app: epoch, pot, reserved, claimed, root; Pons factory parameters read live (`/api/chain`, 15-second cache).
 - **Honest roadmap, FAQ and disclosures**: no fake stats, no "yield" wording, a single accent colour `#00C805`.
 - **Fail closed**: any value not yet set (address, ticker, decision) shows as "Not configured / Not deployed yet" and is never made up.
-- **Legal pages**: Terms and Privacy (placeholders until written by legal counsel) and full Disclosures (centralized scheduler, contract owner = one wallet, Pons not audited, token risk).
+- **Legal pages**: Terms and Privacy (placeholders until written by legal counsel) and full Disclosures (centralized scheduler, contract owner = a 2-of-3 Safe whose keys one person holds, Pons not audited, token risk).
 - Still illustrations from Google Flow, `og.jpg` share card, icons.
 
 ### dApp
@@ -233,7 +233,7 @@ Everything under `/api/v1`, JSON, errors always `{ "error": "<code>", "message":
 `SparecycleRewards` at `0x68A0569130551154FC1aABD71d99f65681c58Fe9`. Full details, invariants and gas table: [contracts/README.md](contracts/README.md).
 
 - **Payout asset**: ETH (`address(0)`) or one ERC-20 (e.g. USDG), fixed at deploy; must equal the token's pair asset.
-- **Roles**: `owner` (currently a single wallet, transferable to a multisig via `Ownable2Step`; `renounceOwnership` disabled) and `scheduler` (the key that posts roots).
+- **Roles**: `owner` (the treasury Safe `0xb262E4436aD6760F91e987f14e2fAc5D6550c71B`, 2 of 3, since 25 Nov 2026; moved with `Ownable2Step`; `renounceOwnership` disabled) and `scheduler` (the key that posts roots).
 - **Epochs**: epoch 0 opens at deploy; all incoming funds go to the open epoch; after `epochLength` the scheduler calls `closeEpochAndPostRoot(id, root, reserved)`; `pot − reserved` rolls over to the next epoch. No reposting or corrections.
 - **Claims**: `claim(epochId, amount, proof)` once per account per epoch; total claims never exceed `reserved`; unclaimed allocations stay claimable forever.
 - **Merkle leaf**: `keccak256(abi.encodePacked(uint64 epochId, address account, uint256 amount))`, sorted-pair tree (OpenZeppelin `MerkleProof`).
@@ -252,7 +252,7 @@ Everything under `/api/v1`, JSON, errors always `{ "error": "<code>", "message":
 `SparecycleJobPayments` at `0x420716931E5Ff2a984840C6E95837d826a8BE7eB`, paid in ETH. Source: `contracts/src/SparecycleJobPayments.sol`.
 
 - Customers `deposit` ETH; the balance is held by the contract, not by a server wallet, and only the customer can withdraw it.
-- Once per epoch the reward contract's scheduler calls `charge` with the amounts owed for that epoch's verified jobs (0.5 gwei per work unit). A charge goes to exactly two places: **95%** into the reward contract's open-epoch pot (through its public `fund()`) and **5%** to the fixed treasury, a 2-of-2 Safe `0xb262E4436aD6760F91e987f14e2fAc5D6550c71B`.
+- Once per epoch the reward contract's scheduler calls `charge` with the amounts owed for that epoch's verified jobs (0.5 gwei per work unit). A charge goes to exactly two places: **95%** into the reward contract's open-epoch pot (through its public `fund()`) and **5%** to the fixed treasury, a 2-of-3 Safe `0xb262E4436aD6760F91e987f14e2fAc5D6550c71B`.
 - No owner, no admin function, no other way to move a customer's balance.
 - Customer protections: an optional per-epoch spend limit (`setSpendLimit`); charges only for the open epoch; every charge emits the hash of the published charge list and one event per customer.
 - Withdrawals are two-step: `requestWithdraw`, then `withdraw` once the reward contract has closed the request's epoch and the next one, or after `WITHDRAW_TIMEOUT` (2 days) if epochs stop closing.
@@ -474,9 +474,9 @@ Launch order:
 
 ## Ownership and multisig
 
-Today the reward contract's owner on mainnet is **one wallet** (`0x6C07…d7D4`), and the site says so on `/proof` and in the disclosures. The owner can pause claims, rotate the scheduler and return stray tokens; it has no function to take the pot.
+Since 25 Nov 2026 the reward contract's owner on mainnet is the **treasury Safe** `0xb262E4436aD6760F91e987f14e2fAc5D6550c71B`: every owner action needs 2 of its 3 signers. The owner can pause claims, rotate the scheduler and return stray tokens; it has no function to take the pot. All three keys are currently held by the project owner, which `/proof` and the disclosures say.
 
-The contract uses `Ownable2Step`, so moving the owner to a Safe takes two transactions: the current owner calls `transferOwnership(safe)`, then the Safe executes `acceptOwnership()`. This was rehearsed end to end on Robinhood Chain testnet on 25 Nov 2026 with throwaway contracts and test keys:
+The contract uses `Ownable2Step`, so moving the owner to a Safe takes two transactions: the current owner calls `transferOwnership(safe)`, then the Safe executes `acceptOwnership()`. This was first rehearsed end to end on Robinhood Chain testnet with throwaway contracts and test keys:
 
 ![The multisig rehearsal on Robinhood Chain testnet: 11 steps, from creating the Safe to an epoch closed after the move](docs/images/multisig-rehearsal.png)
 
@@ -485,7 +485,15 @@ The contract uses `Ownable2Step`, so moving the owner to a Safe takes two transa
 - The scheduler kept charging jobs and closed an epoch without any Safe signature.
 - All 15 transactions and 25 checks: [docs/ops/multisig-rehearsal.md](docs/ops/multisig-rehearsal.md). Rerun: `node scripts/multisig-rehearsal.mjs`. Fork tests against the live contract: `contracts/test/fork/OwnershipFork.t.sol`.
 
-The mainnet cut-over follows [docs/ops/multisig-runbook.md](docs/ops/multisig-runbook.md) (`node scripts/mainnet.mjs transfer-owner <safe>`, typed confirmation) and waits on the final signer list: no single person or device may hold two of the three signers.
+The mainnet cut-over, 25 Nov 2026 ([docs/ops/multisig-runbook.md](docs/ops/multisig-runbook.md)):
+
+| Step | Transaction |
+| --- | --- |
+| Treasury Safe signers: launch wallet out, two new signers in, 2 of 3 | [`0x5082b606…`](https://robinhoodchain.blockscout.com/tx/0x5082b606238c7fdfaf1aafcfa42b7726200664da84769e2105b22f45270e4c3d) |
+| `transferOwnership(Safe)` from the launch wallet (`node scripts/mainnet.mjs transfer-owner <safe>`) | [`0xeafcacd3…`](https://robinhoodchain.blockscout.com/tx/0xeafcacd3cdb3f50445ff6cace234756c9f21990a7d0def014eab64596afdb5a0) |
+| `acceptOwnership()` as a Safe transaction, 2 of 3 signatures | [`0x49470d49…`](https://robinhoodchain.blockscout.com/tx/0x49470d4978f9ee6ff73a6d339c06a876fe98b5bcf20ad3c8287eccf14bdc4346) |
+
+Checked after the move: `owner()` = the Safe, `pendingOwner()` = 0, and `setScheduler` / `pauseClaims` from the launch wallet revert with `OwnableUnauthorizedAccount`.
 
 ## Test results
 
@@ -564,7 +572,7 @@ Verdict: images pass, text fails, so both families stay untested. Details: [benc
 ## Limitations
 
 - Centralized scheduler: the operator that posts roots can make mistakes or cheat within the pot of the still-open epoch; settled epochs cannot be touched. The same scheduler key charges paid jobs, bounded by each customer's optional spend limit.
-- The reward contract owner is currently a single wallet, not a multisig. The move to a Safe is rehearsed on testnet and written up in [docs/ops/multisig-runbook.md](docs/ops/multisig-runbook.md).
+- The reward contract owner is a 2-of-3 Safe, but all three keys are held by the project owner: it protects against one lost or leaked key, not against that person. Swapping a signer for an independent one is a single Safe transaction.
 - Once the reward contract is a token's `creatorFeeRecipient`, the fee recipient cannot be redirected from our side (by design).
 - The different-owner/GPU check relies on what nodes report (GPU UUIDs can be faked); an operator with several wallets can still run both copies of a job.
 - The post-graduation sweep path (hook) is untested. `sweepCurve`/`feeSweepOperator` are not in the Pons docs — they were taken from bytecode and a fork.

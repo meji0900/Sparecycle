@@ -6,6 +6,7 @@ import { Hex } from "@/components/ui/address";
 import { config, tickerLabel } from "@/lib/config";
 import { PONS, PONS_DOCS_URL } from "@/lib/pons";
 import { FUNDING, feesToTeamWallet, paidJobsLive } from "@/lib/funding-copy";
+import { MAINNET, TREASURY } from "@/lib/proof";
 import { serverEnv } from "@/server/env";
 
 export const metadata: Metadata = {
@@ -165,16 +166,16 @@ export default function DisclosuresPage() {
             <span aria-hidden className="mt-2.5 h-px w-3 shrink-0 bg-amber" />
             <span>
               <span className="text-text">The contract owner can pause claims, not take the pot.</span> The owner{" "}
-              {config.owner && config.multisig && config.owner.toLowerCase() === config.multisig.toLowerCase() ? (
+              {MAINNET.owner.toLowerCase() === TREASURY.safe.toLowerCase() ? (
                 <>
-                  is a multisig (<Hex value={config.owner} />). It
-                </>
-              ) : config.owner ? (
-                <>
-                  is a single wallet (<Hex value={config.owner} />), not a multisig, so one key controls these levers. It
+                  is the treasury Safe (<Hex value={MAINNET.owner} />): every owner action needs {TREASURY.threshold} of its{" "}
+                  {TREASURY.owners.length} signers. All {TREASURY.owners.length} keys are currently held by the project owner,
+                  so this guards against one lost or leaked key, not against the project owner. It
                 </>
               ) : (
-                <>(<Placeholder>[OWNER_ADDRESS]</Placeholder>, not deployed yet)</>
+                <>
+                  is a single wallet (<Hex value={MAINNET.owner} />), not a multisig, so one key controls these levers. It
+                </>
               )}{" "}
               can pause and unpause claims, rotate the scheduler, and rescue a wrong token sent by mistake. It has no function
               to withdraw the payout asset, mint, or set the pot.

@@ -4,7 +4,25 @@ Who controls what on Robinhood Chain mainnet (4663), how the owner moves to a Sa
 Values in `[BRACKETS]` are decisions that are still open (see "Open decisions"). Nothing here is sent by a script on
 its own: every mainnet transaction is signed by a person.
 
-## Roles today (read on chain, 25 Nov 2026)
+## Done on mainnet, 25 Nov 2026
+
+The cut-over below was carried out with option A (the treasury Safe is the owner). All three signers are held by the
+project owner, so the brief's "no single person controls the threshold" is **not** met yet; swapping one signer for an
+independent person later is one Safe transaction (Settings → Setup → Manage signers) and needs no owner move.
+
+| Step | Transaction | Checked |
+| --- | --- | --- |
+| Treasury Safe signers: `swapOwner(0x6C07…d7D4 → 0xf185…54Ab)` + `addOwnerWithThreshold(0x310e…E22E, 2)` | [`0x5082b606…`](https://robinhoodchain.blockscout.com/tx/0x5082b606238c7fdfaf1aafcfa42b7726200664da84769e2105b22f45270e4c3d), block 122,925,235 | `getThreshold()` = 2, `getOwners()` = `0x310e38F441296070a73549176Df3ED1c3d80E22E`, `0xf185f003840C35c6D3568F414038C7b648d854Ab`, `0x783435E47AcE1905C1197b1d36526797d3dbE696` |
+| `transferOwnership(Safe)` from the launch wallet (`node scripts/mainnet.mjs transfer-owner`) | [`0xeafcacd3…`](https://robinhoodchain.blockscout.com/tx/0xeafcacd3cdb3f50445ff6cace234756c9f21990a7d0def014eab64596afdb5a0), block 122,931,018 | `pendingOwner()` = the Safe |
+| `acceptOwnership()` as a Safe transaction (2 of 3 signatures) | [`0x49470d49…`](https://robinhoodchain.blockscout.com/tx/0x49470d4978f9ee6ff73a6d339c06a876fe98b5bcf20ad3c8287eccf14bdc4346), block 122,955,386 | `owner()` = the Safe, `pendingOwner()` = 0; `setScheduler` / `pauseClaims` from `0x6C07…d7D4` revert `OwnableUnauthorizedAccount` |
+
+Notes from the run: a phone wallet on an ISP that blocks the Robinhood RPC could neither sign nor execute in Safe{Wallet}
+directly; signing through WalletConnect from the laptop worked, and a fully signed Safe transaction can be executed by
+any account with gas (here the launch wallet).
+
+The sections below are the plan as written before the move; "Roles today" describes the state before it.
+
+## Roles before the move (read on chain, 25 Nov 2026, morning)
 
 | Role | Address | Powers |
 | --- | --- | --- |

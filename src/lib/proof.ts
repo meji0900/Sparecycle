@@ -9,7 +9,10 @@ export const SOURCIFY_REPO = "https://repo.sourcify.dev";
 export const MAINNET = {
   chainId: 4663,
   rewardContract: "0x68A0569130551154FC1aABD71d99f65681c58Fe9",
-  owner: "0x6C079ff20B77fBbc89Fb5C90c5f43Cf24166d7D4",
+  /** Owner since 25 Nov 2026: the treasury Safe (2 of 3). Before that, the launch wallet below. */
+  owner: "0xb262E4436aD6760F91e987f14e2fAc5D6550c71B",
+  /** Deployed the contracts and launched the token; the first owner. */
+  launchWallet: "0x6C079ff20B77fBbc89Fb5C90c5f43Cf24166d7D4",
   scheduler: "0xc062625d4bD24bcE5C8b62F950A38C962CF240B6",
   sweepBot: "0xAd5ec8726b74e5c0c1455137beA80B1d13a2fEFa",
   ponsFeeEscrow: "0xd3AFEB2a57f70eF218Aa82451c51B2fb0416Ac9e",
@@ -35,7 +38,7 @@ export const MAINNET_TXS: ProofTx[] = [
     detail: "SparecycleRewards created with owner = launch wallet, scheduler = root poster, Pons v2 fee escrow, payout in ETH, 6-hour epochs. 1,796,425 gas.",
     hash: "0x94e69d1d5592e38d136ffa4b08e6d4d60d839e194acf374ee2972ce1c1e5b1aa",
     block: 120_653_539,
-    from: MAINNET.owner,
+    from: MAINNET.launchWallet,
     to: MAINNET.rewardContract,
   },
   {
@@ -44,7 +47,7 @@ export const MAINNET_TXS: ProofTx[] = [
     detail: "0.0003 ETH so the scheduler can post each epoch's Merkle root.",
     hash: "0x075db48ddee83ef2b3c9b689ec9bc6b1b0912301ea276e8b7d7d0bdc8fe01c00",
     block: 120_655_409,
-    from: MAINNET.owner,
+    from: MAINNET.launchWallet,
     to: MAINNET.scheduler,
   },
   {
@@ -53,7 +56,7 @@ export const MAINNET_TXS: ProofTx[] = [
     detail: "0.0003 ETH so the bot can move Pons fees into the reward contract.",
     hash: "0xf695114d0c2c78c19cc9c648c5895fbde7b255173802ad491a4c676d994da772",
     block: 120_655_551,
-    from: MAINNET.owner,
+    from: MAINNET.launchWallet,
     to: MAINNET.sweepBot,
   },
 ];
@@ -84,7 +87,7 @@ export const LAUNCH_TX: ProofTx | null = {
     "1,000,000,000 CYCLE minted to the Pons bonding curve, none to the team. Pair ETH, 1% creator tax, creator fee recipient = the reward contract (permanent), buybacks off, no initial buy. 3,730,061 gas plus the 0.0005 ETH Pons launch fee.",
   hash: "0xef58abf4806e2baed99d3306afad69226cd136f2acdf0233b51b53e3250f3a01",
   block: 122_078_056,
-  from: MAINNET.owner,
+  from: MAINNET.launchWallet,
   to: "0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e",
 };
 
@@ -101,12 +104,45 @@ export const PAYMENTS_TX: ProofTx = {
     "SparecycleJobPayments on the reward contract above, treasury = the Safe below (5% of each charge, fixed). No owner and no admin functions. 1,148,463 gas.",
   hash: "0x5591b60486632e484c83509835fa461c9aa2e776b2a25c35cc3082d6766bab37",
   block: 122_139_640,
-  from: MAINNET.owner,
+  from: MAINNET.launchWallet,
   to: PAYMENTS.address,
 };
 
+/** The owner moved from the launch wallet to the treasury Safe (25 Nov 2026), after the Safe became 2 of 3. */
+export const OWNERSHIP_TXS: ProofTx[] = [
+  {
+    date: "25 Nov 2026, 09:03 UTC",
+    what: "Treasury Safe: 2 of 3 signers",
+    detail:
+      "Safe transaction (both former signers): the launch wallet swapped out for a new signer, a third signer added, threshold 2. 152,355 gas.",
+    hash: "0x5082b606238c7fdfaf1aafcfa42b7726200664da84769e2105b22f45270e4c3d",
+    block: 122_925_235,
+    from: "0x6C079ff20B77fBbc89Fb5C90c5f43Cf24166d7D4",
+    to: "0xb262E4436aD6760F91e987f14e2fAc5D6550c71B",
+  },
+  {
+    date: "25 Nov 2026, 09:13 UTC",
+    what: "Hand the reward contract to the Safe",
+    detail: "transferOwnership(Safe) from the launch wallet. Ownable2Step: nothing changes until the Safe accepts. 47,831 gas.",
+    hash: "0xeafcacd3cdb3f50445ff6cace234756c9f21990a7d0def014eab64596afdb5a0",
+    block: 122_931_018,
+    from: "0x6C079ff20B77fBbc89Fb5C90c5f43Cf24166d7D4",
+    to: "0x68A0569130551154FC1aABD71d99f65681c58Fe9",
+  },
+  {
+    date: "25 Nov 2026, 09:56 UTC",
+    what: "The Safe accepts ownership",
+    detail:
+      "acceptOwnership() as a Safe transaction signed by 2 of its 3 signers. From here the launch wallet's setScheduler and pauseClaims revert. 75,662 gas.",
+    hash: "0x49470d4978f9ee6ff73a6d339c06a876fe98b5bcf20ad3c8287eccf14bdc4346",
+    block: 122_955_386,
+    from: "0x6C079ff20B77fBbc89Fb5C90c5f43Cf24166d7D4",
+    to: "0xb262E4436aD6760F91e987f14e2fAc5D6550c71B",
+  },
+];
+
 /** Every mainnet transaction on /proof, oldest first. */
-export const ALL_MAINNET_TXS: ProofTx[] = [...MAINNET_TXS, ...(LAUNCH_TX ? [LAUNCH_TX] : []), PAYMENTS_TX];
+export const ALL_MAINNET_TXS: ProofTx[] = [...MAINNET_TXS, ...(LAUNCH_TX ? [LAUNCH_TX] : []), PAYMENTS_TX, ...OWNERSHIP_TXS];
 
 /** Testnet run of the full loop (20 Nov 2026): Pons is not on testnet, so a mock escrow stands in for it. */
 export const TESTNET = {
@@ -175,10 +211,15 @@ export const TEST_RUNS: TestRun[] = [
   },
 ];
 
-/** Treasury for paid jobs: receives 5% of every charge. A Safe; both keys are currently the project owner's. */
+/** Treasury for paid jobs (5% of every charge) and, since 25 Nov 2026, the reward contract's owner. 2 of 3; all three
+ *  keys are currently the project owner's. */
 export const TREASURY = {
   safe: "0xb262E4436aD6760F91e987f14e2fAc5D6550c71B",
-  owners: ["0x6C079ff20B77fBbc89Fb5C90c5f43Cf24166d7D4", "0x783435E47AcE1905C1197b1d36526797d3dbE696"],
+  owners: [
+    "0x310e38F441296070a73549176Df3ED1c3d80E22E",
+    "0xf185f003840C35c6D3568F414038C7b648d854Ab",
+    "0x783435E47AcE1905C1197b1d36526797d3dbE696",
+  ],
   threshold: 2,
   version: "Safe 1.5.0",
   createdOn: "24 Nov 2026",

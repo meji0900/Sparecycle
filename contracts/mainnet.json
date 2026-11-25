@@ -19,11 +19,19 @@
   "treasury": {
     "safe": "0xb262E4436aD6760F91e987f14e2fAc5D6550c71B",
     "owners": [
-      "0x6C079ff20B77fBbc89Fb5C90c5f43Cf24166d7D4",
+      "0x310e38F441296070a73549176Df3ED1c3d80E22E",
+      "0xf185f003840C35c6D3568F414038C7b648d854Ab",
       "0x783435E47AcE1905C1197b1d36526797d3dbE696"
     ],
     "threshold": 2,
-    "note": "Safe 1.5.0 on Robinhood Chain, created 2026-11-24; both keys held by the project owner on one laptop (separate seed phrases)"
+    "note": "Safe 1.5.0 on Robinhood Chain, created 2026-11-24; 2 of 3 since 2026-11-25 (tx 0x5082b606...), all three keys held by the project owner"
   },
-  "jobPriceWeiPerUnit": "500000000"
+  "jobPriceWeiPerUnit": "500000000",
+  "rewardOwner": {
+    "address": "0xb262E4436aD6760F91e987f14e2fAc5D6550c71B",
+    "since": "2026-11-25",
+    "transferTx": "0xeafcacd3cdb3f50445ff6cace234756c9f21990a7d0def014eab64596afdb5a0",
+    "acceptTx": "0x49470d4978f9ee6ff73a6d339c06a876fe98b5bcf20ad3c8287eccf14bdc4346",
+    "note": "The treasury Safe owns SparecycleRewards; the launch wallet's owner calls revert."
+  }
 }

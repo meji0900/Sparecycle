@@ -174,7 +174,7 @@ export default async function ProofPage() {
                 <Ext href={`${SOURCIFY_REPO}/${MAINNET.chainId}/${MAINNET.rewardContract}`}>Read the source</Ext>
               </span>
             </Fact>
-            <Fact label="Owner" note="One wallet, not a multisig. It can replace the scheduler, pause claims and return stray tokens. It has no function to withdraw the payout asset.">
+            <Fact label="Owner" note="The treasury Safe (below): every owner action needs 2 of its 3 signers, and all three keys are currently held by the project owner. It can replace the scheduler, pause claims and return stray tokens. It has no function to withdraw the payout asset.">
               <Check live={isLive} ok={same(live?.owner, MAINNET.owner)}>
                 <Hex value={live?.owner ?? MAINNET.owner} link={false} />
               </Check>
@@ -318,10 +318,10 @@ export default async function ProofPage() {
         />
         <Panel>
           <Facts cols={3}>
-            <Fact label="Launch wallet (owner)" note="Deployed the contract and launches the token. Held by the project owner.">
+            <Fact label="Launch wallet" note="Deployed the contracts and launched the token. Owner until 25 Nov 2026; its owner calls now revert. Held by the project owner.">
               <span className="inline-flex flex-col gap-1">
-                <Hex value={MAINNET.owner} link={false} />
-                <Ext href={mainAddr(MAINNET.owner)}>History</Ext>
+                <Hex value={MAINNET.launchWallet} link={false} />
+                <Ext href={mainAddr(MAINNET.launchWallet)}>History</Ext>
               </span>
             </Fact>
             <Fact label="Scheduler" note="Server key. Posts each epoch's Merkle root, nothing else.">
@@ -354,7 +354,7 @@ export default async function ProofPage() {
           title="Paid jobs and the treasury"
           description={
             config.jobPayments
-              ? "Customers' balances sit in the payments contract, which has no owner. Each verified job is charged once per epoch: 95% into the reward pot above, 5% to this Safe."
+              ? "Customers' balances sit in the payments contract, which has no owner. Each verified job is charged once per epoch: 95% into the reward pot above, 5% to this Safe. Since 25 Nov 2026 the same Safe owns the reward contract."
               : "Paid jobs are not live yet. When they are, 95% of each verified job's payment goes into the reward pot above and 5% to this Safe."
           }
         />
@@ -363,7 +363,7 @@ export default async function ProofPage() {
             <Fact label="Treasury Safe" note={<Ext href={mainAddr(TREASURY.safe)}>Open on Blockscout</Ext>}>
               <Hex value={TREASURY.safe} link={false} head={10} tail={8} />
             </Fact>
-            <Fact label="Signatures needed" note={`${TREASURY.version}, created ${TREASURY.createdOn}. Both keys are currently held by the project owner.`}>
+            <Fact label="Signatures needed" note={`${TREASURY.version}, created ${TREASURY.createdOn}. All three keys are currently held by the project owner.`}>
               <Check live={!!live?.safe} ok={live?.safe?.threshold === TREASURY.threshold && live.safe.owners.length === TREASURY.owners.length}>
                 <span className="num">
                   {live?.safe ? `${live.safe.threshold} of ${live.safe.owners.length}` : `${TREASURY.threshold} of ${TREASURY.owners.length}`}
