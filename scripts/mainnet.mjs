@@ -13,6 +13,8 @@
 //   node scripts/mainnet.mjs deploy              deploy SparecycleRewards (owner = the wallet)
 //   node scripts/mainnet.mjs fund <scheduler|sweep> [eth]   send gas money from the wallet (default 0.0003 ETH)
 //   node scripts/mainnet.mjs deploy-payments     deploy SparecycleJobPayments (paid jobs) with the treasury Safe
+//   node scripts/mainnet.mjs transfer-owner <safe>  step 1 of moving the reward contract owner to a Safe
+//                                                (the Safe then executes acceptOwnership(); docs/ops/multisig-runbook.md)
 //   node scripts/mainnet.mjs launch              launch the token on Pons with the reward contract as fee recipient
 //                                                (refuses while the logo / website links do not load)
 //   node scripts/mainnet.mjs verify              publish the reward contract source (Sourcify, shown on Blockscout)
@@ -451,6 +453,49 @@ async function deployPayments(again) {
   console.log("Next: node scripts/mainnet.mjs verify payments, then node scripts/mainnet.mjs env (Railway variables).");
 }
 
+/**
+ * Step 1 of 2 of moving the reward contract's owner to a Safe: transferOwnership(safe) from the wallet. The Safe must
+ * then execute acceptOwnership() (data 0x79ba5097); until it does, the wallet stays owner. See docs/ops/multisig-runbook.md.
+ */
+async function transferOwner(safeArg) {
+  const c = config();
+  const reward = deployedReward();
+  if (!reward) fail("No reward contract deployed.");
+  if (!safeArg || !isAddress(safeArg)) fail("usage: node scripts/mainnet.mjs transfer-owner <safe address>");
+  const safe = getAddress(safeArg);
+  needTerminal();
+  needKeystore(c);
+  const r = await rpc();
+  const pc = await client();
+  const ownableAbi = parseAbi(["function owner() view returns (address)", "function pendingOwner() view returns (address)"]);
+  const [owner, pending, code, owners, threshold] = await Promise.all([
+    pc.readContract({ address: reward, abi: ownableAbi, functionName: "owner" }),
+    pc.readContract({ address: reward, abi: ownableAbi, functionName: "pendingOwner" }),
+    pc.getCode({ address: safe }),
+    pc.readContract({ address: safe, abi: safeAbi, functionName: "getOwners" }).catch(() => null),
+    pc.readContract({ address: safe, abi: safeAbi, functionName: "getThreshold" }).catch(() => null),
+  ]);
+  if (getAddress(owner) !== getAddress(c.wallet)) fail(`The reward contract's owner is ${owner}, not ${c.wallet}: nothing to do from this wallet.`);
+  if (!code || code === "0x" || !owners || threshold === null) fail(`${safe} is not a deployed Safe on Robinhood Chain.`);
+  if (threshold < 2n) fail(`The Safe's threshold is ${threshold}; it must be at least 2.`);
+  console.log(`Reward contract ${reward}\n  owner         ${owner}\n  pendingOwner  ${pending}`);
+  console.log(`New owner (Safe) ${safe}: ${threshold} of ${owners.length}\n  ${owners.join("\n  ")}`);
+  const env = { REWARD_CONTRACT: reward, SAFE: safe, EXPECTED_CHAIN_ID: String(CHAIN_ID) };
+  const args = ["script", "script/TransferOwnership.s.sol:TransferOwnership", "--rpc-url", r.url, "--sender", c.wallet];
+  console.log(`\nSimulating transferOwnership from ${c.wallet} (nothing sent yet)\n`);
+  if ((await run("forge", args, env)) !== 0) fail("Simulation failed. Nothing was sent.");
+  const ok = await confirm(
+    "OWNER",
+    `transferOwnership(${safe}) on the reward contract. The wallet stays owner until the Safe executes acceptOwnership(); before that you can still point it elsewhere by running this again.`,
+  );
+  if (!ok) fail("Stopped. Nothing was sent.");
+  if ((await run("forge", [...args, "--account", c.keystore, "--broadcast"], env)) !== 0) fail("Broadcast failed (see above).");
+  const after = await pc.readContract({ address: reward, abi: ownableAbi, functionName: "pendingOwner" });
+  console.log(`\npendingOwner ${after} ${getAddress(after) === safe ? "OK" : "MISMATCH"}`);
+  console.log(`Next, from the Safe: a transaction to ${reward}, value 0, data 0x79ba5097 (acceptOwnership()).`);
+  console.log(`Check: ${EXPLORER}/address/${reward}?tab=read_contract (owner = the Safe, pendingOwner = 0x0).`);
+}
+
 async function fund(which, amount) {
   if (!["scheduler", "sweep"].includes(which)) fail("usage: node scripts/mainnet.mjs fund <scheduler|sweep> [eth]");
   const c = config();
@@ -606,6 +651,7 @@ try {
     case "launch": await launch(flag("--again")); break;
     case "verify": await verify(positional[0]); break;
     case "deploy-payments": await deployPayments(flag("--again")); break;
+    case "transfer-owner": await transferOwner(positional[0]); break;
     case "env": env(); break;
     case "secret": secret(positional[0]); break;
     default:

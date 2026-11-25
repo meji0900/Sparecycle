@@ -458,7 +458,7 @@ Not yet tested: Vulkan on NVIDIA (not available in Vast containers), other AMD/I
 ## Limitations
 
 - Centralized scheduler: the operator that posts roots can make mistakes or cheat within the pot of the still-open epoch; settled epochs cannot be touched. The same scheduler key charges paid jobs, bounded by each customer's optional spend limit.
-- The reward contract owner is currently a single wallet, not a multisig.
+- The reward contract owner is currently a single wallet, not a multisig. The move to a Safe is rehearsed on testnet and written up in [docs/ops/multisig-runbook.md](docs/ops/multisig-runbook.md).
 - Once the reward contract is a token's `creatorFeeRecipient`, the fee recipient cannot be redirected from our side (by design).
 - The different-owner/GPU check relies on what nodes report (GPU UUIDs can be faked); an operator with several wallets can still run both copies of a job.
 - The post-graduation sweep path (hook) is untested. `sweepCurve`/`feeSweepOperator` are not in the Pons docs — they were taken from bytecode and a fork.
