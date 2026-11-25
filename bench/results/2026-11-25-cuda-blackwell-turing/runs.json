@@ -1,0 +1,7 @@
+{
+  "$comment": "How the summaries in this folder were made (scripts/check-bench-results.mjs re-runs these from the repo root and compares with the committed files). Folders are relative to this folder; the reference pair comes from the 2026-11-22 folder.",
+  "compare": [
+    { "summary": "summary-image.json", "folders": ["RTX-5060-Ti-cuda", "RTX-2070-cuda", "../2026-11-22-cuda-ampere-ada/RTX-3060-cuda", "../2026-11-22-cuda-ampere-ada/RTX-4060-cuda"], "only": "image" },
+    { "summary": "summary-text.json", "folders": ["RTX-5060-Ti-cuda", "RTX-2070-cuda", "../2026-11-22-cuda-ampere-ada/RTX-3060-cuda-ub1", "../2026-11-22-cuda-ampere-ada/RTX-4060-cuda-ub1"], "only": "text" }
+  ]
+}

@@ -294,7 +294,8 @@ Nodes report their device (node client 0.3.0+). The scheduler maps it to a famil
 | Family | Status | Evidence |
 | --- | --- | --- |
 | NVIDIA GeForce RTX 30 (Ampere), RTX 40 (Ada) on CUDA | allowed | [bench 22 Nov 2026](bench/results/INDEX.md): images 8/8, worst 4 of 64 dHash bits; text 10/10 identical |
-| RTX 50 (Blackwell), RTX 20 (Turing), other CUDA devices | untested | not benched yet |
+| RTX 50 (Blackwell), RTX 20 (Turing) | untested | [bench 25 Nov 2026](bench/results/2026-11-25-cuda-blackwell-turing/README.md): images pass (8/8 on every pair, worst 6 bits), text fails (RTX 5060 Ti 3/10, RTX 2070 6/10 against the reference pair) |
+| Other CUDA devices (workstation, datacenter, GTX) | untested | not benched yet |
 | Any Vulkan device (AMD, Intel, iGPUs), CPU | untested | no Vulkan reference yet |
 | Software rasterizers (llvmpipe, SwiftShader, …) | blocked | not a GPU |
 
@@ -527,7 +528,19 @@ RTX 3060 (Ampere) and RTX 4060 (Ada) rented on Vast.ai, total cost $0.32.
 | Repeat on the same GPU | identical |
 | Speed | RTX 3060: image 2.6 s, text ~195 tok/s · RTX 4060: image 2.1 s, text ~144 tok/s |
 
-Not yet tested: Vulkan on NVIDIA (not available in Vast containers), other AMD/Intel GPUs, RTX 20 and 50 series. Repeat: `node src/agent.ts bench` on each machine, then `node scripts/compare-bench.mjs <folder> <folder>`.
+Not yet tested: Vulkan on NVIDIA (not available in Vast containers), other AMD/Intel GPUs. Repeat: `node src/agent.ts bench` on each machine, then `node scripts/compare-bench.mjs <folder> <folder>`.
+
+### Cross-GPU matching, RTX 50 and RTX 20 — 25 Nov 2026
+RTX 5060 Ti (Blackwell) and RTX 2070 (Turing) rented on Vast.ai, node client 0.3.0, about $0.25 in total.
+
+| | RTX 5060 Ti | RTX 2070 |
+| --- | --- | --- |
+| SD 1.5 images vs RTX 3060 / 4060 | 8/8 and 8/8 (worst 2 and 4 bits) | 8/8 and 8/8 (worst 6 and 2 bits) |
+| Text (`-ub 1`) vs RTX 3060 / 4060 | 3/10 and 3/10 (lowest similarity 0.418) | 6/10 and 6/10 (lowest similarity 0.408) |
+| Repeat on the same GPU | identical | identical |
+| Speed | image 1.4 s, text ~232 tok/s | image 2.8 s, text ~191 tok/s |
+
+Verdict: images pass, text fails, so both families stay untested. Details: [bench/results/2026-11-25-cuda-blackwell-turing](bench/results/2026-11-25-cuda-blackwell-turing/README.md).
 
 ## Security
 
@@ -558,7 +571,7 @@ Not yet tested: Vulkan on NVIDIA (not available in Vast containers), other AMD/I
 - Pons v2 was not audited as of 20 November 2026.
 - Job results are private (`OUTPUT_AUTH=enforce`, live since 25 Nov 2026): only the browser that created the job (its per-job read secret) or the wallet that paid (after a wallet sign-in) can read them; see [docs/private-outputs.md](docs/private-outputs.md). The two GPU nodes still see the prompt and the output while they work, and that cannot be recalled. `CustomerCharged` events and the per-epoch charge list are public. Outputs made before this change were readable by anyone with the job id and may already have been viewed or cached; those copies cannot be recalled, and older free outputs are no longer readable by anyone.
 - Database snapshots live on the same volume. If the volume is lost, only trees already downloaded with `backup-trees.mjs` (or by someone else) remain claimable.
-- Cross-GPU matching is benched and passing only for NVIDIA GeForce RTX 30 (Ampere, RTX 3060) and RTX 40 (Ada, RTX 4060) on CUDA (22 Nov 2026: images 8/8, worst 4 of 64 dHash bits against the 12-bit threshold; text 10/10 identical with node client 0.2.0+). Not benched yet: RTX 50 (Blackwell), RTX 20 (Turing), NVIDIA on Vulkan, AMD and Intel GPUs, integrated GPUs and CPU; they register as untested and, once the allowlist is enforced, get no paid jobs. The allowlist runs in observe mode and the periodic GPU challenge is off for now. Results: [bench/results/INDEX.md](bench/results/INDEX.md); how it works: [docs/gpu-support.md](docs/gpu-support.md).
+- Cross-GPU matching is benched and passing only for NVIDIA GeForce RTX 30 (Ampere, RTX 3060) and RTX 40 (Ada, RTX 4060) on CUDA (22 Nov 2026: images 8/8, worst 4 of 64 dHash bits against the 12-bit threshold; text 10/10 identical with node client 0.2.0+). RTX 50 (Blackwell, RTX 5060 Ti) and RTX 20 (Turing, RTX 2070) were benched on 25 Nov 2026: their images match the reference (8/8) but their text does not (3/10 and 6/10), so they stay untested. Not benched yet: NVIDIA on Vulkan, AMD and Intel GPUs, integrated GPUs and CPU. Untested families register and, once the allowlist is enforced, get no paid jobs. The allowlist runs in observe mode and the periodic GPU challenge is off for now. Results: [bench/results/INDEX.md](bench/results/INDEX.md); how it works: [docs/gpu-support.md](docs/gpu-support.md).
 
 ## Known gaps
 

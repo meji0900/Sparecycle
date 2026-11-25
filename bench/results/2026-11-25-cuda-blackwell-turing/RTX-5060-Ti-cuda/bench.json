@@ -1,0 +1,360 @@
+{
+  "suite": 1,
+  "createdAt": "2026-11-25T07:46:50.210Z",
+  "backend": "cuda",
+  "client": "sparecycle-node/0.3.0",
+  "device": {
+    "name": "NVIDIA GeForce RTX 5060 Ti",
+    "vramMb": 16311,
+    "computeCap": "12.0",
+    "driver": "620.70.06"
+  },
+  "software": {
+    "node": "v24.22.1",
+    "llamaCpp": [
+      "version: 1.0.0-dev (build 12404, commit cf9a9957d)"
+    ],
+    "python": {
+      "torch": "2.8.0+cu128",
+      "cuda": "12.8",
+      "cudnn": 91002,
+      "diffusers": "0.35.1",
+      "transformers": "4.56.1"
+    }
+  },
+  "host": {
+    "os": "linux 6.8.0-149-generic",
+    "cpu": "AMD Ryzen 5 3600 6-Core Processor",
+    "ramMb": 32007
+  },
+  "items": [
+    {
+      "id": "lighthouse",
+      "kind": "image",
+      "run": 1,
+      "gpuMs": 18247,
+      "file": "lighthouse-r1.png",
+      "nsfw": false,
+      "fingerprint": "cc68accfe58ae084"
+    },
+    {
+      "id": "lighthouse-seed2",
+      "kind": "image",
+      "run": 1,
+      "gpuMs": 1396,
+      "file": "lighthouse-seed2-r1.png",
+      "nsfw": false,
+      "control": "lighthouse",
+      "fingerprint": "89e1008e040c94c4"
+    },
+    {
+      "id": "bicycle",
+      "kind": "image",
+      "run": 1,
+      "gpuMs": 1398,
+      "file": "bicycle-r1.png",
+      "nsfw": false,
+      "fingerprint": "d8d1e4dca4a794f8"
+    },
+    {
+      "id": "ramen",
+      "kind": "image",
+      "run": 1,
+      "gpuMs": 1398,
+      "file": "ramen-r1.png",
+      "nsfw": false,
+      "fingerprint": "0000043273733386"
+    },
+    {
+      "id": "village",
+      "kind": "image",
+      "run": 1,
+      "gpuMs": 1398,
+      "file": "village-r1.png",
+      "nsfw": false,
+      "fingerprint": "d600f11e46b6c9e3"
+    },
+    {
+      "id": "village-seed2",
+      "kind": "image",
+      "run": 1,
+      "gpuMs": 1399,
+      "file": "village-seed2-r1.png",
+      "nsfw": false,
+      "control": "village",
+      "fingerprint": "f8f8f291b44466f1"
+    },
+    {
+      "id": "cat",
+      "kind": "image",
+      "run": 1,
+      "gpuMs": 1400,
+      "file": "cat-r1.png",
+      "nsfw": false,
+      "fingerprint": "041c2719181c1a00"
+    },
+    {
+      "id": "sunflowers",
+      "kind": "image",
+      "run": 1,
+      "gpuMs": 1691,
+      "file": "sunflowers-r1.png",
+      "nsfw": false,
+      "fingerprint": "cd5e393e29acd44e"
+    },
+    {
+      "id": "lighthouse",
+      "kind": "image",
+      "run": 2,
+      "gpuMs": 1400,
+      "file": "lighthouse-r2.png",
+      "nsfw": false,
+      "fingerprint": "cc68accfe58ae084"
+    },
+    {
+      "id": "lighthouse-seed2",
+      "kind": "image",
+      "run": 2,
+      "gpuMs": 1403,
+      "file": "lighthouse-seed2-r2.png",
+      "nsfw": false,
+      "control": "lighthouse",
+      "fingerprint": "89e1008e040c94c4"
+    },
+    {
+      "id": "bicycle",
+      "kind": "image",
+      "run": 2,
+      "gpuMs": 1402,
+      "file": "bicycle-r2.png",
+      "nsfw": false,
+      "fingerprint": "d8d1e4dca4a794f8"
+    },
+    {
+      "id": "ramen",
+      "kind": "image",
+      "run": 2,
+      "gpuMs": 1403,
+      "file": "ramen-r2.png",
+      "nsfw": false,
+      "fingerprint": "0000043273733386"
+    },
+    {
+      "id": "village",
+      "kind": "image",
+      "run": 2,
+      "gpuMs": 1405,
+      "file": "village-r2.png",
+      "nsfw": false,
+      "fingerprint": "d600f11e46b6c9e3"
+    },
+    {
+      "id": "village-seed2",
+      "kind": "image",
+      "run": 2,
+      "gpuMs": 1403,
+      "file": "village-seed2-r2.png",
+      "nsfw": false,
+      "control": "village",
+      "fingerprint": "f8f8f291b44466f1"
+    },
+    {
+      "id": "cat",
+      "kind": "image",
+      "run": 2,
+      "gpuMs": 1404,
+      "file": "cat-r2.png",
+      "nsfw": false,
+      "fingerprint": "041c2719181c1a00"
+    },
+    {
+      "id": "sunflowers",
+      "kind": "image",
+      "run": 2,
+      "gpuMs": 1591,
+      "file": "sunflowers-r2.png",
+      "nsfw": false,
+      "fingerprint": "cd5e393e29acd44e"
+    },
+    {
+      "id": "rainbow",
+      "kind": "text",
+      "run": 1,
+      "gpuMs": 525,
+      "text": "A rainbow forms when sunlight passes through water droplets in the air, causing the light to disperse into its component colors. The droplets act like a prism, separating the light into its seven primary colors: red, orange, yellow, green, blue, indigo, and violet. The angle at which the light enters and exits the droplets, combined with the angle of the droplets themselves, creates the arc shape of a rainbow.",
+      "tokens": 90,
+      "tokensPerSecond": 231.32925951244107
+    },
+    {
+      "id": "haiku",
+      "kind": "text",
+      "run": 1,
+      "gpuMs": 213,
+      "text": "In the quiet server room,\nSilence fills the air,\nData hums in peace.",
+      "tokens": 19,
+      "tokensPerSecond": 232.2400846386086
+    },
+    {
+      "id": "laptop",
+      "kind": "text",
+      "run": 1,
+      "gpuMs": 869,
+      "text": "1. Use a laptop cooling pad: A laptop cooling pad is a device that is placed under the laptop to provide additional air circulation and help keep the laptop cooler.\n2. Keep the laptop away from direct sunlight: Direct sunlight can cause the laptop to overheat, so it's important to keep it away from windows or other sources of direct sunlight.\n3. Use a laptop cooling case: A laptop cooling case is a device that is designed to keep the laptop cooler by providing additional air circulation and reducing heat.\n4. Keep the laptop away from other electronic devices: Other electronic devices can generate heat and cause the laptop to overheat, so it's important to keep it away from other devices.\n5. Use a laptop cooling stand: A laptop cooling stand is a device that is designed to keep the laptop cooler by providing additional air circulation and reducing heat.",
+      "tokens": 172,
+      "tokensPerSecond": 232.18237857947835
+    },
+    {
+      "id": "translate",
+      "kind": "text",
+      "run": 1,
+      "gpuMs": 320,
+      "text": "Berikut adalah versi Indonesia dari kalimat tersebut:\n\nSistem jaringan hanya membayar untuk pekerjaan yang diperkenalkan oleh dua node yang saling setuju.",
+      "tokens": 39,
+      "tokensPerSecond": 232.35621430580525
+    },
+    {
+      "id": "romeo",
+      "kind": "text",
+      "run": 1,
+      "gpuMs": 598,
+      "text": "Romeo and Juliet is a tragic love story set in Verona, Italy. The two young lovers, Romeo and Juliet, fall deeply in love despite their families' feud. They marry secretly, but their happiness is short-lived as their families' enmity leads to a tragic confrontation. In a series of events, including a tragic duel and a tragic suicide, the lovers' love ultimately leads to their deaths. The play explores themes of forbidden love, the power of family, and the tragic consequences of unchecked passion.",
+      "tokens": 106,
+      "tokensPerSecond": 232.2330646802261
+    },
+    {
+      "id": "fib",
+      "kind": "text",
+      "run": 1,
+      "gpuMs": 1259,
+      "text": "Certainly! Below is a Python function that calculates the n-th Fibonacci number iteratively. The function includes a clear docstring explaining its purpose, parameters, and return value.\n\n```python\ndef fibonacci(n):\n    \"\"\"\n    Calculate the n-th Fibonacci number iteratively.\n\n    Parameters:\n    n (int): The position in the Fibonacci sequence.\n\n    Returns:\n    int: The n-th Fibonacci number.\n    \"\"\"\n    if n <= 0:\n        return 0\n    elif n == 1:\n        return 1\n\n    a, b = 0, 1\n    for _ in range(2, n + 1):\n        a, b = b, a + b\n    return b\n\n# Example usage:\nprint(fibonacci(10))  # Output: 55\nprint(fibonacci(1))   # Output: 1\nprint(fibonacci(0))   # Output: 0\n```\n\nThis function uses a loop to iteratively compute the Fibonacci number. It handles the base cases (n=0 and n=1) directly and then uses a loop to compute the n-th Fibonacci number by updating two variables (`a` and `b`) until the desired position is reached.",
+      "tokens": 254,
+      "tokensPerSecond": 231.56199088396275
+    },
+    {
+      "id": "gpu-cpu",
+      "kind": "text",
+      "run": 1,
+      "gpuMs": 527,
+      "text": "A GPU and a CPU are both types of computer chips that help the computer work faster. A CPU is like the brain of the computer, it processes all the information and makes decisions. A GPU is like a helper that helps the CPU do its job faster. It's like having a helper who can do some of the work for you. GPUs are especially good at doing things like drawing pictures or playing games.",
+      "tokens": 83,
+      "tokensPerSecond": 231.6410354919265
+    },
+    {
+      "id": "bakery",
+      "kind": "text",
+      "run": 1,
+      "gpuMs": 202,
+      "text": "1. Sourdough Bliss Bakery\n2. Yeast Delights\n3. Doughnuts Delight",
+      "tokens": 22,
+      "tokensPerSecond": 231.99036687619446
+    },
+    {
+      "id": "merkle",
+      "kind": "text",
+      "run": 1,
+      "gpuMs": 1649,
+      "text": "A Merkle tree is a data structure that allows for efficient verification of the integrity and authenticity of a large number of data items. It is named after Ralph Merkle, who first proposed the concept in 1979. The Merkle tree is a type of hash tree, which is a tree where each node is a hash of its parent nodes.\n\nIn a Merkle tree, each leaf node represents a single data item, and each non-leaf node represents the hash of its child nodes. The root node of the tree is the hash of all the leaf nodes. This structure allows for the efficient verification of the integrity and authenticity of the data items by only needing to check the root node.\n\nBlockchains use Merkle trees for several reasons:\n\n1. Efficiency: Merkle trees allow for the efficient verification of the integrity and authenticity of large amounts of data. By only needing to check the root node, the verification process is much faster than checking each individual data item.\n\n2. Security: Merkle trees provide a way to verify the integrity and authenticity of data items without revealing the contents of the data items themselves. This is because the root node is only known to the parties that have the private keys to generate it.\n\n3. Scalability: Merkle trees can be used to verify the integrity and authenticity of large amounts of data without increasing the size of the data items themselves. This allows for the use of smaller data items while still maintaining the integrity and authenticity of the data.\n\n4. Transparency: Merkle trees can be used to verify the integrity and authenticity of data items without revealing the contents of the data items themselves. This allows for the use of transparent data structures while still maintaining the integrity and authenticity of the data.",
+      "tokens": 348,
+      "tokensPerSecond": 231.8317716423644
+    },
+    {
+      "id": "story",
+      "kind": "text",
+      "run": 1,
+      "gpuMs": 1591,
+      "text": "Once upon a time, in a world where technology had advanced beyond imagination, there was a robot named Bot. Bot was a highly advanced AI designed to assist humans in various tasks, but Bot had a unique ability - it could learn and adapt to its environment.\n\nOne day, Bot was sent to a small village in the mountains to help the local farmers. The villagers were struggling to grow crops due to the harsh climate and limited resources. Bot was tasked with learning how to garden and grow crops in the challenging conditions.\n\nAt first, Bot struggled to adapt to the environment. The soil was rocky and the weather was unpredictable, but Bot was determined to learn. It spent countless hours observing the plants and animals around it, trying to understand how they interacted with their environment.\n\nAs Bot continued to learn, it began to develop a deep understanding of the local ecosystem. It learned how to identify the best times to water the plants, how to protect them from pests, and how to use natural fertilizers to promote growth.\n\nOver time, Bot became an invaluable asset to the village. It helped the farmers grow crops that were resistant to disease and pests, and it even taught them how to use traditional herbal remedies to improve soil health.\n\nThe villagers were amazed by Bot's abilities and gratitude towards it. They began to see Bot as a friend and a partner, and they relied on it for guidance and support in their daily lives.\n\nAs Bot continued to learn and grow, it became a symbol of hope and resilience in the village. It showed that even in the most challenging conditions, with the right knowledge and determination, it was possible to overcome obstacles and thrive.",
+      "tokens": 331,
+      "tokensPerSecond": 231.65502775648426
+    },
+    {
+      "id": "rainbow",
+      "kind": "text",
+      "run": 2,
+      "gpuMs": 523,
+      "text": "A rainbow forms when sunlight passes through water droplets in the air, causing the light to disperse into its component colors. The droplets act like a prism, separating the light into its seven primary colors: red, orange, yellow, green, blue, indigo, and violet. The angle at which the light enters and exits the droplets, combined with the angle of the droplets themselves, creates the arc shape of a rainbow.",
+      "tokens": 90,
+      "tokensPerSecond": 231.6483733859444
+    },
+    {
+      "id": "haiku",
+      "kind": "text",
+      "run": 2,
+      "gpuMs": 213,
+      "text": "In the quiet server room,\nSilence fills the air,\nData hums in peace.",
+      "tokens": 19,
+      "tokensPerSecond": 232.00958972970884
+    },
+    {
+      "id": "laptop",
+      "kind": "text",
+      "run": 2,
+      "gpuMs": 869,
+      "text": "1. Use a laptop cooling pad: A laptop cooling pad is a device that is placed under the laptop to provide additional air circulation and help keep the laptop cooler.\n2. Keep the laptop away from direct sunlight: Direct sunlight can cause the laptop to overheat, so it's important to keep it away from windows or other sources of direct sunlight.\n3. Use a laptop cooling case: A laptop cooling case is a device that is designed to keep the laptop cooler by providing additional air circulation and reducing heat.\n4. Keep the laptop away from other electronic devices: Other electronic devices can generate heat and cause the laptop to overheat, so it's important to keep it away from other devices.\n5. Use a laptop cooling stand: A laptop cooling stand is a device that is designed to keep the laptop cooler by providing additional air circulation and reducing heat.",
+      "tokens": 172,
+      "tokensPerSecond": 231.91188975641114
+    },
+    {
+      "id": "translate",
+      "kind": "text",
+      "run": 2,
+      "gpuMs": 320,
+      "text": "Berikut adalah versi Indonesia dari kalimat tersebut:\n\nSistem jaringan hanya membayar untuk pekerjaan yang diperkenalkan oleh dua node yang saling setuju.",
+      "tokens": 39,
+      "tokensPerSecond": 231.89537856920555
+    },
+    {
+      "id": "romeo",
+      "kind": "text",
+      "run": 2,
+      "gpuMs": 598,
+      "text": "Romeo and Juliet is a tragic love story set in Verona, Italy. The two young lovers, Romeo and Juliet, fall deeply in love despite their families' feud. They marry secretly, but their happiness is short-lived as their families' enmity leads to a tragic confrontation. In a series of events, including a tragic duel and a tragic suicide, the lovers' love ultimately leads to their deaths. The play explores themes of forbidden love, the power of family, and the tragic consequences of unchecked passion.",
+      "tokens": 106,
+      "tokensPerSecond": 232.13910659606688
+    },
+    {
+      "id": "fib",
+      "kind": "text",
+      "run": 2,
+      "gpuMs": 1258,
+      "text": "Certainly! Below is a Python function that calculates the n-th Fibonacci number iteratively. The function includes a clear docstring explaining its purpose, parameters, and return value.\n\n```python\ndef fibonacci(n):\n    \"\"\"\n    Calculate the n-th Fibonacci number iteratively.\n\n    Parameters:\n    n (int): The position in the Fibonacci sequence.\n\n    Returns:\n    int: The n-th Fibonacci number.\n    \"\"\"\n    if n <= 0:\n        return 0\n    elif n == 1:\n        return 1\n\n    a, b = 0, 1\n    for _ in range(2, n + 1):\n        a, b = b, a + b\n    return b\n\n# Example usage:\nprint(fibonacci(10))  # Output: 55\nprint(fibonacci(1))   # Output: 1\nprint(fibonacci(0))   # Output: 0\n```\n\nThis function uses a loop to iteratively compute the Fibonacci number. It handles the base cases (n=0 and n=1) directly and then uses a loop to compute the n-th Fibonacci number by updating two variables (`a` and `b`) until the desired position is reached.",
+      "tokens": 254,
+      "tokensPerSecond": 231.7970593840245
+    },
+    {
+      "id": "gpu-cpu",
+      "kind": "text",
+      "run": 2,
+      "gpuMs": 527,
+      "text": "A GPU and a CPU are both types of computer chips that help the computer work faster. A CPU is like the brain of the computer, it processes all the information and makes decisions. A GPU is like a helper that helps the CPU do its job faster. It's like having a helper who can do some of the work for you. GPUs are especially good at doing things like drawing pictures or playing games.",
+      "tokens": 83,
+      "tokensPerSecond": 231.68946830092506
+    },
+    {
+      "id": "bakery",
+      "kind": "text",
+      "run": 2,
+      "gpuMs": 202,
+      "text": "1. Sourdough Bliss Bakery\n2. Yeast Delights\n3. Doughnuts Delight",
+      "tokens": 22,
+      "tokensPerSecond": 231.70879721066743
+    },
+    {
+      "id": "merkle",
+      "kind": "text",
+      "run": 2,
+      "gpuMs": 1649,
+      "text": "A Merkle tree is a data structure that allows for efficient verification of the integrity and authenticity of a large number of data items. It is named after Ralph Merkle, who first proposed the concept in 1979. The Merkle tree is a type of hash tree, which is a tree where each node is a hash of its parent nodes.\n\nIn a Merkle tree, each leaf node represents a single data item, and each non-leaf node represents the hash of its child nodes. The root node of the tree is the hash of all the leaf nodes. This structure allows for the efficient verification of the integrity and authenticity of the data items by only needing to check the root node.\n\nBlockchains use Merkle trees for several reasons:\n\n1. Efficiency: Merkle trees allow for the efficient verification of the integrity and authenticity of large amounts of data. By only needing to check the root node, the verification process is much faster than checking each individual data item.\n\n2. Security: Merkle trees provide a way to verify the integrity and authenticity of data items without revealing the contents of the data items themselves. This is because the root node is only known to the parties that have the private keys to generate it.\n\n3. Scalability: Merkle trees can be used to verify the integrity and authenticity of large amounts of data without increasing the size of the data items themselves. This allows for the use of smaller data items while still maintaining the integrity and authenticity of the data.\n\n4. Transparency: Merkle trees can be used to verify the integrity and authenticity of data items without revealing the contents of the data items themselves. This allows for the use of transparent data structures while still maintaining the integrity and authenticity of the data.",
+      "tokens": 348,
+      "tokensPerSecond": 231.79971435862288
+    },
+    {
+      "id": "story",
+      "kind": "text",
+      "run": 2,
+      "gpuMs": 1590,
+      "text": "Once upon a time, in a world where technology had advanced beyond imagination, there was a robot named Bot. Bot was a highly advanced AI designed to assist humans in various tasks, but Bot had a unique ability - it could learn and adapt to its environment.\n\nOne day, Bot was sent to a small village in the mountains to help the local farmers. The villagers were struggling to grow crops due to the harsh climate and limited resources. Bot was tasked with learning how to garden and grow crops in the challenging conditions.\n\nAt first, Bot struggled to adapt to the environment. The soil was rocky and the weather was unpredictable, but Bot was determined to learn. It spent countless hours observing the plants and animals around it, trying to understand how they interacted with their environment.\n\nAs Bot continued to learn, it began to develop a deep understanding of the local ecosystem. It learned how to identify the best times to water the plants, how to protect them from pests, and how to use natural fertilizers to promote growth.\n\nOver time, Bot became an invaluable asset to the village. It helped the farmers grow crops that were resistant to disease and pests, and it even taught them how to use traditional herbal remedies to improve soil health.\n\nThe villagers were amazed by Bot's abilities and gratitude towards it. They began to see Bot as a friend and a partner, and they relied on it for guidance and support in their daily lives.\n\nAs Bot continued to learn and grow, it became a symbol of hope and resilience in the village. It showed that even in the most challenging conditions, with the right knowledge and determination, it was possible to overcome obstacles and thrive.",
+      "tokens": 331,
+      "tokensPerSecond": 231.7775441272838
+    }
+  ]
+}

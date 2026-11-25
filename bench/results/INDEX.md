@@ -8,6 +8,7 @@ re-runs them) and a README with devices, versions, commands and the verdict agai
 | Date | Family | Backend | Suite | Node client | Verdict | Margin | Folder |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 2026-11-22 | NVIDIA RTX 30 (Ampere, RTX 3060) vs RTX 40 (Ada, RTX 4060) | cuda | 1 | 0.2.0 settings (`-ub 1` for text; version not recorded in bench.json) | **pass** (reference pair) | images 8/8, worst 4 bits (8 below the threshold, other seeds from 24 bits = 11 above); text 10/10 identical (min similarity 1.000) | [2026-11-22-cuda-ampere-ada](2026-11-22-cuda-ampere-ada/README.md) |
+| 2026-11-25 | NVIDIA RTX 50 (Blackwell, RTX 5060 Ti) and RTX 20 (Turing, RTX 2070) vs the reference pair | cuda | 1 | 0.3.0 | **images pass, text fail** (both stay untested) | images 8/8 on every pair, worst 6 bits; text 3/10 (5060 Ti) and 6/10 (2070), lowest similarity 0.408 | [2026-11-25-cuda-blackwell-turing](2026-11-25-cuda-blackwell-turing/README.md) |
 
-Not benched yet (brief 3.4): P1 NVIDIA RTX 50 (Blackwell) and RTX 20 (Turing) on cuda; P2 NVIDIA on Vulkan and AMD
+Not benched yet (brief 3.4): P2 NVIDIA on Vulkan and AMD
 Radeon on Vulkan (text only; together they form the first Vulkan reference); P3 Intel Arc and integrated GPUs.

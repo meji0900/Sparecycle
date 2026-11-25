@@ -43,7 +43,7 @@
       "name": "\\bGeForce RTX 50[0-9]0\\b",
       "family": "nvidia-rtx50-blackwell",
       "status": "untested",
-      "note": "Not benched yet (P1)."
+      "note": "Benched 2026-11-25 (bench/results/2026-11-25-cuda-blackwell-turing): images agree 8/8, text 3/10 against the reference pair. Not allowed while text fails."
     },
     {
       "id": "nvidia-rtx20-turing",
@@ -51,7 +51,7 @@
       "name": "\\bGeForce RTX 20[0-9]0\\b",
       "family": "nvidia-rtx20-turing",
       "status": "untested",
-      "note": "Not benched yet (P1)."
+      "note": "Benched 2026-11-25 (bench/results/2026-11-25-cuda-blackwell-turing): images agree 8/8, text 6/10 against the reference pair. Not allowed while text fails."
     }
   ],
   "fallback": {

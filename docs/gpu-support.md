@@ -12,8 +12,8 @@ paid jobs once the allowlist is enforced.
 | --- | --- | --- | --- |
 | NVIDIA GeForce RTX 30 series (Ampere, compute capability 8.6) | cuda | **allowed** | [2026-11-22 cuda Ampere / Ada](../bench/results/2026-11-22-cuda-ampere-ada/README.md) |
 | NVIDIA GeForce RTX 40 series (Ada, compute capability 8.9) | cuda | **allowed** | [2026-11-22 cuda Ampere / Ada](../bench/results/2026-11-22-cuda-ampere-ada/README.md) |
-| NVIDIA GeForce RTX 50 series (Blackwell, consumer) | cuda | untested | not benched yet |
-| NVIDIA GeForce RTX 20 series (Turing) | cuda | untested | not benched yet |
+| NVIDIA GeForce RTX 50 series (Blackwell, consumer) | cuda | untested | [2026-11-25](../bench/results/2026-11-25-cuda-blackwell-turing/README.md): images pass (8/8), text fails (3/10 vs the reference) |
+| NVIDIA GeForce RTX 20 series (Turing) | cuda | untested | [2026-11-25](../bench/results/2026-11-25-cuda-blackwell-turing/README.md): images pass (8/8), text fails (6/10 vs the reference) |
 | Any other CUDA device (workstation, datacenter, GTX, unknown names) | cuda | untested | not benched |
 | Any Vulkan device (AMD, Intel, NVIDIA on Vulkan, integrated GPUs) | vulkan | untested | no Vulkan reference exists yet |
 | CPU (llama.cpp on the CPU) | cpu | untested | not benched |
