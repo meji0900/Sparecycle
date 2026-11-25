@@ -1,6 +1,14 @@
 # Sparecycle
 
+**Your idle GPU, paid when two machines agree.**
+
 [![CI](https://github.com/meji0900/Sparecycle/actions/workflows/ci.yml/badge.svg)](https://github.com/meji0900/Sparecycle/actions/workflows/ci.yml)
+[![Licence: MIT](https://img.shields.io/badge/licence-MIT-00C805)](LICENSE)
+[![Robinhood Chain 4663](https://img.shields.io/badge/Robinhood%20Chain-4663-00C805)](https://robinhoodchain.blockscout.com/address/0x68A0569130551154FC1aABD71d99f65681c58Fe9)
+
+[**Live site**](https://sparecycle.tech) · [Run a job](https://sparecycle.tech/playground) · [Run a node](https://sparecycle.tech/nodes) · [Network status](https://sparecycle.tech/app) · [Proof](https://sparecycle.tech/proof)
+
+![The Sparecycle landing page: "Your idle GPU, paid when two machines agree." with the live payout period, the latest checked job and the node pot](docs/images/landing.png)
 
 [![SpareCycle on HEY Research Lab](https://heyresearch.xyz/api/badge/sparecycle)](https://heyresearch.xyz/project/sparecycle?utm_source=badge&utm_medium=readme)
 
@@ -13,11 +21,33 @@
 | Official token | **SpareCycle (SPARE)**, CA `0x012d695b94377e0c7b9edee3d824259baa37cf3a`, launched on **Pons v2** (factory `0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e`). Its creator fees go to the team wallet set at launch, **not** to the node pot; the site says so. |
 | Earlier launch | **Sparecycle (CYCLE)** `0x2DbDcAf731ed6fDD55176183Ae7202a0D77F3A02`; its creator fees go to the reward contract |
 | Reward contract | `SparecycleRewards` `0x68A0569130551154FC1aABD71d99f65681c58Fe9`: pot per epoch, Merkle claims, **no withdraw function**. Verified on Sourcify. |
-| Payments contract | `SparecycleJobPayments` `0x420716931E5Ff2a984840C6E95837d826a8BE7eB`: non-custodial prepaid balances; 95% of each verified job's charge to the node pot, 5% to a 2-of-2 Safe treasury `0xb262E4436aD6760F91e987f14e2fAc5D6550c71B`. Verified on Sourcify. |
+| Payments contract | `SparecycleJobPayments` `0x420716931E5Ff2a984840C6E95837d826a8BE7eB`: non-custodial prepaid balances; 95% of each verified job's charge to the node pot, 5% to a 2-of-2 Safe treasury `0xb262E4436aD6760F91e987f14e2fAc5D6550c71B` (both keys held by the team today). Verified on Sourcify. |
 | Node pay | Verified paid jobs (**0.5 gwei per work unit**) plus anything sent to the reward contract. Free trial jobs (5 per hour per IP) share the same pot. |
 | Repo | `github.com/meji0900/Sparecycle` |
 
 Not financial or legal advice. Not a yield product. Tokens can go to zero. The scheduler is centralized in this MVP. This project is **not** IdleX; the node client code is adapted from an MIT-licensed repo, with attribution in [NOTICE](NOTICE).
+
+---
+
+## See it
+
+Screenshots of the live site on 25 Nov 2026. Every number in them is read live from the chain or the scheduler.
+
+| | |
+| --- | --- |
+| [![Check it: the latest jobs, each agreed by two GPUs, and the three transactions of the first payout](docs/images/check-it.png)](https://sparecycle.tech/) | [![Proof: the reward contract read live and compared with the record](docs/images/proof.png)](https://sparecycle.tech/proof) |
+| **Check it**: the latest jobs, each agreed by two GPUs, and the first payout (charge, root, claim) on Robinhood Chain | **Proof**: every contract read live and compared with the record, Sourcify-verified source |
+| [![Network status: current epoch, time left and the latest settled epoch](docs/images/status.png)](https://sparecycle.tech/app) | [![Run a node: requirements, the demo video and the install guide](docs/images/run-a-node.png)](https://sparecycle.tech/nodes) |
+| **Network status**: the open epoch, time left and the latest settled epoch | **Run a node**: what you need (no token, no stake), a one-minute demo and the install guide |
+| [![Playground: describe an image, pick a shape and quality, free trial or pay from balance](docs/images/playground.png)](https://sparecycle.tech/playground) | [![The multisig rehearsal on Robinhood Chain testnet, step by step](docs/images/multisig-rehearsal.png)](docs/ops/multisig-rehearsal.md) |
+| **Playground**: an image from a prompt; free trial, or a fixed price shown before you pay | **Multisig rehearsal** (testnet): the owner moved from one wallet to a 2-of-3 Safe in 15 public transactions |
+
+## What's new (25 Nov 2026)
+
+- **Private job outputs, live.** A result can be read only by the browser that created the job (a per-job read secret) or by the wallet that paid (after a gasless sign-in). Knowing a job id is no longer enough; the old public `/output` link returns `410`. Details: [docs/private-outputs.md](docs/private-outputs.md).
+- **GPU allowlist and periodic GPU challenge.** Nodes report their device; families that passed the cross-GPU bench are allowed, the rest are "untested". Both run in safe defaults for now (allowlist observe-only, challenge off). Details: [docs/gpu-support.md](docs/gpu-support.md), results in [bench/results/INDEX.md](bench/results/INDEX.md). Node client **0.3.0**.
+- **Multisig ownership, rehearsed on testnet.** The reward contract's owner moved from one wallet to a 2-of-3 Safe; the old wallet lost every owner power, and jobs kept being charged and epochs kept closing. **On mainnet the owner is still one wallet**; the cut-over waits on the final signer list. Log: [docs/ops/multisig-rehearsal.md](docs/ops/multisig-rehearsal.md), steps: [docs/ops/multisig-runbook.md](docs/ops/multisig-runbook.md).
+- **First payout on mainnet (24 Nov 2026).** Job payments charged ([`0x7ef05c0e…`](https://robinhoodchain.blockscout.com/tx/0x7ef05c0e4126770474abbbcf8c58043e1ee771109a87d8ea669044488ce07db2)), payout root posted ([`0x7178cd00…`](https://robinhoodchain.blockscout.com/tx/0x7178cd00506c9a4f34263ba05312bd87dded8bf6c1bdfe7c820d3bf8e56f2df1)), a node claimed its share ([`0x251cc610…`](https://robinhoodchain.blockscout.com/tx/0x251cc6104160579bd282405392df6f2c28c7b2d6012d9df5cc136bb87ee413a0)). The claim went to the team's own GPU, openly labelled as a paid test node.
 
 ---
 
@@ -46,28 +76,32 @@ To run a node against the live network, see [Node program](#node-program) or the
 
 ## Contents
 
-1. [How it works](#how-it-works)
-2. [Money flow](#money-flow)
-3. [Features](#features)
-4. [Site pages](#site-pages)
-5. [API](#api)
-6. [Reward contract](#reward-contract)
-7. [Payments contract](#payments-contract)
-8. [Scheduler: jobs, checks, epochs](#scheduler-jobs-checks-epochs)
-9. [Node program](#node-program)
-10. [Bootstrap GPU pool (on demand)](#bootstrap-gpu-pool-on-demand)
-11. [Sweep bot](#sweep-bot)
-12. [Data backups](#data-backups)
-13. [Folder structure](#folder-structure)
-14. [Tests and checks](#tests-and-checks)
-15. [Environment](#environment)
-16. [Deploy (Railway + domain)](#deploy-railway--domain)
-17. [Mainnet](#mainnet)
-18. [Test results](#test-results)
-19. [Security](#security)
-20. [Data sources & licences](#data-sources--licences)
-21. [Limitations](#limitations)
-22. [Known gaps](#known-gaps)
+1. [See it](#see-it) · [What's new](#whats-new-25-nov-2026)
+2. [How it works](#how-it-works)
+3. [Money flow](#money-flow)
+4. [Features](#features)
+5. [Site pages](#site-pages)
+6. [API](#api)
+7. [Reward contract](#reward-contract)
+8. [Payments contract](#payments-contract)
+9. [Scheduler: jobs, checks, epochs](#scheduler-jobs-checks-epochs)
+10. [Private job outputs](#private-job-outputs)
+11. [GPU support](#gpu-support)
+12. [Node program](#node-program)
+13. [Bootstrap GPU pool (on demand)](#bootstrap-gpu-pool-on-demand)
+14. [Sweep bot](#sweep-bot)
+15. [Data backups](#data-backups)
+16. [Folder structure](#folder-structure)
+17. [Tests and checks](#tests-and-checks)
+18. [Environment](#environment)
+19. [Deploy (Railway + domain)](#deploy-railway--domain)
+20. [Mainnet](#mainnet)
+21. [Ownership and multisig](#ownership-and-multisig)
+22. [Test results](#test-results)
+23. [Security](#security)
+24. [Data sources & licences](#data-sources--licences)
+25. [Limitations](#limitations)
+26. [Known gaps](#known-gaps)
 
 ---
 
@@ -90,7 +124,7 @@ The pot in `SparecycleRewards` has two sources:
 customer ──deposit──▶ SparecycleJobPayments (prepaid balance, only the customer can withdraw)
                          │  once per epoch the scheduler charges verified jobs (0.5 gwei per work unit)
                          ├──▶ 95% ──fund()──▶ SparecycleRewards (open epoch pot)
-                         └──▶  5% ─────────▶ treasury Safe (2-of-2)
+                         └──▶  5% ─────────▶ treasury Safe (2-of-2, team keys)
 
 trader ──buy/sell CYCLE──▶ Pons bonding curve (standard fee + optional creator tax, buyback OFF)
                          │  Pons protocol share is taken first (protocolFeeShareBps, 30% when measured)
@@ -118,7 +152,7 @@ trader ──buy/sell CYCLE──▶ Pons bonding curve (standard fee + optional
 ## Features
 
 ### Public site
-- **3D landing**: "node field" hero (node pairs light up when their results match), a 3D "How it works" with five stations (Curve → Escrow → Pot → Two-node check → Merkle claim), animated React Bits components.
+- **Landing**: a 3D hero of the two-node check with live cards (current payout period, latest checked job, node pot); a three-tab product panel (**Run a job** with the real price, **Run a node** with the live pot and period clock, **Check it** with live jobs and the first payout's transactions); a three-step "How it works", who it is for, who pays the nodes (95% / 5%), FAQ and roadmap. Animated React Bits components.
 - **Live on-chain status** on the landing page and in the app: epoch, pot, reserved, claimed, root; Pons factory parameters read live (`/api/chain`, 15-second cache).
 - **Honest roadmap, FAQ and disclosures**: no fake stats, no "yield" wording, a single accent colour `#00C805`.
 - **Fail closed**: any value not yet set (address, ticker, decision) shows as "Not configured / Not deployed yet" and is never made up.
@@ -129,8 +163,8 @@ trader ──buy/sell CYCLE──▶ Pons bonding curve (standard fee + optional
 - **Network status** (`/app`): current epoch, pot, registered nodes per backend (cuda / vulkan / cpu), recent jobs, settled epochs, project GPU status ("Project GPUs (on demand)"), and a "Run by Sparecycle, unpaid" label on project nodes.
 - **Claim** (`/app/claim`): connect a wallet (RainbowKit; WalletConnect when `NEXT_PUBLIC_WC_PROJECT_ID` is set), see your allocation per epoch, claim with a Merkle proof, with error messages that explain the cause (not settled, already claimed, claims paused, etc.).
 - **3D Merkle tree** that highlights your proof path, and **"Check a proof"** to verify a proof without a wallet.
-- **Submit jobs** (`/jobs`): SD 1.5 or Qwen2.5-1.5B, free trial jobs rate-limited per IP or paid from a prepaid balance, live status (queued → running → checking → agreed/disagreed/rejected/expired), image/text output of `agreed` jobs.
-- **Playground** (`/playground`): generate an image in a few clicks.
+- **Submit jobs** (`/jobs`): SD 1.5 or Qwen2.5-1.5B, free trial jobs rate-limited per IP or paid from a prepaid balance, live status (queued → running → checking → agreed/disagreed/rejected/expired), image/text output of `agreed` jobs, visible only to this browser or the wallet that paid.
+- **Playground** (`/playground`): generate an image in a few clicks; the result is private to this browser (or the paying wallet after a gasless sign-in).
 - **Node guide** (`/nodes`): Windows/Linux installer downloads (with SHA256), a 61-second demo video, a **24-hour idle planner** that produces the `--hours` flag, wallet-linking steps and how to claim.
 - **Token** (`/token`): token and curve addresses, live Pons reads (phase, fees, creator tax, pair, buyback, fee recipient, with a warning when the fee recipient is not the reward contract), token facts, launch decisions.
 - **Proof** (`/proof`): live on-chain checks of the deployed contracts and setup transactions.
@@ -168,7 +202,7 @@ trader ──buy/sell CYCLE──▶ Pons bonding curve (standard fee + optional
 
 | Route | Contents |
 | --- | --- |
-| `/` | Landing: 3D hero, 3D How it works, MVP features, fee flow, live on-chain status, how to run a node, token facts + live Pons parameters, roadmap, FAQ, disclosures |
+| `/` | Landing: hero with live cards, product panel (Run a job / Run a node / Check it), How it works in three steps, who it is for, network now, who pays the nodes, how to run a node, FAQ, token facts and address table, live on-chain status, roadmap, disclosures |
 | `/app` | Network status: epoch, pot, reserved, claimed, root, recent jobs, nodes (per backend), settled epochs, project GPUs |
 | `/app/claim` | Claim with a Merkle proof, 3D Merkle tree, "Check a proof" without a wallet |
 | `/jobs` | Submit SD 1.5 / Qwen2.5-1.5B jobs (free trial or paid from balance), rate limit, job status and output |
@@ -186,12 +220,14 @@ Everything under `/api/v1`, JSON, errors always `{ "error": "<code>", "message":
 
 | Access | Endpoint |
 | --- | --- |
-| Public | `GET health`, `GET status`, `GET epochs`, `GET epochs/:id/tree`, `GET epochs/:id/proof?account=0x…`, `GET epochs/:id/charges`, `GET jobs?limit=`, `POST jobs`, `GET jobs/:id`, `GET jobs/:id/output`, `GET nodes`, `GET payments/account?address=0x…` |
-| Node (signed) | `POST nodes/register`, `POST nodes/poll`, `POST tasks/:taskId/result` — headers `x-sc-from`, `x-sc-ts`, `x-sc-sig` = EIP-191 over `sparecycle\|METHOD\|PATH\|TS\|sha256(body)` |
-| Operator | `POST epochs/close` (Bearer `SCHEDULER_ADMIN_TOKEN`; no token configured → 503) |
+| Public | `GET health`, `GET status`, `GET epochs`, `GET epochs/:id/tree`, `GET epochs/:id/proof?account=0x…`, `GET epochs/:id/charges`, `GET jobs?limit=`, `POST jobs`, `GET jobs/:id`, `GET nodes`, `GET payments/account?address=0x…` |
+| Job owner | `GET jobs/:id/result`: the output of an agreed job, for `Authorization: Bearer <read secret>` (returned once by `POST jobs`) or a wallet session of the payer; `401` anonymous, `403` wrong secret or wallet; `Cache-Control: private, no-store`. The old `GET jobs/:id/output` returns `410` while `OUTPUT_AUTH=enforce` |
+| Wallet sign-in | `GET auth/nonce`, `POST auth/verify` (EIP-4361 Sign-In with Ethereum message, sets an http-only 12-hour session cookie), `POST auth/logout`. No transaction, no gas |
+| Node (signed) | `POST nodes/register`, `POST nodes/poll`, `POST tasks/:taskId/result`, `POST challenges/:id/result` — headers `x-sc-from`, `x-sc-ts`, `x-sc-sig` = EIP-191 over `sparecycle\|METHOD\|PATH\|TS\|sha256(body)` |
+| Operator | `POST epochs/close`; `GET`/`POST admin/challenges` (a node's challenge state; re-issue, temporary allow, revoke, each written to an audit log; never touches jobs or results). Bearer `SCHEDULER_ADMIN_TOKEN`; no token configured → 503 |
 | Site | `GET /api/chain` (network, Pons, reward contract and token snapshot; 15-second cache), `GET /api/health`, `/api/rpc` (read-only JSON-RPC relay used by the browser as a fallback transport) |
 
-`GET status` also includes `nodes.byBackend.{cuda,vulkan,cpu}.{registered,online}` and `gpuPool` (no keys or instance IDs). `GET epochs/:id/charges` is the per-job charge list of an epoch (its hash is in the `Charged` event). `GET payments/account` returns a customer's balance in the payments contract, the amount held for unsettled jobs, what is available for new jobs, their spend limit and any pending withdrawal.
+`GET status` also includes `nodes.byBackend.{cuda,vulkan,cpu}.{registered,online}`, `gpuPool` (no keys or instance IDs) and `gpuGate` (allowlist and challenge modes). `GET epochs/:id/charges` is the per-job charge list of an epoch (its hash is in the `Charged` event). `GET payments/account` returns a customer's balance in the payments contract, the amount held for unsettled jobs, what is available for new jobs, their spend limit and any pending withdrawal.
 
 ## Reward contract
 
@@ -229,12 +265,43 @@ Full operator notes: [src/server/README.md](src/server/README.md).
 - **Models**: only `sd15` (Stable Diffusion 1.5, 256–512 px, 10–30 steps) and `qwen2.5-1.5b` (16–512 tokens, greedy).
 - **Free and paid jobs**: a free trial job is limited to `JOB_RATE_LIMIT` per IP per hour (default 5); a paid job is charged to the payer's prepaid balance. Both earn work units from the same pot.
 - **Pairing**: two tasks for two nodes with different node keys, wallets and GPU UUIDs, model capability, enough VRAM, same backend. Dev-runner nodes only pair with dev-runners.
-- **Verdicts**: `agreed` (output stored, readable at `/api/v1/jobs/:id/output`), `disagreed` (unpaid), `rejected` (SD safety checker flagged the image), `expired` (6 hours without a result).
+- **Verdicts**: `agreed` (output stored, readable only by the job's owner at `/api/v1/jobs/:id/result`), `disagreed` (unpaid, and a paid job is not charged), `rejected` (SD safety checker flagged the image), `expired` (6 hours without a result).
 - **Work units** are computed by the scheduler from the job spec, never reported by nodes; two matching nodes split the units equally; summed per owner wallet (one leaf per wallet).
 - **The epoch that pays** for a job: the epoch that is open when both results match.
 - **Closing**: checks `canClose(id)`, reads the pot (`getEpoch(id).pot + unaccounted()`), allocates, builds the tree, stores the leaves, opens the next epoch, then sends `closeEpochAndPostRoot` from `SCHEDULER_SIGNER_KEY` (simulated first). On failure the status is `closed-unposted` and the same root is retried.
 - **Optional cap** `PAYOUT_CAP_PER_UNIT` (wei per unit); the rest rolls over.
 - **Without a reward contract**: a local epoch clock in the scheduler, no pot, nothing is posted.
+
+## Private job outputs
+
+Live since 25 Nov 2026 (`OUTPUT_AUTH=enforce`). Full design and tests: [docs/private-outputs.md](docs/private-outputs.md).
+
+| Job | Who can read the result |
+| --- | --- |
+| Free trial | Only a request with the job's read secret. `POST jobs` returns it once; the scheduler stores only its SHA-256. The dapp keeps it in the local history of the browser that made the job. |
+| Paid | The read secret, or a signed-in session of the wallet that paid, on any device. |
+| Team test job | The read secret, or a session of that team wallet. |
+
+- Results are fetched with `fetch` and shown from a `blob:` URL, so no secret ever goes into a URL, a log or browser history.
+- Every output, auth and job-detail response sends `Cache-Control: private, no-store` and `Vary: Authorization, Cookie`.
+- Nodes never read outputs: a node's poll only serves jobs that are still queued, running or checking.
+- The two GPUs that run a job still see its prompt and output while they work, and that cannot be recalled. The site says so above every job form.
+- `npm run test:private-outputs` runs the checks against a local server.
+
+## GPU support
+
+Nodes report their device (node client 0.3.0+). The scheduler maps it to a family in [src/server/gpu-allowlist.json](src/server/gpu-allowlist.json): **allowed** (passed the cross-GPU bench), **untested** or **blocked** (software rasterizers, not GPUs). Details: [docs/gpu-support.md](docs/gpu-support.md).
+
+| Family | Status | Evidence |
+| --- | --- | --- |
+| NVIDIA GeForce RTX 30 (Ampere), RTX 40 (Ada) on CUDA | allowed | [bench 22 Nov 2026](bench/results/INDEX.md): images 8/8, worst 4 of 64 dHash bits; text 10/10 identical |
+| RTX 50 (Blackwell), RTX 20 (Turing), other CUDA devices | untested | not benched yet |
+| Any Vulkan device (AMD, Intel, iGPUs), CPU | untested | no Vulkan reference yet |
+| Software rasterizers (llvmpipe, SwiftShader, …) | blocked | not a GPU |
+
+- `GPU_ALLOWLIST_MODE=observe|enforce` (live: **observe**, it only records). Under `enforce`, untested families register but get no jobs.
+- `CHALLENGE_MODE=off|observe|enforce` (live: **off**). A challenge is one fixed bench case sent to a node every `CHALLENGE_INTERVAL_HOURS` (24); the signed answer is compared with the reference fingerprints in [bench/reference/](bench/reference/). Fail → cooldown (`CHALLENGE_COOLDOWN_HOURS`, 6), then suspension. Challenges are unpaid and never counted as jobs.
+- `npm test` runs the allowlist and challenge unit tests; `npm run check:bench` validates the committed bench results.
 
 ## Node program
 
@@ -299,9 +366,9 @@ Until there are enough contributors, the project runs its own bootstrap pool of 
 | `contracts/` | Foundry: `src/SparecycleRewards.sol`, `src/SparecycleJobPayments.sol`, `test/` (unit, fuzz, invariant, fork), `script/` (Deploy, DeployPayments, Launch, Rehearse), `mainnet.json` |
 | `node-client/` | Node program (`src/agent.ts`, `runners.ts`, `gpu.ts`, `bench.ts`, `python/image_worker.py`), installers |
 | `scripts/` | Operator tools, deploy, e2e, GPU tests (see below) |
-| `docs/` | `SPEC.md` (interfaces between components), `flow-art-plan.md` (illustration prompts) |
+| `docs/` | `SPEC.md` (interfaces between components), `private-outputs.md`, `gpu-support.md`, `ops/` (multisig runbook and rehearsal log), `images/` (README screenshots), `flow-art-plan.md` (illustration prompts) |
+| `bench/` | `results/` (cross-GPU bench runs, `INDEX.md`), `reference/` (challenge reference fingerprints) |
 | `public/` | Images, `og.jpg`, demo video, `downloads/` (node client packages) |
-| `videos/` | Demo video source (HyperFrames) |
 
 | Script | Purpose |
 | --- | --- |
@@ -323,7 +390,10 @@ npm run typecheck && npm run lint
 npm run contracts:test          # Foundry tests (unit, fuzz 512 runs, invariant 256×64)
 FORK_TESTS=1 npm run contracts:test -- --match-path 'test/fork/*'   # Robinhood mainnet fork (read-only)
 npm run contracts:abi-check     # Solidity ABI == src/contracts/sparecycleRewards.ts
-npm run e2e:local               # anvil + scheduler + 2 dev-runner nodes (77 checks)
+npm test                        # allowlist and challenge unit tests
+npm run check:bench             # re-derives the committed bench verdicts and challenge references with the current code
+npm run e2e:local               # anvil + scheduler + 2 dev-runner nodes, incl. private outputs and a challenge round
+npm run test:private-outputs    # who can read a job result (401 / 403 / 200 / 410)
 node scripts/e2e-pool.mjs       # on-demand GPU pool with a fake Vast (10 checks)
 node scripts/e2e-backends.mjs   # real Vulkan/CPU nodes
 node scripts/e2e-testnet.mjs    # Robinhood testnet 46630
@@ -360,7 +430,7 @@ Filled from official sources: default RPC `https://rpc.mainnet.chain.robinhood.c
 
 ## Deploy (Railway + domain)
 
-- **Railway**: service `web` in project `sparecycle`, one replica, volume `web-volume` at `/data` (`DB_PATH=/data/sparecycle.db`), healthcheck `/api/health`, `npm run start`. Deploy: `railway up --service web --detach` (with `MSYS_NO_PATHCONV=1` in Git Bash). Config-as-code: `railway.json`. Railway default domain: https://web-production-6fe49c90.up.railway.app.
+- **Railway**: service `web` in project `sparecycle`, one replica, volume `web-volume` at `/data` (`DB_PATH=/data/sparecycle.db`), healthcheck `/api/health`, `npm run start`. Deploy: `railway up --service web --detach` (with `MSYS_NO_PATHCONV=1` in Git Bash). Config-as-code: `railway.json`.
 - **Custom domain** (`sparecycle.tech`): add it to the `web` service and set `NEXT_PUBLIC_DOMAIN=sparecycle.tech` and `NEXT_PUBLIC_APP_URL=https://sparecycle.tech` (applied on the next deploy). At the DNS provider, remove any parking record on `@` and add:
 
   | Type | Name | Value |
@@ -402,7 +472,31 @@ Launch order:
 5. `launch` (only once the site is live on the domain, because the logo and website are stored permanently in the token), then set the token/curve addresses on Railway and redeploy.
 6. After every epoch close: `node scripts/backup-trees.mjs`.
 
+## Ownership and multisig
+
+Today the reward contract's owner on mainnet is **one wallet** (`0x6C07…d7D4`), and the site says so on `/proof` and in the disclosures. The owner can pause claims, rotate the scheduler and return stray tokens; it has no function to take the pot.
+
+The contract uses `Ownable2Step`, so moving the owner to a Safe takes two transactions: the current owner calls `transferOwnership(safe)`, then the Safe executes `acceptOwnership()`. This was rehearsed end to end on Robinhood Chain testnet on 25 Nov 2026 with throwaway contracts and test keys:
+
+![The multisig rehearsal on Robinhood Chain testnet: 11 steps, from creating the Safe to an epoch closed after the move](docs/images/multisig-rehearsal.png)
+
+- The Safe went from 2-of-2 to **2-of-3** (an independent signer added, one laptop key swapped for a hardware key); the removed key could no longer sign.
+- After the move the old wallet's `setScheduler` and `pauseClaims` revert; the Safe rotated the scheduler and paused/unpaused claims.
+- The scheduler kept charging jobs and closed an epoch without any Safe signature.
+- All 15 transactions and 25 checks: [docs/ops/multisig-rehearsal.md](docs/ops/multisig-rehearsal.md). Rerun: `node scripts/multisig-rehearsal.mjs`. Fork tests against the live contract: `contracts/test/fork/OwnershipFork.t.sol`.
+
+The mainnet cut-over follows [docs/ops/multisig-runbook.md](docs/ops/multisig-runbook.md) (`node scripts/mainnet.mjs transfer-owner <safe>`, typed confirmation) and waits on the final signer list: no single person or device may hold two of the three signers.
+
 ## Test results
+
+### Private outputs on mainnet — 25 Nov 2026
+A new free job agreed in 23 s. Its result: anonymous `401`, wrong secret `403`, right secret `200 image/png` with `private, no-store`; an older job's `/output` link `410`.
+
+### Multisig rehearsal (testnet 46630) — 25 Nov 2026
+15 transactions, 25 checks passed. See [Ownership and multisig](#ownership-and-multisig).
+
+### First payout on mainnet — 24 Nov 2026
+Epoch 1: verified paid jobs charged, payout root posted, one share claimed by the team's labelled paid test node. Transactions in [What's new](#whats-new-25-nov-2026) and on `/proof`.
 
 ### Mainnet rehearsal — 22 Nov 2026
 From 0x6C07…d7D4 on live mainnet state, with provisional values (ETH, tax 0): deploy and launch succeeded; a 0.1 ETH test buy at the moment of launch → 0.0693 ETH into the pot (anti-sniper tax). Deploy + launch gas 6.93 million (~0.00014 ETH at 0.02 gwei) + Pons launch fee 0.0005 ETH.

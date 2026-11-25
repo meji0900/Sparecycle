@@ -5,7 +5,7 @@ import { ReviewStatus } from "@/components/legal/review-status";
 import { Hex } from "@/components/ui/address";
 import { config, tickerLabel } from "@/lib/config";
 import { PONS, PONS_DOCS_URL } from "@/lib/pons";
-import { FUNDING, paidJobsLive } from "@/lib/funding-copy";
+import { FUNDING, feesToTeamWallet, paidJobsLive } from "@/lib/funding-copy";
 import { serverEnv } from "@/server/env";
 
 export const metadata: Metadata = {
@@ -76,7 +76,7 @@ export default function DisclosuresPage() {
 
       <LegalSection title="Fees may be too small to attract nodes">
         <p>
-          Rewards track volume{paidJobsLive ? " and paid jobs" : ""}. {FUNDING.noTopUp} A quiet period means a small or empty pot,
+          {feesToTeamWallet ? "Rewards track paid jobs." : `Rewards track volume${paidJobsLive ? " and paid jobs" : ""}.`} {FUNDING.noTopUp} A quiet period means a small or empty pot,
           and an empty pot pays nothing.
         </p>
       </LegalSection>
@@ -118,8 +118,8 @@ export default function DisclosuresPage() {
       <LegalSection title="Legal status is not settled">
         <p>
           The legal status of the token and of a compute network is not settled. Counsel should review the launch, the public
-          job-submission surface, and any geographic or terms-of-use rules (<Placeholder>[TOS_URL]</Placeholder>,{" "}
-          <Placeholder>[LEGAL_REVIEW]</Placeholder>). No securities or geographic policy is stated here until counsel writes one.
+          job-submission surface, and any geographic or terms-of-use rules; that review has not happened yet. No securities or
+          geographic policy is stated here until counsel writes one.
         </p>
       </LegalSection>
 
@@ -140,20 +140,25 @@ export default function DisclosuresPage() {
           <li className="flex gap-3">
             <span aria-hidden className="mt-2.5 h-px w-3 shrink-0 bg-amber" />
             <span>
-              <span className="text-text">A contract as creatorFeeRecipient was untested.</span> Pons allows a contract to be
-              the creator fee recipient by design, but that path was untested as of {checked}. The fallback is a multisig
-              {config.multisig ? (
+              {feesToTeamWallet ? (
                 <>
-                  {" "}
-                  (<Hex value={config.multisig} />)
+                  <span className="text-text">The token&apos;s creator fees go to a team wallet.</span> The creator fee
+                  recipient was fixed at launch to a team wallet, not to the reward contract. Node payouts come from paid jobs and
+                  do not depend on those fees; the proof page shows the recipient.
                 </>
               ) : (
                 <>
-                  {" "}
-                  (<Placeholder>[MULTISIG_ADDRESS]</Placeholder>, not set yet)
+                  <span className="text-text">A contract as creatorFeeRecipient was untested.</span> Pons allows a contract to
+                  be the creator fee recipient by design, but that path was untested as of {checked}. The fallback is a multisig
+                  {config.multisig ? (
+                    <>
+                      {" "}
+                      (<Hex value={config.multisig} />)
+                    </>
+                  ) : null}{" "}
+                  that claims fees from the Pons escrow and forwards them into the reward contract.
                 </>
-              )}{" "}
-              that claims fees from the Pons escrow and forwards them into the reward contract.
+              )}
             </span>
           </li>
           <li className="flex gap-3">

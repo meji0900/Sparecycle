@@ -6,7 +6,7 @@ import { JobSubmit } from "@/components/dapp/job-submit";
 import { LiveRecentJobs } from "@/components/dapp/recent-jobs";
 import { SectionTitle } from "@/components/dapp/ui";
 import { Notice } from "@/components/ui/status";
-import { paidJobsLive as paidJobs } from "@/lib/funding-copy";
+import { feesToTeamWallet, paidJobsLive as paidJobs } from "@/lib/funding-copy";
 import { serverEnv } from "@/server/env";
 
 export const metadata: Metadata = {
@@ -31,7 +31,7 @@ export default function JobsPage() {
 
       {paidJobs ? (
         <Notice tone="neutral" title="A fixed price, not a marketplace." className="mb-10">
-          Nodes are paid from one pot: trading fees plus 95% of what paid jobs are charged. Paid and free jobs wait in the same queue
+          Nodes are paid from one pot: 95% of what paid jobs are charged{feesToTeamWallet ? "" : ", plus trading fees"}. Paid and free jobs wait in the same queue
           and may be delayed or refused when nodes are scarce. There is no bidding, no priority lane and no stake to submit.
         </Notice>
       ) : (

@@ -11,6 +11,7 @@ import { formatInt } from "@/lib/format";
 import { LAUNCH_PHASES, PONS, ponsFactoryAbi } from "@/lib/pons";
 import { ALL_MAINNET_TXS, LAUNCH_TX, MAINNET, MAINNET_EXPLORER, PAYMENTS, SOURCIFY_REPO, TEST_RUNS, TESTNET, TESTNET_EXPLORER, TOKEN, EARLIER_TOKEN, TREASURY } from "@/lib/proof";
 import { config } from "@/lib/config";
+import { feesToTeamWallet } from "@/lib/funding-copy";
 import { parseAbi } from "viem";
 import { HeyBuilderCard } from "@/components/dapp/hey-builder-card";
 
@@ -139,8 +140,10 @@ export default async function ProofPage() {
           title="Mainnet reward contract"
           description={
             <>
-              Robinhood Chain, chain id <span className="num">{MAINNET.chainId}</span>. The creator share of the token&apos;s Pons
-              trading fees and the creator tax are paid into this contract, and node owners claim from it. Live values are read from the chain on every
+              Robinhood Chain, chain id <span className="num">{MAINNET.chainId}</span>.{" "}
+              {feesToTeamWallet
+                ? "95% of each verified paid job is paid into this contract, and node owners claim from it. The token's creator fees go to the team wallet, not here."
+                : "The creator share of the token's Pons trading fees and the creator tax are paid into this contract, and node owners claim from it."} Live values are read from the chain on every
               page load and compared with the record.
             </>
           }

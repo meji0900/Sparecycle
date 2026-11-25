@@ -7,7 +7,7 @@ import { SetupGuide } from "@/components/dapp/setup-guide";
 import { SectionTitle, TableBox, td, th } from "@/components/dapp/ui";
 import { MODELS } from "@/lib/protocol";
 import { IMAGE_MAX_BITS, TEXT_MIN_SIMILARITY } from "@/server/verify";
-import { FUNDING, paidJobsLive } from "@/lib/funding-copy";
+import { FUNDING, feesToTeamWallet, paidJobsLive } from "@/lib/funding-copy";
 
 export const metadata: Metadata = {
   title: "Run a node",
@@ -56,7 +56,7 @@ export default function NodesPage() {
                 ["GPU", "NVIDIA RTX 30-series or newer for image and text jobs. AMD or Intel GPU, iGPU or CPU for text jobs."],
                 ["System", "Windows 10/11 or Ubuntu 24.04+"],
                 ["Hold", "Nothing. No token, no stake, no deposit."],
-                ["Paid", "From trading fees that actually arrived. No hourly rate."],
+                ["Paid", feesToTeamWallet ? "From customers' payments for verified jobs. No hourly rate." : "From trading fees that actually arrived. No hourly rate."],
                 ["Rule", "One wallet per GPU. Two nodes run every job."],
               ] as const
             ).map(([k, v]) => (
@@ -160,7 +160,9 @@ export default function NodesPage() {
               . Unclaimed amounts stay claimable.
             </p>
             <p>
-              {paidJobsLive
+              {feesToTeamWallet
+                ? "The pot is 95% of what customers paid for verified jobs. A quiet period means a small pot, and an empty pot pays nothing."
+                : paidJobsLive
                 ? "The pot is the trading fees that actually arrived plus customers' payments for verified jobs. A quiet period means a small pot, and an empty pot pays nothing."
                 : "The pot is only the trading fees that actually arrived. A quiet market means a small pot, and an empty pot pays nothing."}{" "}
               {FUNDING.noTopUp}

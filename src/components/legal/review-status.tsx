@@ -1,8 +1,7 @@
 import { config } from "@/lib/config";
-import { Placeholder } from "./legal-page";
 
-/** "Draft pending counsel ([LEGAL_REVIEW])" plus the version and the published URL when they exist. */
-export function ReviewStatus({ url, urlPlaceholder, noun }: { url: string | null; urlPlaceholder: string; noun: string }) {
+/** "Draft pending counsel" plus the review status, version and published URL when they exist, in plain words when not. */
+export function ReviewStatus({ url, noun }: { url: string | null; urlPlaceholder?: string; noun: string }) {
   const review = process.env.LEGAL_REVIEW?.trim() || null;
   return (
     <div className="space-y-2">
@@ -11,10 +10,10 @@ export function ReviewStatus({ url, urlPlaceholder, noun }: { url: string | null
           <span aria-hidden className="size-0 border-x-[4px] border-b-[7px] border-x-transparent border-b-current" />
           Draft pending counsel
         </span>{" "}
-        {review ? <>Review status: {review}.</> : <Placeholder>[LEGAL_REVIEW]</Placeholder>}
+        {review ? <>Review status: {review}.</> : <>Not reviewed by counsel yet.</>}
       </p>
       <p>
-        Version {config.links.tosVersion ? <span className="num text-text">{config.links.tosVersion}</span> : <Placeholder>[TOS_VERSION]</Placeholder>}
+        Version {config.links.tosVersion ? <span className="num text-text">{config.links.tosVersion}</span> : "draft"}
         {" · "}
         Published {noun}:{" "}
         {url ? (
@@ -25,9 +24,7 @@ export function ReviewStatus({ url, urlPlaceholder, noun }: { url: string | null
             (that text wins over this page)
           </>
         ) : (
-          <>
-            <Placeholder>{urlPlaceholder}</Placeholder> (not set yet)
-          </>
+          <>none yet</>
         )}
       </p>
     </div>

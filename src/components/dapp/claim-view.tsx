@@ -817,8 +817,7 @@ export function LeafEncoding({ className }: { className?: string }) {
         <p>
           A centralized scheduler computes the tree in this MVP. The contract checks only that your proof leads to the posted
           root and that the total paid never exceeds what the root reserved. Unclaimed amounts stay claimable{" "}
-          {config.claimWindow ? `for ${config.claimWindow}` : "indefinitely"}
-          {config.claimWindow ? "" : <span className="num text-faint"> ([CLAIM_WINDOW] unset)</span>}.
+          {config.claimWindow ? `for ${config.claimWindow}` : "indefinitely"}.
         </p>
       </div>
     </section>

@@ -5,15 +5,9 @@ import { PONS_DOCS_URL } from "@/lib/pons";
 import { FUNDING } from "@/lib/funding-copy";
 import { XLink } from "@/components/brand/x-link";
 
-/** A footer link: real URL when configured, otherwise a visible placeholder (never a dead link). */
-function FooterLink({ href, label, placeholder }: { href: string | null; label: string; placeholder: string }) {
-  if (!href) {
-    return (
-      <span className="text-faint" title={`${placeholder} is not set yet`}>
-        {label} <span className="num text-xs">{placeholder}</span>
-      </span>
-    );
-  }
+/** A footer link when its URL is configured; nothing at all otherwise (never a dead link or a visible placeholder). */
+function FooterLink({ href, label }: { href: string | null; label: string }) {
+  if (!href) return null;
   const external = href.startsWith("http");
   return external ? (
     <a href={href} target="_blank" rel="noreferrer" className="text-muted transition-colors hover:text-text">
@@ -64,18 +58,18 @@ export function SiteFooter() {
           </div>
           <div className="flex flex-col gap-2.5">
             <p className="text-faint">Elsewhere</p>
-            {links.x ? <XLink withLabel /> : <FooterLink href={links.x} label="X" placeholder="[X_URL]" />}
-            {links.github ? <FooterLink href={links.github} label="GitHub" placeholder="[GITHUB_URL]" /> : null}
-            <FooterLink href={links.docs} label="Docs" placeholder="[DOCS_URL]" />
-            <FooterLink href={links.telegram} label="Telegram" placeholder="[TELEGRAM_URL]" />
+            {links.x ? <XLink withLabel /> : null}
+            {links.github ? <FooterLink href={links.github} label="GitHub" /> : null}
+            <FooterLink href={links.docs} label="Docs" />
+            <FooterLink href={links.telegram} label="Telegram" />
             <a href={PONS_DOCS_URL} target="_blank" rel="noreferrer" className="text-muted hover:text-text">
               Pons v2 docs
             </a>
           </div>
           <div className="flex flex-col gap-2.5">
             <p className="text-faint">Legal</p>
-            <FooterLink href={links.tos ?? "/legal/terms"} label="Terms" placeholder="[TOS_URL]" />
-            <FooterLink href={links.privacy ?? "/legal/privacy"} label="Privacy" placeholder="[PRIVACY_POLICY_URL]" />
+            <FooterLink href={links.tos ?? "/legal/terms"} label="Terms" />
+            <FooterLink href={links.privacy ?? "/legal/privacy"} label="Privacy" />
             <Link href="/legal/disclosures" className="text-muted hover:text-text">Disclosures</Link>
           </div>
         </div>
