@@ -71,3 +71,6 @@ node-client/bench-*/
 
 # Off-server copies of payout trees (scripts/backup-trees.mjs)
 backups/
+
+# Foundry test library: fetched at a pinned commit by contracts/tools/forge.mjs, not vendored
+contracts/lib/

@@ -55,12 +55,11 @@ Screenshots of the live site on 25 Nov 2026. Every number in them is read live f
 
 Requires **Node.js 24** (pinned in `package.json`) and, for the contracts, **Foundry**.
 
-Clone with submodules (Foundry's `forge-std` is a submodule under `contracts/lib`):
-
 ```bash
-git clone --recursive https://github.com/meji0900/Sparecycle.git
-# or, in an existing clone: git submodule update --init
+git clone https://github.com/meji0900/Sparecycle.git
 ```
+
+Foundry's test library `forge-std` is not vendored: `npm run contracts:test` (via `contracts/tools/forge.mjs`) fetches it once into `contracts/lib/forge-std` at a pinned commit. OpenZeppelin comes from `node_modules`.
 
 ```bash
 npm install

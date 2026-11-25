@@ -18,14 +18,14 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
+      - run: npm test # GPU allowlist and challenge unit tests
+      - run: npm run check:bench # published bench verdicts re-derived with the current code
 
   contracts:
     name: Contract tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -33,5 +33,5 @@ jobs:
       - run: npm ci # OpenZeppelin is resolved from node_modules
       - uses: foundry-rs/foundry-toolchain@v1
       - name: forge test (unit, fuzz, invariant; fork tests need an RPC and are skipped)
-        working-directory: contracts
-        run: forge test --no-match-path "test/fork/*"
+        # contracts/tools/forge.mjs fetches forge-std at its pinned commit on first use
+        run: node contracts/tools/forge.mjs test --no-match-path "test/fork/*"
