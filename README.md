@@ -139,6 +139,9 @@ trader ──buy/sell CYCLE──▶ Pons bonding curve (standard fee + optional
                                      node claims with a Merkle proof at /app/claim; leftover pot rolls over to the next epoch
 ```
 
+- Paid jobs are **charged only when two results match; otherwise not charged**. A job whose results do not match, that expires without a verdict or that the safety check rejects is never charged; the price held for it is released (nothing moves on-chain, so nothing needs to be given back).
+- Charges go out once per epoch as one batch. The 5% to the treasury is taken only from matched jobs, on the batch total and rounded down, so one job's 5% is a rounded share. The 95% goes to the open epoch's pot, which is split by work units across all matched jobs of that epoch, not to the nodes of one job in particular.
+- Withdrawing: start a withdrawal any time, complete it after the lock (once the request's epoch and the next one have closed, or 2 days after the request at the latest).
 - Free trial jobs pay nothing in, but their work units share the same pot as paid jobs.
 - Anyone can add to the pot by sending to the reward contract (`fund`).
 - **SPARE** creator fees go to the team wallet, not to this flow. **CYCLE** creator fees go to the reward contract as shown above.
@@ -162,7 +165,7 @@ trader ──buy/sell CYCLE──▶ Pons bonding curve (standard fee + optional
 - **Network status** (`/app`): current epoch, pot, registered nodes per backend (cuda / vulkan / cpu), recent jobs, settled epochs, project GPU status ("Project GPUs (on demand)"), and a "Run by Sparecycle, unpaid" label on project nodes.
 - **Claim** (`/app/claim`): connect a wallet (RainbowKit; WalletConnect when `NEXT_PUBLIC_WC_PROJECT_ID` is set), see your allocation per epoch, claim with a Merkle proof, with error messages that explain the cause (not settled, already claimed, claims paused, etc.).
 - **3D Merkle tree** that highlights your proof path, and **"Check a proof"** to verify a proof without a wallet.
-- **Submit jobs** (`/jobs`): SD 1.5 or Qwen2.5-1.5B, free trial jobs rate-limited per IP or paid from a prepaid balance, live status (queued → running → checking → agreed/disagreed/rejected/expired), image/text output of `agreed` jobs, visible only to this browser or the wallet that paid.
+- **Submit jobs** (`/jobs`): SD 1.5 or Qwen2.5-1.5B, free trial jobs rate-limited per IP or paid from a prepaid balance, live status (queued → running → checking → agreed/disagreed/rejected/expired), image/text output of `agreed` jobs, visible only to this browser or the wallet that paid. Paid jobs get a private **invoice** (price, rounded 5% protocol cut, whether the results matched, charge status, the output's sha256 with an in-browser "check this hash", epoch and transaction links, Download JSON). The balance panel shows balance, held, withdrawal pending and available, starts a withdrawal in one click and completes it after the lock, and a **low-balance** warning appears below 5 jobs at the current price.
 - **Playground** (`/playground`): generate an image in a few clicks; the result is private to this browser (or the paying wallet after a gasless sign-in).
 - **Node guide** (`/nodes`): Windows/Linux installer downloads (with SHA256), a 61-second demo video, a **24-hour idle planner** that produces the `--hours` flag, wallet-linking steps and how to claim.
 - **Token** (`/token`): token and curve addresses, live Pons reads (phase, fees, creator tax, pair, buyback, fee recipient, with a warning when the fee recipient is not the reward contract), token facts, launch decisions.
@@ -220,13 +223,13 @@ Everything under `/api/v1`, JSON, errors always `{ "error": "<code>", "message":
 | Access | Endpoint |
 | --- | --- |
 | Public | `GET health`, `GET status`, `GET epochs`, `GET epochs/:id/tree`, `GET epochs/:id/proof?account=0x…`, `GET epochs/:id/charges`, `GET jobs?limit=`, `POST jobs`, `GET jobs/:id`, `GET nodes`, `GET payments/account?address=0x…` |
-| Job owner | `GET jobs/:id/result`: the output of an agreed job, for `Authorization: Bearer <read secret>` (returned once by `POST jobs`) or a wallet session of the payer; `401` anonymous, `403` wrong secret or wallet; `Cache-Control: private, no-store`. The old `GET jobs/:id/output` returns `410` while `OUTPUT_AUTH=enforce` |
+| Job owner | `GET jobs/:id/result`: the output of an agreed job, for `Authorization: Bearer <read secret>` (returned once by `POST jobs`) or a wallet session of the payer; `401` anonymous, `403` wrong secret or wallet; `Cache-Control: private, no-store`. The old `GET jobs/:id/output` returns `410` while `OUTPUT_AUTH=enforce`. `GET jobs/:id/invoice`: the private invoice of a paid or team job (price, rounded 5% protocol cut, verdict, charge status, output hash, epochs, charge and root transactions), same credentials, always enforced; a free job gets a "free trial, no charge" stub |
 | Wallet sign-in | `GET auth/nonce`, `POST auth/verify` (EIP-4361 Sign-In with Ethereum message, sets an http-only 12-hour session cookie), `POST auth/logout`. No transaction, no gas |
 | Node (signed) | `POST nodes/register`, `POST nodes/poll`, `POST tasks/:taskId/result`, `POST challenges/:id/result` — headers `x-sc-from`, `x-sc-ts`, `x-sc-sig` = EIP-191 over `sparecycle\|METHOD\|PATH\|TS\|sha256(body)` |
 | Operator | `POST epochs/close`; `GET`/`POST admin/challenges` (a node's challenge state; re-issue, temporary allow, revoke, each written to an audit log; never touches jobs or results). Bearer `SCHEDULER_ADMIN_TOKEN`; no token configured → 503 |
 | Site | `GET /api/chain` (network, Pons, reward contract and token snapshot; 15-second cache), `GET /api/health`, `/api/rpc` (read-only JSON-RPC relay used by the browser as a fallback transport) |
 
-`GET status` also includes `nodes.byBackend.{cuda,vulkan,cpu}.{registered,online}`, `gpuPool` (no keys or instance IDs) and `gpuGate` (allowlist and challenge modes). `GET epochs/:id/charges` is the per-job charge list of an epoch (its hash is in the `Charged` event). `GET payments/account` returns a customer's balance in the payments contract, the amount held for unsettled jobs, what is available for new jobs, their spend limit and any pending withdrawal.
+`GET status` also includes `nodes.byBackend.{cuda,vulkan,cpu}.{registered,online}`, `gpuPool` (no keys or instance IDs) and `gpuGate` (allowlist and challenge modes). `GET epochs/:id/charges` is the per-job charge list of an epoch (its hash is in the `Charged` event). `GET jobs` and `GET jobs/:id` show who paid (`payment`: free, paid or team) but no price or charge status; the payer reads those on the invoice. A paid `POST jobs` also answers `available` and `lowBalance` (fewer than 5 jobs at this price left). `GET payments/account` returns a customer's balance in the payments contract, the amount held for unsettled jobs, what is available for new jobs, their spend limit and any pending withdrawal.
 
 ## Reward contract
 
@@ -255,7 +258,7 @@ Everything under `/api/v1`, JSON, errors always `{ "error": "<code>", "message":
 - Once per epoch the reward contract's scheduler calls `charge` with the amounts owed for that epoch's verified jobs (0.5 gwei per work unit). A charge goes to exactly two places: **95%** into the reward contract's open-epoch pot (through its public `fund()`) and **5%** to the fixed treasury, a 2-of-3 Safe `0xb262E4436aD6760F91e987f14e2fAc5D6550c71B`.
 - No owner, no admin function, no other way to move a customer's balance.
 - Customer protections: an optional per-epoch spend limit (`setSpendLimit`); charges only for the open epoch; every charge emits the hash of the published charge list and one event per customer.
-- Withdrawals are two-step: `requestWithdraw`, then `withdraw` once the reward contract has closed the request's epoch and the next one, or after `WITHDRAW_TIMEOUT` (2 days) if epochs stop closing.
+- Withdrawals are two-step: `requestWithdraw`, then `withdraw` once the reward contract has closed the request's epoch and the next one, or after `WITHDRAW_TIMEOUT` (2 days) if epochs stop closing. In the app: start a withdrawal any time (one click requests everything available), complete it after the lock; the panel shows the unlock condition and the expected window from the epoch clock.
 
 ## Scheduler: jobs, checks, epochs
 
@@ -301,7 +304,7 @@ Nodes report their device (node client 0.3.0+). The scheduler maps it to a famil
 
 - `GPU_ALLOWLIST_MODE=observe|enforce` (live: **observe**, it only records). Under `enforce`, untested families register but get no jobs.
 - `CHALLENGE_MODE=off|observe|enforce` (live: **off**). A challenge is one fixed bench case sent to a node every `CHALLENGE_INTERVAL_HOURS` (24); the signed answer is compared with the reference fingerprints in [bench/reference/](bench/reference/). Fail → cooldown (`CHALLENGE_COOLDOWN_HOURS`, 6), then suspension. Challenges are unpaid and never counted as jobs.
-- `npm test` runs the allowlist and challenge unit tests; `npm run check:bench` validates the committed bench results.
+- `npm test` runs the allowlist and challenge unit tests and the billing / invoice tests (`src/server/invoice.test.ts`: invoice access 401 / 403 / 404 / 200, output hash, free stub, no price in public job views, `lowBalance`, a disagreed paid job never charged); `npm run check:bench` validates the committed bench results.
 
 ## Node program
 
@@ -390,7 +393,7 @@ npm run typecheck && npm run lint
 npm run contracts:test          # Foundry tests (unit, fuzz 512 runs, invariant 256×64)
 FORK_TESTS=1 npm run contracts:test -- --match-path 'test/fork/*'   # Robinhood mainnet fork (read-only)
 npm run contracts:abi-check     # Solidity ABI == src/contracts/sparecycleRewards.ts
-npm test                        # allowlist and challenge unit tests
+npm test                        # allowlist, challenge, billing and invoice unit tests
 npm run check:bench             # re-derives the committed bench verdicts and challenge references with the current code
 npm run e2e:local               # anvil + scheduler + 2 dev-runner nodes, incl. private outputs and a challenge round
 npm run test:private-outputs    # who can read a job result (401 / 403 / 200 / 410)

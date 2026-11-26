@@ -5,7 +5,7 @@ import { ReviewStatus } from "@/components/legal/review-status";
 import { Hex } from "@/components/ui/address";
 import { config, tickerLabel } from "@/lib/config";
 import { PONS, PONS_DOCS_URL } from "@/lib/pons";
-import { FUNDING, feesToTeamWallet, paidJobsLive } from "@/lib/funding-copy";
+import { BILLING, FUNDING, feesToTeamWallet, paidJobsLive } from "@/lib/funding-copy";
 import { MAINNET, TREASURY } from "@/lib/proof";
 import { serverEnv } from "@/server/env";
 
@@ -91,8 +91,9 @@ export default function DisclosuresPage() {
             The amount you asked to withdraw can&apos;t be spent on new jobs meanwhile.
           </p>
           <p>
-            The scheduler charges a job only after two nodes agree on it, once per epoch, at the published price. 95% of each
-            charge goes into the node reward pot and 5% to the treasury
+            The scheduler charges a job only after two nodes agree on it, once per epoch, at the published price. {BILLING.notCharged}{" "}
+            Each epoch&apos;s charges go out as one batch: 95% goes into the node reward pot and 5%, rounded down on the batch total, to the
+            treasury
             {config.treasury ? (
               <>
                 {" "}

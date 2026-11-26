@@ -9,7 +9,7 @@ import type { ApiFailure } from "@/lib/dapp/api";
 import { formatEth, quoteJob } from "@/lib/dapp/paid-jobs";
 import { LIMITS } from "@/lib/protocol";
 import { cn } from "@/lib/utils";
-import { accountFailureText, Eth } from "./job-balance";
+import { accountFailureText, Eth, LowCreditNotice } from "./job-balance";
 import { loadItems, MAX_ITEMS, PlaygroundHistory, saveItems, type PlayItem } from "./playground-history";
 import { PlaygroundResult } from "./playground-result";
 import { OutputPrivacyNotice } from "./private-output";
@@ -443,6 +443,7 @@ export function Playground({ rateLimit }: { rateLimit: number | null }) {
                 }
               />
             </div>
+            <LowCreditNotice priceWei={quote?.wei ?? null} paid={paid} depositHref="/jobs#balance" className="mt-3" />
             {paid ? (
               <div className="mt-3 rounded-m border border-line">
                 <dl className="divide-y divide-line">
@@ -479,7 +480,7 @@ export function Playground({ rateLimit }: { rateLimit: number | null }) {
                   ) : null}
                   <p>
                     Your wallet asks you to sign a message: no transaction, no gas. The price is held from your balance and charged only if
-                    both GPUs agree; otherwise it is released.{" "}
+                    both GPUs agree; otherwise it is not charged and the hold is released.{" "}
                     <Link href="/jobs#balance" className="link">
                       Manage your balance
                     </Link>

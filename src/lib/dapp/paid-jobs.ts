@@ -5,7 +5,7 @@ import type { Tone } from "@/components/ui/status";
 import { jobPriceWei, JOB_PAYMENT_WINDOW_SECONDS } from "@/lib/job-payment";
 import { formatAmount } from "@/lib/format";
 import { parseJobRequest, SpecError, workUnits, type JobRequest } from "@/lib/protocol";
-import type { ApiFailure, ApiJob } from "./api";
+import type { ApiFailure, ApiJob, PaidInvoice } from "./api";
 import { revertName } from "./claim-errors";
 import { durationLabel } from "./duration";
 
@@ -76,19 +76,38 @@ export function paymentTag(job: Pick<ApiJob, "payment">): { tone: Tone; label: s
 export const showPayment = (job: Pick<ApiJob, "payment">, paymentsOn: boolean) =>
   job.payment === "paid" || job.payment === "team" || (paymentsOn && job.payment === "free");
 
-/** What happened to a paid job's price, in words. */
-export function chargeNote(job: Pick<ApiJob, "status" | "chargeStatus">): string | null {
-  switch (job.chargeStatus) {
+/**
+ * What happened to a paid job's price, from its invoice (the public job views no longer carry it, D7). `label` is a
+ * short tag; `text` the plain sentence (feature brief §3.2 step 3: held / charged in epoch N / not charged / matched,
+ * but the balance was withdrawn before the charge). Never "refund": nothing was taken, so nothing is given back.
+ */
+export function chargeWords(inv: Pick<PaidInvoice, "chargeStatus" | "verdict" | "chargedEpoch">): { tone: Tone; label: string; text: string } {
+  switch (inv.chargeStatus) {
     case "pending":
-      return job.status === "agreed" ? "Agreed: charged when the epoch closes" : "Held until two nodes agree";
+      return inv.verdict === "agreed"
+        ? { tone: "neutral", label: "Held", text: "Held: the results matched, and the price is charged when the epoch closes." }
+        : { tone: "neutral", label: "Held", text: "Held from your balance until the two results are compared. Charged only if they match." };
     case "charged":
-      return "Charged";
+      return {
+        tone: "live",
+        label: inv.chargedEpoch !== null ? `Charged in epoch ${inv.chargedEpoch}` : "Charged",
+        text: `The results matched; charged${inv.chargedEpoch !== null ? ` in epoch ${inv.chargedEpoch}` : ""} with that epoch's batch.`,
+      };
     case "released":
-      return "Released, not charged";
+      return {
+        tone: "off",
+        label: "Not charged",
+        text:
+          inv.verdict === "disagreed"
+            ? "Not charged: the two results did not match."
+            : inv.verdict === "expired"
+              ? "Not charged: the job expired without a verdict."
+              : inv.verdict === "rejected"
+                ? "Not charged: the safety check rejected it."
+                : "Not charged.",
+      };
     case "unpaid":
-      return "Not charged: the balance was too low at the epoch close";
-    default:
-      return null;
+      return { tone: "warn", label: "Matched, not charged", text: "Matched, but the balance was withdrawn before the charge." };
   }
 }
 

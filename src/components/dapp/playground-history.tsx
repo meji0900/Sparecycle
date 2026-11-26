@@ -4,7 +4,9 @@ import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import type { JobDetail, JobStatus } from "@/lib/dapp/api";
 import { TERMINAL } from "@/lib/dapp/jobs";
+import { useJobInvoice } from "@/lib/dapp/invoice";
 import { resultUrl, useJobOutput } from "@/lib/dapp/job-output";
+import { chargeWords } from "@/lib/dapp/paid-jobs";
 import { useApiGet } from "@/lib/dapp/use-api";
 import { cn } from "@/lib/utils";
 import { SectionTitle } from "./ui";
@@ -118,6 +120,9 @@ function Tile({
 
   const out = useJobOutput(item.status === "agreed" && item.output ? item.id : null, item.secret);
   const img = out.state === "ready" ? out.url : null;
+  // Paid images: what happened to the price, from the private invoice (the full invoice opens with the tile).
+  const invoice = useJobInvoice(item.paid ? item.id : null, item.secret, { refreshKey: item.status });
+  const charge = invoice.state === "ready" && invoice.invoice.invoice ? chargeWords(invoice.invoice).label : null;
   const label =
     item.status === "agreed"
       ? img
@@ -153,6 +158,11 @@ function Tile({
           <span className="sr-only">{selected ? "Showing: " : "Show: "}</span>
           {item.prompt}
         </span>
+        {item.paid ? (
+          <span className="mt-1 block truncate px-0.5 text-[11px] leading-snug text-faint">
+            Paid{charge ? ` · ${charge.toLowerCase()}` : ""}
+          </span>
+        ) : null}
       </button>
     </li>
   );
@@ -177,7 +187,7 @@ export function PlaygroundHistory({
       <SectionTitle
         id="your-images"
         title="Your images"
-        description={`Made in this browser, newest first (the last ${MAX_ITEMS}). The list is kept on this device only; there is no public gallery.`}
+        description={`Made in this browser, newest first (the last ${MAX_ITEMS}). The list is kept on this device only; there is no public gallery. Open a paid image to see its invoice.`}
         aside={
           items.length ? (
             <Button variant="quiet" size="sm" onClick={onClear}>

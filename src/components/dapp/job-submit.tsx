@@ -8,12 +8,14 @@ import { config } from "@/lib/config";
 import { apiDown, type ApiFailure, type JobDetail } from "@/lib/dapp/api";
 import { useJobOutput } from "@/lib/dapp/job-output";
 import { jobTag, lifecycleStage, modelLabel, TERMINAL } from "@/lib/dapp/jobs";
-import { chargeNote, formatEth, formatGwei, paymentTag, quoteJob, showPayment } from "@/lib/dapp/paid-jobs";
+import { useJobInvoice } from "@/lib/dapp/invoice";
+import { chargeWords, formatEth, formatGwei, paymentTag, quoteJob, showPayment } from "@/lib/dapp/paid-jobs";
 import { useApiGet } from "@/lib/dapp/use-api";
 import { formatInt, formatTime } from "@/lib/format";
 import { LIMITS } from "@/lib/protocol";
 import { cn } from "@/lib/utils";
-import { accountFailureText, Eth } from "./job-balance";
+import { accountFailureText, Eth, LowCreditNotice } from "./job-balance";
+import { JobInvoicePanel } from "./job-invoice";
 import { JobLifecycle } from "./job-lifecycle";
 import { OutputPrivacyNotice, outputLockText, SignInToView } from "./private-output";
 import { RadioCard, Row } from "./ui";
@@ -207,6 +209,7 @@ export function JobSubmit({ rateLimit, side }: { rateLimit: number | null; side?
           }
         />
       </div>
+      <LowCreditNotice priceWei={quote?.wei ?? null} paid={paid} depositHref="#balance" className="mt-3" />
       {paid ? (
         <div className="mt-3 rounded-m border border-line">
           <dl className="divide-y divide-line">
@@ -250,7 +253,7 @@ export function JobSubmit({ rateLimit, side }: { rateLimit: number | null; side?
             ) : null}
             <p>
               Your wallet asks you to sign a message: no transaction, no gas. The price is held from your balance and charged only if two
-              nodes agree on the result; otherwise it is released.
+              nodes agree on the result; otherwise it is not charged and the hold is released.
             </p>
           </div>
         </div>
@@ -549,6 +552,10 @@ function JobCard({ id, secret }: { id: string; secret: string | null }) {
   const pay = job && showPayment(job, !!config.jobPayments) ? paymentTag(job) : null;
   const failed = !!job && (job.status === "disagreed" || job.status === "expired" || job.status === "rejected");
   const hasOutput = job?.status === "agreed" && (job.outputAvailable ?? !!job.output);
+  // Price and charge status come from the private invoice (the public job view no longer carries them, D7).
+  const payerJob = job?.payment === "paid" || job?.payment === "team";
+  const invoice = useJobInvoice(payerJob ? id : null, secret, { refreshKey: job?.status, poll: true });
+  const inv = invoice.state === "ready" && invoice.invoice.invoice ? invoice.invoice : null;
 
   return (
     <article className="rounded-l border border-line">
@@ -587,13 +594,12 @@ function JobCard({ id, secret }: { id: string; secret: string | null }) {
                   <dt className="text-xs text-faint">Payment</dt>
                   <dd className="text-muted">
                     {pay.label}
-                    {job.priceWei && /^\d+$/.test(job.priceWei) ? (
+                    {inv ? (
                       <>
                         {" "}
-                        · <span className="num">{formatEth(job.priceWei)}</span> ETH
+                        · <span className="num">{formatEth(inv.priceWei)}</span> ETH · {chargeWords(inv).label.toLowerCase()}
                       </>
                     ) : null}
-                    {chargeNote(job) ? ` · ${chargeNote(job)}` : null}
                   </dd>
                 </div>
               ) : null}
@@ -603,6 +609,7 @@ function JobCard({ id, secret }: { id: string; secret: string | null }) {
               <Output id={id} secret={secret} type={job.outputType} hasPayer={job.payment === "paid" || job.payment === "team"} />
             ) : null}
             {job.status === "agreed" && !hasOutput ? <p className="text-sm text-muted">Agreed. The output is not stored.</p> : null}
+            {payerJob ? <JobInvoicePanel state={invoice} /> : null}
           </>
         ) : fail ? (
           <p className="text-sm text-muted">
@@ -641,6 +648,10 @@ function Output({ id, secret, type, hasPayer }: { id: string; secret: string | n
           Agreed output.{" "}
           <a href={url} className="link" target="_blank" rel="noreferrer">
             Open the PNG
+          </a>{" "}
+          ·{" "}
+          <a href={url} className="link" download={`sparecycle-${id.slice(2, 10)}.png`}>
+            Download
           </a>
         </figcaption>
       </figure>
@@ -655,7 +666,17 @@ function Output({ id, secret, type, hasPayer }: { id: string; secret: string | n
       <pre className="max-h-[360px] overflow-auto rounded-m border border-line bg-graphite px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap text-text">
         {body === undefined ? "Loading output…" : body === null ? "Could not load the output." : body}
       </pre>
-      <figcaption className="text-xs text-faint">Agreed output (text from one of the two nodes; the other matched within tolerance).</figcaption>
+      <figcaption className="text-xs text-faint">
+        Agreed output (text from one of the two nodes; the other matched within tolerance).
+        {url ? (
+          <>
+            {" "}
+            <a href={url} className="link" download={`sparecycle-${id.slice(2, 10)}.txt`}>
+              Download
+            </a>
+          </>
+        ) : null}
+      </figcaption>
     </figure>
   );
 }
