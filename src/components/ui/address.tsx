@@ -16,6 +16,7 @@ export function Hex({
   head = 6,
   tail = 4,
   link = true,
+  href: hrefOverride,
   className,
 }: {
   value: string;
@@ -23,10 +24,14 @@ export function Hex({
   head?: number;
   tail?: number;
   link?: boolean;
+  /** Explorer link to use instead of the target chain's (e.g. a testnet address on a mainnet site). */
+  href?: string;
   className?: string;
 }) {
   const [copied, setCopied] = useState(false);
-  const href = !link ? null : kind === "address" ? explorerAddress(value) : kind === "tx" ? explorerTx(value) : null;
+  const href = !link
+    ? null
+    : (hrefOverride ?? (kind === "address" ? explorerAddress(value) : kind === "tx" ? explorerTx(value) : null));
 
   async function copy() {
     try {
