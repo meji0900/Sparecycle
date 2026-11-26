@@ -36,7 +36,7 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     id: "staking-from-the-site",
     title: "Stake SPARE from the site (optional)",
-    date: "2026-11-27",
+    date: "2026-11-26",
     kind: "site",
     summary:
       "Node owners can now stake SPARE, request and cancel an unstake, withdraw after the cooldown and appeal a slash proposal from /nodes/stake, each step with its transaction link. Staking pays nothing and the minimum is zero, so running a node still needs no token. Total staked, the number of staking owners and the total slashed are public on /nodes, /token and in the API.",
