@@ -60,7 +60,8 @@ const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !
 
 const SIDES = Array.from({ length: (LIMITS.image.side.max - LIMITS.image.side.min) / LIMITS.image.side.step + 1 }, (_, i) => LIMITS.image.side.min + i * LIMITS.image.side.step);
 const SIZE_PATTERN = `^(${SIDES.join("|")})x(${SIDES.join("|")})$`;
-const nullable = (type: string) => ({ type: [type, "null"] });
+/** Nullable as `anyOf` with single types (portable to clients that map schemas onto a single-`type` dialect). */
+const nullable = (type: string) => ({ anyOf: [{ type }, { type: "null" }] });
 const jobIdInput = {
   type: "object",
   properties: { job_id: { type: "string", pattern: "^0x[0-9a-f]{64}$", description: "The job_id returned by submit_job." } },
@@ -145,7 +146,7 @@ export const MCP_TOOLS = [
         held_wei: { type: "string" },
         available_wei: { type: "string" },
         spend_limit_per_epoch_wei: { type: "string" },
-        pending_withdrawal: { type: ["object", "null"] },
+        pending_withdrawal: nullable("object"),
         key: { type: "object" },
       },
       required: ["address", "balance_wei", "held_wei", "available_wei", "spend_limit_per_epoch_wei", "pending_withdrawal", "key"],
