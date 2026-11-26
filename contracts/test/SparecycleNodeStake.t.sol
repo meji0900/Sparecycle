@@ -7,6 +7,7 @@ import {SparecycleNodeStake as NS} from "../src/SparecycleNodeStake.sol";
 import {MockERC20, FeeOnTransferToken, DoubleEntryToken, DoubleEntryLegacy} from "./mocks/Mocks.sol";
 import {MockBurnableERC20, NoopBurnToken, SenderTaxToken, HookToken, ReentrantStaker} from "./mocks/StakeMocks.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Vm} from "forge-std/Vm.sol";
 
 /// @notice Shared fixture: the real SparecycleRewards (ETH mode, 1-day epochs) as the epoch and scheduler source,
 ///         the reward contract's owner (`admin`) playing the treasury Safe, and a burnable SPARE stand-in.
@@ -381,23 +382,30 @@ contract SparecycleNodeStakeTest is NodeStakeFixture {
         vm.expectRevert(NS.NoScheduledMinStakeChange.selector);
         st.cancelMinStakeChange();
 
-        // A second schedule replaces the first and restarts the delay.
+        // A second schedule replaces the first (announcing the drop) and restarts the delay.
         vm.prank(safe);
         st.scheduleMinStakePerNode(2 * MIN);
         vm.warp(block.timestamp + EPOCH / 2);
+        vm.expectEmit(true, true, true, true, address(st));
+        emit NS.MinStakeChangeCancelled(2 * MIN);
+        vm.expectEmit(true, true, true, true, address(st));
+        emit NS.MinStakeChangeScheduled(MIN, 5 * MIN, ethR.currentEpoch(), uint64(block.timestamp));
         vm.prank(safe);
         st.scheduleMinStakePerNode(5 * MIN);
         _passFromNow(1);
         assertEq(st.minStakePerNode(), 5 * MIN);
 
-        // Once in force it cannot be cancelled; the next schedule starts from the value in force.
+        // Once in force it cannot be cancelled; the next schedule starts from the value in force and announces no
+        // cancellation (nothing was pending).
         vm.prank(safe);
         vm.expectRevert(NS.NoScheduledMinStakeChange.selector);
         st.cancelMinStakeChange();
-        vm.expectEmit(true, true, true, true, address(st));
-        emit NS.MinStakeChangeScheduled(5 * MIN, 1, ethR.currentEpoch(), uint64(block.timestamp));
+        vm.recordLogs();
         vm.prank(safe);
         st.scheduleMinStakePerNode(1);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        assertEq(logs.length, 1, "only MinStakeChangeScheduled");
+        assertEq(logs[0].topics[0], NS.MinStakeChangeScheduled.selector);
         assertEq(st.minStakePerNode(), 5 * MIN);
     }
 
@@ -608,7 +616,8 @@ contract SparecycleNodeStakeTest is NodeStakeFixture {
         st.proposeSlash(alice, 10e18, EVIDENCE);
         assertEq(_propose(bob, 10e18), 2, "other owners are independent");
         _cancel(id);
-        assertEq(_propose(alice, 10e18), 3, "a new one after resolution");
+        _passFromNow(2); // grace period after the cancel
+        assertEq(_propose(alice, 10e18), 3, "a new one after resolution and grace");
     }
 
     // ================================================================ freeze during the appeal window (N7)
@@ -826,6 +835,10 @@ contract SparecycleNodeStakeTest is NodeStakeFixture {
         (uint256 id, uint256 amount) = _proposeMax(alice);
         assertEq(amount, 100e18);
         _passProposal(st, id, 4);
+        vm.expectEmit(true, true, true, true, address(st));
+        emit NS.Slashed(alice, 100e18, id, EVIDENCE);
+        vm.expectEmit(true, true, true, true, address(st));
+        emit NS.SlashSplit(id, alice, 50e18, 50e18);
         _execute(id);
         assertEq(st.stakedOf(alice), 0);
         (uint256 u,,) = st.unstakingOf(alice);
@@ -881,6 +894,7 @@ contract SparecycleNodeStakeTest is NodeStakeFixture {
         (uint256 id1,) = _proposeMax(alice);
         _passProposal(st, id1, 4);
         _execute(id1);
+        _passFromNow(2); // grace period after the execution
         (uint256 id2, uint256 a2) = _proposeMax(alice);
         assertEq(a2, 90e18, "10% of what is left");
         _passProposal(st, id2, 4);
@@ -954,21 +968,165 @@ contract SparecycleNodeStakeTest is NodeStakeFixture {
     function test_Proposal_StaleExpiredIsClosedByTheNextProposal() public {
         _stake(alice, 1_000e18);
         (uint256 id1,) = _proposeMax(alice);
-        _passProposal(st, id1, 16);
+        _passProposal(st, id1, 16); // expired, not recorded; the grace period after it is still running
+        vm.prank(sched);
+        vm.expectRevert(abi.encodeWithSelector(NS.ProposalGraceActive.selector, id1));
+        st.proposeSlash(alice, 1e18, EVIDENCE);
+        assertEq(uint8(st.getProposal(id1).status), uint8(NS.Status.Open), "the revert recorded nothing");
+
+        _passProposal(st, id1, 18); // appeal 4 + decision 12 + grace 2
         vm.expectEmit(true, true, true, true, address(st));
         emit NS.SlashExpired(id1, alice);
         uint256 id2 = _propose(alice, 1e18);
         assertEq(id2, 2);
         assertEq(uint8(st.getProposal(id1).status), uint8(NS.Status.Expired));
         assertEq(st.openProposalOf(alice), id2);
+        assertEq(st.getAccount(alice).lastProposal, id2);
     }
 
-    function test_Proposal_SafeCanStillCancelAfterExpiry() public {
+    function test_Proposal_ExpiryRecordedLateDoesNotBlockTheScheduler() public {
+        _stake(alice, 1_000e18);
+        (uint256 id1,) = _proposeMax(alice);
+        _passProposal(st, id1, 40); // long past expiry + grace; nobody recorded the expiry
+        assertTrue(st.canPropose(alice));
+        uint256 id2 = _propose(alice, 1e18); // records the old expiry and proposes in one call
+        assertEq(uint8(st.getProposal(id1).status), uint8(NS.Status.Expired));
+        assertEq(st.openProposalOf(alice), id2);
+    }
+
+    function test_CancelSlash_AfterExpiryRecordsTheExpiry() public {
         _stake(alice, 1_000e18);
         (uint256 id,) = _proposeMax(alice);
         _passProposal(st, id, 16);
+        vm.expectEmit(true, true, true, true, address(st));
+        emit NS.SlashExpired(id, alice);
+        _cancel(id); // does not revert
+        assertEq(uint8(st.getProposal(id).status), uint8(NS.Status.Expired), "recorded as expired, not cancelled");
+        assertEq(st.getProposal(id).closedAt, block.timestamp);
+        vm.prank(safe);
+        vm.expectRevert(abi.encodeWithSelector(NS.NotOpen.selector, id));
+        st.cancelSlash(id);
+    }
+
+    // ================================================================ grace period between proposals
+
+    function test_Grace_SchedulerAloneCannotBlockAFinishedCooldown_AfterCancel() public {
+        _stake(alice, 1_000e18);
+        _request(alice, 1_000e18);
+        _passCooldown(st, alice);
+        uint256 id = _propose(alice, 1); // 1 wei, just to freeze
+        assertFalse(st.canUnstake(alice));
         _cancel(id);
-        assertEq(uint8(st.proposalStatus(id)), uint8(NS.Status.Cancelled));
+        // The scheduler re-proposes in the same block: refused.
+        assertFalse(st.canPropose(alice));
+        vm.prank(sched);
+        vm.expectRevert(abi.encodeWithSelector(NS.ProposalGraceActive.selector, id));
+        st.proposeSlash(alice, 1, EVIDENCE);
+        // The owner leaves in the grace window.
+        assertTrue(st.canUnstake(alice));
+        vm.prank(alice);
+        assertEq(st.unstake(), 1_000e18);
+        assertEq(spare.balanceOf(alice), 1_000e18);
+    }
+
+    function test_Grace_SchedulerAloneCannotBlockAFinishedCooldown_AfterExpiry() public {
+        _stake(alice, 1_000e18);
+        _request(alice, 1_000e18);
+        uint256 id = _propose(alice, 1); // the Safe never decides
+        _passProposal(st, id, 16); // expired; the cooldown (16) has finished too
+        vm.prank(sched);
+        vm.expectRevert(abi.encodeWithSelector(NS.ProposalGraceActive.selector, id));
+        st.proposeSlash(alice, 1, EVIDENCE);
+        vm.prank(alice);
+        assertEq(st.unstake(), 1_000e18);
+    }
+
+    function test_Grace_RepeatedReproposalsByTheSchedulerAloneAlwaysLeaveAnExit() public {
+        _stake(alice, 1_000e18);
+        _request(alice, 1_000e18);
+        // Every epoch the scheduler moves first and re-freezes the stake whenever the contract lets it; the owner
+        // then tries to leave; one epoch later the Safe rejects whatever is open.
+        uint256 freezes;
+        bool exited;
+        for (uint256 step; step < 40; ++step) {
+            if (st.canPropose(alice)) {
+                _propose(alice, 1);
+                ++freezes;
+            }
+            if (st.canUnstake(alice)) {
+                vm.prank(alice);
+                assertEq(st.unstake(), 1_000e18, "nothing taken, all back");
+                exited = true;
+                break;
+            }
+            _passFromNow(1);
+            uint256 open = st.openProposalOf(alice);
+            if (open != 0) _cancel(open);
+        }
+        assertTrue(exited, "the scheduler alone cannot keep the owner in");
+        assertEq(ethR.currentEpoch(), 16, "out as soon as the cooldown ended");
+        assertEq(freezes, 6, "re-proposed every 3 epochs");
+        assertEq(spare.balanceOf(alice), 1_000e18);
+    }
+
+    function test_Grace_ChainedSlashesLeaveExitWindows() public {
+        _stake(alice, 1_000e18);
+        _request(alice, 1_000e18);
+        // Scheduler and Safe together slash back to back for the whole cooldown.
+        uint256 executed;
+        while (!st.canUnstake(alice)) {
+            (uint256 id,) = _proposeMax(alice);
+            _passProposal(st, id, 4);
+            _execute(id);
+            ++executed;
+            // Right after every execution the next proposal is refused for the grace period...
+            vm.prank(sched);
+            vm.expectRevert(abi.encodeWithSelector(NS.ProposalGraceActive.selector, id));
+            st.proposeSlash(alice, 1, EVIDENCE);
+            if (st.canUnstake(alice)) break;
+            _passFromNow(2); // ...and then allowed again.
+            assertTrue(st.canPropose(alice));
+        }
+        // ...so once the cooldown is over, the owner leaves in that grace window.
+        uint256 rest = st.slashableOf(alice);
+        vm.prank(alice);
+        assertEq(st.unstake(), rest);
+        assertEq(executed, 3, "epochs 0-4, 6-10, 12-16");
+        assertEq(rest, 729e18, "three 10% slashes, then out");
+    }
+
+    function test_Grace_EndsAfterTwoEpochsOfTimeAndCloses() public {
+        _stake(alice, 1_000e18);
+        uint256 id = _propose(alice, 1);
+        vm.warp(block.timestamp + EPOCH / 2);
+        _cancel(id);
+        uint64 at = uint64(block.timestamp);
+        _closeEpochs(2); // two boundaries, only 1.5 epochs of time
+        assertFalse(st.canPropose(alice));
+        vm.warp(uint256(at) + 2 * EPOCH);
+        assertTrue(st.canPropose(alice));
+        _propose(alice, 1);
+    }
+
+    function test_Grace_StallFallback() public {
+        _stake(alice, 1_000e18);
+        uint256 id = _propose(alice, 1);
+        _cancel(id);
+        vm.warp(block.timestamp + 4 * EPOCH - 1); // no epoch closed
+        assertFalse(st.canPropose(alice));
+        vm.warp(block.timestamp + 1);
+        assertTrue(st.canPropose(alice));
+        _propose(alice, 1);
+    }
+
+    function test_Grace_IsPerOwner() public {
+        _stake(alice, 1_000e18);
+        _stake(bob, 1_000e18);
+        uint256 id = _propose(alice, 1);
+        _cancel(id);
+        assertFalse(st.canPropose(alice));
+        assertTrue(st.canPropose(bob));
+        _propose(bob, 1);
     }
 
     // ================================================================ fuzz
@@ -1236,5 +1394,7 @@ contract SparecycleNodeStakeTest is NodeStakeFixture {
         assertEq(NS.minStakePerNode.selector, bytes4(keccak256("minStakePerNode()")));
         assertEq(NS.meetsMinimum.selector, bytes4(keccak256("meetsMinimum(address,uint256)")));
         assertEq(NS.Slashed.selector, keccak256("Slashed(address,uint256,uint256,bytes32)"));
+        assertEq(NS.SlashSplit.selector, keccak256("SlashSplit(uint256,address,uint256,uint256)"));
+        assertEq(NS.canPropose.selector, bytes4(keccak256("canPropose(address)")));
     }
 }

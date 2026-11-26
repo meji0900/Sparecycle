@@ -1,13 +1,13 @@
 # Node staking with partial slashing (`SparecycleNodeStake`)
 
-> **Not deployed. AUDIT REQUIRED BEFORE MAINNET.**
-> `contracts/src/SparecycleNodeStake.sol` is written and tested only. It has no address, nothing in `src/` calls it,
-> and it must not be deployed before an external audit has passed. Every default below is
-> **"Default, not yet confirmed by Fabio"**.
+> **INTERNAL REVIEW ONLY — NOT EXTERNALLY AUDITED.** Launched with `minStakePerNode = 0` (staking is voluntary).
+> `contracts/src/SparecycleNodeStake.sol` has had an internal review and the tests below, but no external audit. An
+> external audit is still recommended before staking holds meaningful value or the minimum is raised above 0. Every
+> default below is **"Default, not yet confirmed by Fabio"**.
 >
-> Launch also needs (brief §3): the treasury Safe's keys split across different people (F2), community nodes
-> (today all six nodes are project-run), and the copy that says "no token needed to run a node" changed in the same
-> release (brief §0.7).
+> Still open from the brief (§3): the treasury Safe's keys are all held by one person today (F2), all six nodes are
+> project-run (no community nodes yet), and the copy that says "no token needed to run a node" must change in the
+> same release that raises the minimum above 0 (brief §0.7).
 
 ## What it does
 
@@ -24,13 +24,22 @@ Slashing depends on people and keys:
 
 - **The scheduler proposes.** It decides off-chain which results are faults and when to propose a slash.
 - **The treasury Safe judges.** It decides whether a proposal is executed (burned) or cancelled.
-- The contract only enforces the limits: the slash cap, the appeal window, the freeze, the burn, and the expiry
-  of undecided proposals. It cannot check the evidence.
+- The contract only enforces the limits: the slash cap, the appeal window, the freeze, the burn, the expiry of
+  undecided proposals, and a grace period between proposals against the same owner. It cannot check the evidence.
 
-A compromised or dishonest scheduler and Safe together can burn up to 10% of an owner's stake per proposal, and
-can chain proposals so an owner's stake stays frozen. They can never send staked SPARE to themselves or anyone
-else. Every proposal, appeal and decision is a public on-chain event, and every evidence bundle is meant to be
-published, so a bad decision is visible.
+What each key can do:
+
+- **The scheduler key alone** can freeze a stake with a proposal, but cannot keep it frozen. Every proposal ends
+  (cancelled, executed, or expired after the decision window), and after each one no new proposal against that
+  owner is accepted for `PROPOSAL_GRACE_EPOCHS` (2 epochs). An owner whose cooldown has finished can always
+  `unstake()` in that window. The scheduler alone cannot burn anything.
+- **The scheduler and the Safe together** can still burn up to 10% of an owner's remaining stake per proposal, one
+  proposal at a time, with a grace window between proposals. Over a 16-epoch cooldown that is at most three
+  executed slashes (about 27% of the stake) before the owner can leave.
+- **Today all three Safe keys are held by one person** (F2 is open). The Safe also rotates the scheduler key, so in
+  practice one person controls every decision.
+- Nobody can send staked SPARE to themselves or anyone else. Every proposal, appeal and decision is a public
+  on-chain event, and every evidence bundle is meant to be published, so a bad decision is visible.
 
 Say this plainly on the node page and in the docs when staking ships.
 
@@ -48,14 +57,20 @@ Say this plainly on the node page and in the docs when staking ships.
   epoch (both one epoch boundary and one epoch length of time). Until then the old value stays in force, and the Safe
   can drop it with `cancelMinStakeChange()`. This gives owners time to top up.
 - Topping up is always allowed, even while a proposal is open.
+- At launch the minimum is 0: staking is voluntary and `meetsMinimum` is true for everyone.
+- There is **no on-chain cap** on the total stake, per owner or overall.
 
 ### Leaving (cooldown)
 
 1. `requestUnstake(amount)` moves SPARE from active stake into a cooldown bucket. That SPARE **stops counting
    toward the minimum at once**, but **it can still be slashed** until it leaves.
-2. `unstake()` pays the whole bucket back to the owner after the cooldown C (N8). A new request adds to the bucket
-   and restarts the cooldown for all of it. `cancelUnstake()` puts the bucket back into active stake.
-3. `unstake()` and `requestUnstake()` fail while the owner has an open proposal (the stake is frozen).
+2. `unstake()` pays the whole bucket back to the owner after the cooldown C (N8). `cancelUnstake()` puts the
+   bucket back into active stake.
+3. **A new `requestUnstake` restarts the cooldown for the whole bucket**, including SPARE requested earlier. To
+   leave fastest, request everything at once.
+4. `unstake()` and `requestUnstake()` fail while the owner has an open proposal (the stake is frozen). The cooldown
+   keeps running during a freeze; once it is over, the owner can leave as soon as no proposal is open, and the grace
+   period after every proposal guarantees such a moment.
 
 The cooldown must be longer than the fault window plus the appeal window (C > W + A). The constructor refuses any
 configuration that breaks this. So an owner who starts leaving while their node is faulting is still staked when
@@ -70,7 +85,9 @@ the burn.
    `proposeSlash(owner, amount, evidenceHash)`.
    - `amount <= slashBps * (active + cooldown bucket) / 10_000` (N4: 10%). `maxSlashOf(owner)` returns the cap.
    - `evidenceHash` is the keccak256 of the published evidence bundle (format below).
-   - One open proposal per owner at a time.
+   - One open proposal per owner at a time, and none during the grace period after the previous one (step 5).
+     `canPropose(owner)` says whether the timing allows a proposal now; otherwise the call reverts with
+     `ProposalAlreadyOpen` or `ProposalGraceActive`.
    - The scheduler key can be rotated by the Safe in `SparecycleRewards`; this contract follows the rotation. If the
      Safe ever made itself the scheduler, proposals would be refused (the judge must not be the accuser).
 2. **Appeal window (A epochs, N7).** The stake is frozen: nothing moves, nothing is taken.
@@ -79,19 +96,27 @@ the burn.
    - Grounds (brief §3): a re-run on project-chosen independent hardware with the job's deterministic seed, or a
      scheduler fault (wrong model hash, bad input).
 3. **Decision (Safe).**
-   - `cancelSlash(proposalId)`: any time while the proposal is open. The stake is released.
+   - `cancelSlash(proposalId)`: any time while the proposal is open. The stake is released. On a proposal already
+     past its decision window it records the expiry instead (`SlashExpired`) and does not revert.
    - `executeSlash(proposalId)`: only after the appeal window. It burns `amount` and emits
-     `Slashed(owner, amount, proposalId, evidenceHash)`. The amount is taken from active stake first, then from the
-     cooldown bucket.
+     `Slashed(owner, amount, proposalId, evidenceHash)`, then
+     `SlashSplit(proposalId, owner, fromStaked, fromUnstaking)`. The amount is taken from active stake first, then
+     from the cooldown bucket.
 4. **Expiry.** If the Safe neither executes nor cancels within the decision window (12 epochs after the appeal
    window), the proposal expires and the freeze ends by itself. Anyone can record it with `expireSlash(proposalId)`
-   (for indexers); the next `unstake`, `requestUnstake` or `proposeSlash` for that owner records it too.
-5. **Again.** Repeated faults escalate through repeated proposals: each one takes at most 10% of what is left.
+   (for indexers); the next `unstake`, `requestUnstake`, `proposeSlash` or `cancelSlash` for it records it too.
+5. **Grace period.** After a proposal is cancelled, executed or expires, no new proposal against the same owner is
+   accepted for `PROPOSAL_GRACE_EPOCHS` = 2 epochs (same epoch-and-time rule and stall fallback as every window;
+   after an expiry it counts from the expiry itself, so it does not matter when the expiry is recorded). This is the
+   owner's exit window: without it the scheduler key alone could re-propose 1 wei right after every cancel or expiry
+   and keep a finished cooldown frozen forever.
+6. **Again.** Repeated faults escalate through repeated proposals: each one takes at most 10% of what is left.
 
 Burn (N9): fixed at deploy. With `burnWithBurnFunction = true` the contract calls SPARE's `burn(uint256)`; with
 `false` it transfers to `0x000000000000000000000000000000000000dEaD`. Either way the contract checks that its own
 SPARE balance fell by exactly the slashed amount. The brief found the `burn(uint256)` selector in SPARE's bytecode
-only heuristically: confirm it against the verified source before choosing `true`.
+only heuristically; the fork test (below) now shows on a mainnet fork that `SPARE.burn` burns from the caller and
+lowers `totalSupply`. Still confirm it against the verified source.
 
 ### Windows, epochs and a stalled scheduler
 
@@ -119,7 +144,7 @@ All values are **Default, not yet confirmed by Fabio**. Epoch counts assume the 
 
 | ID | Parameter | Default | Where it lives |
 | --- | --- | --- | --- |
-| N3 | Minimum stake per active node | `[MIN_STAKE_SPARE]`, set by the Safe at launch so its value is at least the largest single-node payout of the previous 4 epochs | Constructor `minStakePerNode_`; later `scheduleMinStakePerNode` (Safe, delay below) |
+| N3 | Minimum stake per active node | Launched at **0** (staking voluntary). Brief default for when it is raised: `[MIN_STAKE_SPARE]`, at least the largest single-node payout of the previous 4 epochs | Constructor `minStakePerNode_`; later `scheduleMinStakePerNode` (Safe, delay below) |
 | N4 | Slash per executed proposal | 10% of the owner's stake (`slashBps = 1000`) | `Config.slashBps`, `DEFAULT_SLASH_BPS` |
 | N5 | Faults needed for a proposal (F) | 3 attributed faults | Off-chain (scheduler). Not stored on-chain |
 | N6 | Fault window (W) | 8 epochs (48 h) | Off-chain (scheduler). On-chain only for the C > W + A check: `Config.faultWindowEpochs` |
@@ -129,6 +154,7 @@ All values are **Default, not yet confirmed by Fabio**. Epoch counts assume the 
 | N10 | Project-run nodes stake | Yes, same rules, shown separately on the holder page | Off-chain / UI |
 | — | Decision window (not in the brief) | 12 epochs (72 h) after the appeal window | `Config.decisionWindowEpochs` |
 | — | Minimum-stake change delay (brief §3: "at least one epoch") | 1 epoch | `Config.minStakeDelayEpochs` (must be ≥ 1) |
+| — | Grace period between proposals against one owner (not in the brief) | 2 epochs (12 h) | Constant `PROPOSAL_GRACE_EPOCHS` (fixed in code) |
 
 Fixed in code (not configurable): `MAX_SLASH_BPS = 5000` (a deploy can never make slashing total),
 `MAX_WINDOW = 365 days` for any window, `STALL_FACTOR = 2`.
@@ -267,8 +293,10 @@ Reads (all views):
 | `nodesCovered(address) → uint256` | How many nodes the stake covers |
 | `slashableOf(address) → uint256`, `maxSlashOf(address) → uint256` | Cap for a new proposal |
 | `openProposalOf(address) → uint256` | Open, unexpired proposal id (0 = none); non-zero = frozen |
+| `canPropose(address) → bool` | No open proposal and the grace period after the last one is over (check before `proposeSlash`) |
+| `getAccount(address) → Account` | Raw record: `staked`, `unstaking`, `requestEpoch`, `requestedAt`, `lastProposal` (latest proposal against the owner, any status) |
 | `unstakingOf(address) → (uint256 amount, uint64 requestEpoch, uint64 requestedAt)`, `canUnstake(address) → bool` | Leaving state |
-| `getProposal(uint256) → Proposal`, `proposalStatus(uint256) → Status`, `canAppeal(uint256)`, `canExecute(uint256)` | Proposal state (`Status`: 0 None, 1 Open, 2 Cancelled, 3 Executed, 4 Expired) |
+| `getProposal(uint256) → Proposal`, `proposalStatus(uint256) → Status`, `canAppeal(uint256)`, `canExecute(uint256)` | Proposal state (`Status`: 0 None, 1 Open, 2 Cancelled, 3 Executed, 4 Expired). `Proposal` = `owner, status, proposedEpoch, proposedAt, closedEpoch, closedAt, amount, evidenceHash, appealHash` |
 | `scheduledMinStakeChange() → (bool, uint256 next, uint64 epoch, uint64 scheduledAt)` | Pending minimum change |
 | `totalStaked()`, `totalSlashed()`, `proposalCount()` | Holder page totals |
 
@@ -282,8 +310,13 @@ Events: `Staked(owner, amount, staked)`, `UnstakeRequested(owner, amount, unstak
 `UnstakeCancelled(owner, amount, staked)`, `Unstaked(owner, amount)`,
 `SlashProposed(proposalId, owner, amount, evidenceHash, epoch)`, `SlashAppealed(proposalId, owner, evidenceHash)`,
 `SlashCancelled(proposalId, owner)`, `SlashExpired(proposalId, owner)`,
-`Slashed(owner, amount, proposalId, evidenceHash)`, `MinStakeChangeScheduled(current, next, epoch, scheduledAt)`,
-`MinStakeChangeCancelled(next)`, `TokenRescued(token, to, amount)`.
+`Slashed(owner, amount, proposalId, evidenceHash)` (signature fixed),
+`SlashSplit(proposalId, owner, fromStaked, fromUnstaking)` (right after `Slashed`),
+`MinStakeChangeScheduled(current, next, epoch, scheduledAt)`, `MinStakeChangeCancelled(next)` (also emitted when a
+new schedule replaces one that had not taken effect), `TokenRescued(token, to, amount)`.
+
+`proposeSlash` errors the scheduler should expect: `ProposalAlreadyOpen(id)`, `ProposalGraceActive(lastProposalId)`,
+`SlashAboveCap(amount, cap)`.
 
 Notes:
 
@@ -293,18 +326,39 @@ Notes:
 - The contract does not stop leases while a proposal is open. Whether the scheduler pauses an accused owner's leases
   is an off-chain choice and is not decided.
 - The constructor is `(token, rewards, safe, burnWithBurnFunction, minStakePerNode, Config)`, with addresses from
-  `src/lib/addresses.ts` (`ADDR.spareToken`, `ADDR.rewards`, `ADDR.treasurySafe`). There is no deploy script on
-  purpose.
+  `src/lib/addresses.ts` (`ADDR.spareToken`, `ADDR.rewards`, `ADDR.treasurySafe`). The deploy goes through
+  `contracts/script/DeployNodeStake.s.sol` and `node scripts/mainnet.mjs deploy-stake` on the release branch.
+- Do not re-propose against an owner the moment a proposal ends: `canPropose(owner)` stays false for the grace
+  period, and a `proposeSlash` in that window reverts.
 
-## Open points for the audit
+## Runbook: rotating the scheduler key
 
-- **Trust.** Scheduler and Safe can burn up to `slashBps` per proposal and can keep a stake frozen by chaining
-  proposals. Accepted by design (it is not trustless); confirm nothing worse is possible.
+The scheduler key is the only key that can propose. If it is lost, leaked or replaced:
+
+1. **Safe:** call `SparecycleRewards.setScheduler(newKey)`. This contract reads `rewards.scheduler()` live, so the old
+   key can no longer propose from the next block. The new key must not be the Safe (proposals from the Safe are
+   refused).
+2. **Safe:** list the open proposals the old key made (`SlashProposed` events, then `openProposalOf(owner)` or
+   `proposalStatus(id)` for each) and call `cancelSlash(id)` on every one that is not backed by a published,
+   valid evidence bundle. When in doubt, cancel: the new key can re-propose with fresh evidence after the grace
+   period.
+3. Rotation does not touch stakes, cooldowns or the minimum. Owners in cooldown keep their clocks.
+4. Publish the rotation (old key, new key, cancelled proposal ids) with the evidence page.
+
+## Open points for review
+
+- **Trust.** Scheduler and Safe together can burn up to `slashBps` per proposal, one proposal at a time with a
+  2-epoch grace window in between (at most about 27% over one 16-epoch cooldown). The scheduler alone can freeze
+  but not keep a finished cooldown frozen. All Safe keys are with one person today (F2). Accepted by design (it is
+  not trustless); confirm nothing worse is possible.
+- **Grace period.** After an expiry the grace counts from the expiry (appeal + decision + grace from the proposal),
+  not from when the expiry is recorded, so a scheduler can never get stuck behind an unrecorded expiry, and an
+  owner always gets at least 2 epoch lengths of time.
 - **Epoch source.** Windows depend on `SparecycleRewards` closing epochs; the stall fallback (2× time) keeps owners
   able to leave. `rewards` and `safe` are immutable: replacing either contract or the Safe address means a new stake
   contract and a migration (owners unstake and re-stake).
-- **Burn path.** `burn(uint256)` on SPARE is a heuristic bytecode finding; the deploy choice must come from the
-  verified source. Both paths check the exact balance drop.
+- **Burn path.** `burn(uint256)` on SPARE was first a heuristic bytecode finding; the fork test exercises it on
+  real SPARE (supply falls by the slashed amount). Both paths check the exact balance drop.
 - **Token behaviour.** Fee-on-transfer inflows are credited by measured delta; outflows must lower the balance by
   exactly the amount sent, or they revert (protects other stakers, but a token that taxes the sender extra would make
   unstake impossible). Rebasing tokens are not supported.
@@ -312,8 +366,10 @@ Notes:
   happens before the credit, so a token callback reading views mid-call would see the balance already up and the
   stake not yet credited. Views are not used by the contract itself across that call.
 - **One open proposal per owner.** Simpler bookkeeping, and a bounded freeze; the next set of faults waits until
-  the current proposal is resolved.
+  the current proposal is resolved and its grace period is over.
 - **Stuck SPARE.** SPARE sent without `stake()` can never be recovered (no SPARE rescue, by design).
+- **No cap on total stake.** Nothing limits how much SPARE one owner or everyone together can stake.
+- **Cooldown restart.** Every `requestUnstake` restarts the cooldown for the whole bucket.
 
 ## Tests
 
@@ -328,6 +384,18 @@ node contracts/tools/forge.mjs test --match-path 'test/*NodeStake*' -vv
 node contracts/tools/forge.mjs test --match-path 'test/invariant/SparecycleNodeStake*'
 ```
 
+Fork round trip against the real SPARE token and the live `SparecycleRewards` (opt-in, local fork, nothing is
+broadcast; skips if the RPC cannot be reached):
+
+```bash
+FORK_TESTS=1 node contracts/tools/forge.mjs test --match-path test/fork/NodeStakeFork.t.sol -vv
+```
+
+It deploys the contract as launched (burn through `SPARE.burn`, minimum 0, default windows), then checks
+stake → requestUnstake → cooldown (stall fallback, since no live epoch closes on the fork) → unstake returns
+everything, and stake → proposeSlash (live scheduler key) → appeal window → executeSlash (the Safe) burns through
+`SPARE.burn` so `totalSupply` falls by the slashed amount.
+
 Invariants checked after every random call sequence:
 
 - the contract's SPARE balance equals `totalStaked` plus SPARE donated outside `stake()`, and `totalStaked` equals
@@ -335,6 +403,7 @@ Invariants checked after every random call sequence:
 - for every owner: staked in = still staked + paid back by `unstake` + slashed, and the owner's wallet changed only
   by its own stakes and unstakes; the Safe, the scheduler and strangers never hold SPARE;
 - every slashed unit was burned (supply down in burn mode, `0x…dEaD` up in dead mode);
-- at most one open proposal per owner, every executed proposal within `slashBps` of the stake it was proposed
-  against, and executed proposals sum to `totalSlashed`;
+- at most one open proposal per owner and only the latest can be open, every executed proposal within `slashBps`
+  of the stake it was proposed against, executed proposals sum to `totalSlashed`, and no proposal was ever accepted
+  inside a grace period (checked against the handler's own record of every proposal's timing);
 - no frozen stake moved, no privileged call succeeded for a stranger, and no slash above the cap was accepted.
