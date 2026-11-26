@@ -203,3 +203,13 @@ depends on calldata size and the L1 base fee at the time. Calldata is 100 bytes 
 `forge test --gas-report` over the unit + gas suites gives `closeEpochAndPostRoot` min 29,150 (reverting
 auth checks), median 136,661, max 164,879, and `claim` median 92,450, max 123,595. Runtime size is
 8,838 bytes.
+
+## V2 contracts (written and tested, NOT deployed; audit required before mainnet)
+
+`src/SparecycleJobPaymentsV2.sol` (credits, `depositFor`, the Safe-set 5% split, SPARE payments),
+`src/SparecycleBurner.sol` (usage burn 2b) and `src/SparecycleHolderPool.sol` (holder credits; NVDA mode not built)
+are described in `../docs/contracts-v2.md`: what each does, the N-id defaults, decisions, gas and audit risks. They
+run in the normal suite (`npm run contracts:test`: unit + fuzz in `test/v2/`, invariants in
+`test/invariant/V2System.invariant.t.sol`). The opt-in fork suite `test/fork/V2Fork.t.sol` needs a full RPC
+(`FORK_TESTS=1 FORK_RPC_URL=<rpc>`). `script/DryRunDeployV2.s.sol` only simulates the deploy order; it has no
+broadcast step.
