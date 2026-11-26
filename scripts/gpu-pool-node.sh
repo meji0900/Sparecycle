@@ -17,6 +17,17 @@ NODE_V=v24.22.1
 
 apt-get update -qq
 apt-get install -y -qq curl ca-certificates xz-utils libgomp1 python3 python3-venv libssl3t64 >/dev/null
+# The CUDA base image ships forward-compat driver libraries (/usr/local/cuda-*/compat). On a host whose driver is as new
+# or newer they shadow the real driver and CUDA fails with error 803, so take them off the library path.
+host_drv=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | cut -d. -f1 || true)
+for c in /usr/local/cuda-*/compat; do
+  [[ -d $c && -n $host_drv ]] || continue
+  compat_drv=$(ls "$c"/libcuda.so.*.* 2>/dev/null | sed -n 's/.*libcuda\.so\.\([0-9]*\)\..*/\1/p' | head -1)
+  if [[ -n $compat_drv && $host_drv -ge $compat_drv ]]; then
+    mv "$c" "$c.disabled" && ldconfig
+    echo "  CUDA compat libraries ($compat_drv) disabled: the host driver ($host_drv) is newer"
+  fi
+done
 if ! command -v node >/dev/null || [[ $(node -v) != v24* ]]; then
   tmp=$(mktemp -d)
   curl -fsSL -o "$tmp/node.tar.xz" "https://nodejs.org/dist/$NODE_V/node-$NODE_V-linux-x64.tar.xz"

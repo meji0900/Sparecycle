@@ -11,13 +11,27 @@ import SplitText from "@/components/reactbits/SplitText";
 import { useSceneEnv } from "@/components/three/use-scene-env";
 import { ButtonLink } from "@/components/ui/button";
 import { config } from "@/lib/config";
-import { formatAmount, formatDuration } from "@/lib/format";
+import { formatAmount, formatDuration, formatInt } from "@/lib/format";
+import { gpuCounts, type CountNode, type PoolInfo } from "@/lib/gpu-counts";
 import { useLiveJson, type ChainApi, type SchedulerStatus } from "@/lib/use-live";
 import { cn } from "@/lib/utils";
 import { FUNDING } from "@/lib/funding-copy";
 import { XLink } from "@/components/brand/x-link";
 
 const NodeField = dynamic(() => import("@/components/three/node-field"), { ssr: false, loading: () => null });
+
+type NodesApi = { nodes: CountNode[] };
+
+/** One line of the GPU card: a coloured dot, a count, what it means. */
+function GpuLine({ dot, n, children }: { dot: string; n: number; children: ReactNode }) {
+  return (
+    <li className="flex items-center gap-2">
+      <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", dot)} />
+      <span className="num w-4 text-right text-text">{formatInt(n)}</span>
+      <span className="text-muted">{children}</span>
+    </li>
+  );
+}
 
 type JobsApi = { jobs: { id: string; model: string; kind: string; status: string; createdAt: number; settledAt: number | null }[] };
 
@@ -72,6 +86,9 @@ export function Hero() {
     15_000,
   );
   const jobs = useLiveJson<JobsApi>(`${config.schedulerApiUrl}/jobs?limit=8`, 20_000);
+  const nodes = useLiveJson<NodesApi>(`${config.schedulerApiUrl}/nodes`, 15_000);
+  const pool = (sched.data as { gpuPool?: PoolInfo } | null)?.gpuPool;
+  const gpus = nodes.data ? gpuCounts(nodes.data.nodes, pool) : null;
 
   const rewards = chain.data?.rewards && chain.data.rewards.ok ? chain.data.rewards.data : null;
   const epoch = sched.data?.epoch ?? null;
@@ -162,6 +179,21 @@ export function Hero() {
               </Link>
               <XLink withLabel />
             </p>
+            {gpus ? (
+              <Link
+                href="/#network"
+                className="mt-5 flex w-fit items-center gap-2 rounded-l border border-line bg-coal/80 px-3 py-2 text-sm md:hidden"
+              >
+                <span aria-hidden className={cn("size-1.5 rounded-full", gpus.online > 0 ? "bg-signal" : "border border-faint")} />
+                <span className="text-text">
+                  <span className="num">{formatInt(gpus.online)}</span> GPUs online
+                </span>
+                <span className="text-muted">
+                  <span className="num">{formatInt(gpus.working)}</span> working,{" "}
+                  <span className="num">{formatInt(gpus.standby)}</span> on standby
+                </span>
+              </Link>
+            ) : null}
           </div>
 
           {/* floating live cards (desktop) */}
@@ -185,28 +217,48 @@ export function Hero() {
             </FloatCard>
 
             <FloatCard
-              title="Latest checked job"
-              tone={latestAgreed ? "live" : "idle"}
-              className="absolute top-[196px] -left-6 lg:-left-10"
+              title="GPUs on the network"
+              tone={gpus && gpus.online > 0 ? "live" : "idle"}
+              className="absolute top-[172px] -left-6 lg:-left-10"
             >
-              {latestAgreed ? (
-                <Link href="/jobs" className="block">
-                  <p className="num text-sm text-text">
-                    {latestAgreed.id.slice(0, 10)}… · {latestAgreed.model}
+              {gpus ? (
+                <>
+                  <p className="text-2xl text-text">
+                    <span className="num">{formatInt(gpus.online)}</span> <span className="text-sm text-muted">online now</span>
                   </p>
-                  <p className="mt-1.5 text-xs text-signal">Two nodes agreed</p>
-                </Link>
-              ) : (
-                <p className="text-sm text-muted">
-                  No checked job yet. The first one appears here once two nodes agree.{" "}
-                  <Link href="/playground" className="link">
-                    Run a job
+                  <ul className="mt-2.5 flex flex-col gap-1.5 text-xs" aria-label="GPUs by state">
+                    <GpuLine dot="bg-signal" n={gpus.working}>
+                      working on a job
+                    </GpuLine>
+                    <GpuLine dot="border border-signal" n={gpus.ready}>
+                      ready for the next job
+                    </GpuLine>
+                    {gpus.paused ? (
+                      <GpuLine dot="bg-amber" n={gpus.paused}>
+                        paused by their owners
+                      </GpuLine>
+                    ) : null}
+                    <GpuLine dot="border border-faint" n={gpus.standby}>
+                      on standby, start when a job waits
+                    </GpuLine>
+                  </ul>
+                  <Link href={latestAgreed ? "/jobs" : "/#network"} className="mt-3 block border-t border-line pt-2.5 text-xs text-muted hover:text-text">
+                    {latestAgreed ? (
+                      <>
+                        Last checked job <span className="num text-text">{latestAgreed.id.slice(0, 10)}…</span>
+                        <span className="text-signal"> agreed</span>
+                      </>
+                    ) : (
+                      "See every GPU"
+                    )}
                   </Link>
-                </p>
+                </>
+              ) : (
+                <p className="text-sm text-muted">{nodes.loading ? "Reading the node list…" : "Node list not reachable right now."}</p>
               )}
             </FloatCard>
 
-            <FloatCard title="Node pot, this period" tone={rewards ? "live" : "idle"} className="absolute top-[350px] right-2">
+            <FloatCard title="Node pot, this period" tone={rewards ? "live" : "idle"} className="absolute top-[396px] right-2">
               {rewards ? (
                 <>
                   <p className="num text-2xl text-text">

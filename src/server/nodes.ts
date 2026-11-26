@@ -422,6 +422,8 @@ export function listNodes(epochId: number | null) {
         backend: r.backend,
         /** Polled or sent a heartbeat within POLICY.onlineWindowSeconds, or holds a live lease. */
         online,
+        /** Holds a live lease: running a job right now. */
+        working: r.live_leases > 0,
         /**
          * Idle Guard: the node's own state while online, else "offline". Only the reason is public, never when a pause
          * began: state_since stays private (D9).
@@ -457,20 +459,24 @@ export function nodeCounts() {
     .prepare(
       `SELECT n.backend AS backend, COUNT(*) AS registered,
          SUM(CASE WHEN n.last_seen >= ? OR EXISTS (SELECT 1 FROM tasks t WHERE t.node_key = n.node_key AND t.status = 'leased'
-           AND t.lease_expires >= ?) THEN 1 ELSE 0 END) AS online
+           AND t.lease_expires >= ?) THEN 1 ELSE 0 END) AS online,
+         SUM(CASE WHEN EXISTS (SELECT 1 FROM tasks t WHERE t.node_key = n.node_key AND t.status = 'leased'
+           AND t.lease_expires >= ?) THEN 1 ELSE 0 END) AS working
        FROM nodes n GROUP BY n.backend`,
     )
-    .all(now - POLICY.onlineWindowSeconds, now) as { backend: string; registered: number; online: number }[];
+    .all(now - POLICY.onlineWindowSeconds, now, now) as { backend: string; registered: number; online: number; working: number }[];
   const byBackend = Object.fromEntries(BACKENDS.map((b) => [b, { registered: 0, online: 0 }])) as Record<
     Backend,
     { registered: number; online: number }
   >;
   let registered = 0;
   let online = 0;
+  let working = 0;
   for (const r of rows) {
     registered += r.registered;
     online += r.online ?? 0;
+    working += r.working ?? 0;
     if (isBackend(r.backend)) byBackend[r.backend] = { registered: r.registered, online: r.online ?? 0 };
   }
-  return { registered, online, byBackend };
+  return { registered, online, working, byBackend };
 }

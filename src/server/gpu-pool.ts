@@ -158,7 +158,7 @@ async function startAll(now: number) {
       p.state = "stopped";
       p.lastStopAt = now;
       p.backoffUntil = now + START_BACKOFF_SECONDS;
-      p.error = `A pool machine could not start (its host is busy); trying again in ${START_BACKOFF_SECONDS / 60} min.`;
+      p.error = `A Sparecycle GPU could not start right now; trying again in ${START_BACKOFF_SECONDS / 60} min.`;
       console.error(`[sparecycle] GPU pool: Vast declined ${declined.map((r) => r.id).join(", ")}; fewer than two owners up, pool stopped`);
       return;
     }

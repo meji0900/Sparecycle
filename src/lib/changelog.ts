@@ -4,7 +4,7 @@
 // Commit hashes and commit dates are not used as evidence (the repository history has been rewritten).
 import { MAINNET_TXS, OWNERSHIP_TXS, FIRST_PAYOUT_TXS, PAYMENTS_TX } from "./proof";
 import { ADDR, explorerAddressUrl, sourcifyUrl } from "./addresses";
-import { LIVE_SITE, repoFile, REPO_URL } from "./site";
+import { LIVE_SITE, repoFile } from "./site";
 
 export type ChangelogKind = "contract" | "scheduler" | "node" | "site" | "docs";
 
@@ -33,6 +33,30 @@ export const KIND_LABEL: Record<ChangelogKind, string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    id: "gpu-counts-home",
+    title: "The home page shows GPUs working, ready and on standby",
+    date: "2026-11-26",
+    kind: "site",
+    summary:
+      "The home page now counts the network's GPUs by what they are doing: running a job right now, online and ready for the next one, paused by their owners, or on standby until a job waits. The node list API marks each GPU that is running a job.",
+    evidence: [
+      { label: "The network right now", url: `${LIVE_SITE}/#network` },
+      { label: "Node list API", url: `${LIVE_SITE}/api/v1/nodes` },
+    ],
+  },
+  {
+    id: "gpu-pool-always-on",
+    title: "One Sparecycle GPU stays on",
+    date: "2026-11-26",
+    kind: "scheduler",
+    summary:
+      "One Sparecycle GPU now stays online all the time, so a waiting job only needs its partner GPU to start instead of two. The pool never stops it, and the status API counts it.",
+    evidence: [
+      { label: "Status API (gpuPool.alwaysOn)", url: `${LIVE_SITE}/api/v1/status` },
+      { label: "Pool start and stop test", url: repoFile("scripts/e2e-pool.mjs") },
+    ],
+  },
   {
     id: "agent-api",
     title: "API keys, an OpenAI-compatible API and an MCP server",
@@ -92,10 +116,10 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-11-26",
     kind: "scheduler",
     summary:
-      "The project's own on-demand GPUs are stopped when idle, and while stopped their host GPU can be rented by someone else. When a host declines a start, the pool now cancels that queued start at once, stops machines that came up without a partner and tries again later. An owner can keep a spare machine so the pool still runs while one host is busy.",
+      "Sparecycle's on-demand GPUs are stopped when idle, and a stopped machine is not always free to start again right away. When a machine cannot start, the pool now cancels that start at once, stops machines that came up without a partner and tries again later. Each owner can keep a spare machine, so the pool still runs while one is unavailable.",
     evidence: [
-      { label: "README: Bootstrap GPU pool", url: `${REPO_URL}#bootstrap-gpu-pool-on-demand` },
-      { label: "Test with a fake Vast API", url: repoFile("scripts/e2e-pool.mjs") },
+      { label: "Status API (gpuPool)", url: `${LIVE_SITE}/api/v1/status` },
+      { label: "Pool start and stop test", url: repoFile("scripts/e2e-pool.mjs") },
     ],
   },
   {

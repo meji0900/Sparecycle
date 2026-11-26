@@ -665,10 +665,11 @@ export const coreApi: OpenApiModule = {
           caps: { type: "array", items: { type: "string" } },
           backend: { enum: ["cuda", "vulkan", "cpu"] },
           online: { type: "boolean" },
+          working: { type: "boolean", description: "Running a job right now (holds a live lease)." },
           lastSeen: { type: "integer" },
           agreedJobs: { type: "integer" },
           epochAgreedJobs: { type: "integer" },
-          project: { type: "boolean", description: "Run by the project's own GPU pool: never paid." },
+          project: { type: "boolean", description: "Run by Sparecycle (bootstrap GPU pool): never paid." },
         },
       },
       Account: {

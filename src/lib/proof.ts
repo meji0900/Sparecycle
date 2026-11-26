@@ -218,7 +218,7 @@ export const TEST_RUNS: TestRun[] = [
     date: "22 Nov 2026",
     result: "Images 8/8, text 10/10 identical",
     detail:
-      "Rented RTX 3060 (Ampere) and RTX 4060 (Ada). SD 1.5 images matched within 4 bits of dHash (a different seed differs by 24 or more). Text matched 5/10 with llama.cpp defaults and 10/10 with a micro-batch of 1, now the node default. Cost of the test: $0.32.",
+      "Test machines: RTX 3060 (Ampere) and RTX 4060 (Ada). SD 1.5 images matched within 4 bits of dHash (a different seed differs by 24 or more). Text matched 5/10 with llama.cpp defaults and 10/10 with a micro-batch of 1, now the node default. Cost of the test: $0.32.",
   },
 ];
 
