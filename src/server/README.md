@@ -216,6 +216,16 @@ PaaS proxies do). IPs are stored only as salted hashes.
   `Charged(epochId, listHash)` with the stored hash. `GET epochs/:id/charges` serves v2 charges as per-customer totals
   plus the sorted leaves (no job ids, D7) and v1 charges (stored before receipts) exactly as stored. The leaves are in
   the DB snapshot (`backup.ts`); `scripts/backup-trees.mjs` also saves each v2 charge answer off the server.
+- **x402 pay-per-job** (`src/server/x402.ts`, `src/lib/x402.ts`, `contracts/src/SparecycleX402Escrow.sol`; decision
+  record `docs/x402-decision.md`). INTERNAL REVIEW ONLY — NOT EXTERNALLY AUDITED; capped launch; off unless
+  `X402_ENABLED=1`, fully configured and the boot preflight against the escrow passes. A create on the OpenAI-compatible
+  routes without any `Authorization` header answers an x402 v2 `402` (`PAYMENT-REQUIRED`); the retry with
+  `PAYMENT-SIGNATURE` (EIP-3009) is verified locally and funded into the escrow by the scheduler key before the job is
+  queued (`x402_escrows`, `jobs.charge_status = 'x402'`, never charged from a balance). A 15 s timer forwards agreed jobs
+  (95% to the Safe-set conversion address while the pot pays ETH, 5% treasury) and refunds the rest, for every open
+  escrow even after the flag is switched off. Each epoch close builds a salted x402 tree (`x402_leaves`, `x402_roots`),
+  served as the `x402` block of `GET epochs/:id/charges`; the payer's receipt carries the proof. Every scheduler-key
+  broadcast (root post, charge, escrow calls) is serialized by `sendAsScheduler` (`chain-io.ts`).
 - Node requests are signed: headers `x-sc-from`, `x-sc-ts`, `x-sc-sig` = EIP-191 signature of
   `sparecycle|METHOD|PATH|TS|sha256(body)`, 60 s window, each signature accepted once.
 - Distinct owner / GPU checks rely on what nodes report (GPU UUIDs can be faked); a determined operator with

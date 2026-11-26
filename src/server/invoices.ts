@@ -13,7 +13,7 @@ import { maxRoundsFor } from "@/lib/rounds";
 import type { Viewer } from "./auth";
 import { getDb, nowSec } from "./db";
 import { AUTH_REQUIRED, ApiError } from "./http";
-import { accessOf, expireStaleJobs, hasCredentials, isJobId, paymentKind } from "./jobs";
+import { accessOf, expireStaleJobs, hasCredentials, isJobId, paymentKind, X402_CHARGE_STATUS } from "./jobs";
 
 export type ChargeStatus = "pending" | "charged" | "released" | "unpaid";
 export type Verdict = "agreed" | "disagreed" | "expired" | "rejected";
@@ -100,6 +100,10 @@ export function jobInvoice(id: string, viewer: Viewer) {
     maxRounds: maxRoundsFor(r.payer),
   };
   const payment = paymentKind(r.payer);
+  if (r.charge_status === X402_CHARGE_STATUS) {
+    // Paid with x402 into the escrow (./x402): no prepaid-balance invoice; the receipt shows the escrow and its outcome.
+    return { ...base, payment: "x402" as const, invoice: false as const, note: "paid with x402 into the escrow: see GET /api/v1/jobs/{id}/receipt" };
+  }
   if (payment === "free" || r.price_wei === null || !/^\d+$/.test(r.price_wei)) {
     return { ...base, payment: "free" as const, invoice: false as const, note: "free trial, no charge" };
   }

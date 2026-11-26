@@ -466,6 +466,65 @@ const MIGRATIONS: string[] = [
     read_at          INTEGER NOT NULL
   );
   `,
+  // v12 (x402 pay-per-job, option X1; src/server/x402.ts, contracts/src/SparecycleX402Escrow.sol). Self-contained and
+  // additive only; nothing writes these tables unless X402_ENABLED=1. One row per x402 payment: the job id is reserved
+  // before the escrow is funded and the job row is inserted only once the escrow holds the payment (status 'held'). An
+  // x402 job has jobs.payer = the payer, jobs.price_wei = NULL and jobs.charge_status = 'x402', so the prepaid-balance
+  // charge path (src/server/payments.ts) never touches it. escrow_salt is private (payer's receipt only): the public
+  // escrow events carry escrow_id = keccak256(abi.encode(job_id, escrow_salt)). x402_leaves / x402_roots: one salted
+  // Merkle tree per epoch close over the escrows that reached an outcome (src/lib/x402.ts X402_LEAF_RULE).
+  `
+  CREATE TABLE x402_escrows (
+    job_id          TEXT PRIMARY KEY,           -- the job this payment is for (the jobs row exists from 'held' on)
+    escrow_id       TEXT NOT NULL UNIQUE,       -- the on-chain key
+    escrow_salt     TEXT NOT NULL,              -- private
+    payer           TEXT NOT NULL,              -- checksummed
+    escrow          TEXT NOT NULL,              -- the escrow contract
+    asset           TEXT NOT NULL,
+    network         TEXT NOT NULL,              -- CAIP-2, e.g. eip155:4663
+    amount          TEXT NOT NULL,              -- asset atomic units, decimal string
+    auth_nonce      TEXT NOT NULL,              -- EIP-3009 nonce (one use per payer)
+    valid_before    INTEGER NOT NULL,
+    surface         TEXT NOT NULL,              -- chat | images
+    body_hash       TEXT NOT NULL,              -- sha256 of the request body (replays of the same payment)
+    response_format TEXT,                       -- images: b64_json | url
+    status          TEXT NOT NULL CHECK (status IN ('funding','held','forwarding','forwarded','refunding','refunded','failed')),
+    reason          TEXT,                       -- why it was forwarded / refunded: agreed | disagreed | expired | rejected | not-queued | deadline
+    deadline        INTEGER,                    -- on-chain refund deadline
+    fund_tx         TEXT,
+    settle_tx       TEXT,
+    error           TEXT,                       -- last error (never a secret)
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    settled_at      INTEGER,
+    leaf_epoch      INTEGER                     -- the epoch whose x402 tree holds this escrow's leaf
+  );
+  CREATE UNIQUE INDEX x402_escrows_auth ON x402_escrows(payer, auth_nonce) WHERE status <> 'failed';
+  CREATE UNIQUE INDEX x402_escrows_one_funding ON x402_escrows(payer) WHERE status = 'funding'; -- one funding in flight per payer
+  CREATE INDEX x402_escrows_open ON x402_escrows(status) WHERE status IN ('funding','held','forwarding','refunding');
+  CREATE INDEX x402_escrows_leaf ON x402_escrows(leaf_epoch, status);
+  CREATE TABLE x402_leaves (
+    epoch_id    INTEGER NOT NULL,
+    job_id      TEXT NOT NULL,
+    escrow_id   TEXT NOT NULL,
+    payer       TEXT NOT NULL,
+    asset       TEXT NOT NULL,
+    amount      TEXT NOT NULL,
+    verdict     TEXT NOT NULL,                  -- agreed | disagreed | expired | rejected | not-queued
+    outcome     TEXT NOT NULL,                  -- forwarded | refunded
+    output_hash TEXT,
+    salt        TEXT NOT NULL,                  -- private: payer's receipt only
+    leaf        TEXT NOT NULL,
+    PRIMARY KEY (epoch_id, job_id)
+  );
+  CREATE INDEX x402_leaves_job ON x402_leaves(job_id);
+  CREATE TABLE x402_roots (
+    epoch_id   INTEGER PRIMARY KEY,
+    root       TEXT NOT NULL,
+    leaves     INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  `,
 ];
 
 type Holder = { db: DatabaseSync; path: string; txDepth: number };

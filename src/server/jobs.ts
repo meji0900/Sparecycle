@@ -55,6 +55,8 @@ type JobRow = {
 export const PAID_JOBS_PER_HOUR = 120;
 /** Job status / result reads per API key per hour (OpenAI-compatible polls and MCP tools). */
 export const KEY_READS_PER_HOUR = 3_600;
+/** jobs.charge_status of a job paid with x402 into the escrow (src/server/x402.ts): never charged from a balance. */
+export const X402_CHARGE_STATUS = "x402";
 
 /**
  * Marks jobs that never reached a verdict within the TTL as expired (unpaid) and cancels their tasks (the hard stop,
@@ -90,6 +92,11 @@ export type SubmitOptions = {
   key?: KeyViewer | null;
   /** Runs inside the insert transaction with the new job id (e.g. to record an Idempotency-Key with the job). */
   onInsert?: (db: DatabaseSync, jobId: Hex) => void;
+  /**
+   * Paid with x402: the escrow already holds the payment (src/server/x402.ts). The job gets this reserved id, payer =
+   * the x402 payer, no price in wei and charge_status 'x402'; the payer's per-hour limit applies like a paid job's.
+   */
+  x402?: { payer: Address; jobId: Hex } | null;
 };
 
 type Payer = { payer: Address; priceWei: bigint; balance: bigint; withdrawAmount: bigint; signature: Hex | null };
@@ -116,6 +123,10 @@ export async function submitJob(
 ): Promise<{ id: Hex; status: "queued"; priceWei: string | null; readSecret?: string; available?: string; lowBalance?: boolean }> {
   const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const key = opts.key ?? null;
+  const x402 = opts.x402 ?? null;
+  if (x402 && (key || "payment" in b)) {
+    throw new ApiError(400, "invalid-job", "an x402 job is sent without a payment block or API key", { field: "payment" });
+  }
   if (key && "payment" in b) {
     throw new ApiError(400, "invalid-job", "a job paid with an API key is sent without a payment block", { field: "payment" });
   }
@@ -147,8 +158,7 @@ export async function submitJob(
     }
     paid = { payer: key.owner, priceWei: price, balance: acct.balance, withdrawAmount: acct.withdrawAmount, signature: null };
   }
-  const limit = paid ? PAID_JOBS_PER_HOUR : serverEnv.jobRateLimit();
-  const bucket = paid ? sha256Hex(`${ipSalt()}|payer|${paid.payer.toLowerCase()}`) : sha256Hex(`${ipSalt()}|${ip}`);
+  const { limit, bucket } = queueBucket(paid?.payer ?? x402?.payer ?? null, ip);
   const now = nowSec();
   const window = Math.floor(now / 3600) * 3600;
 
@@ -158,7 +168,7 @@ export async function submitJob(
       | { count: number }
       | undefined)?.count ?? 0;
     if (used >= limit) {
-      throw new ApiError(429, "rate-limited", `at most ${limit} ${paid ? "paid jobs per hour per wallet" : "free jobs per hour from one address"}`, {
+      throw new ApiError(429, "rate-limited", `at most ${limit} ${paid || x402 ? "paid jobs per hour per wallet" : "free jobs per hour from one address"}`, {
         retryAfter: window + 3600 - now,
       });
     }
@@ -180,7 +190,7 @@ export async function submitJob(
     }
     // A key's daily cap, re-checked here (status too) and counted in the same transaction as the job.
     if (key && paid) holdKeySpend(key.keyId, paid.priceWei, now);
-    const id = randomHex(32);
+    const id = x402?.jobId ?? randomHex(32);
     const read = key && !KEY_JOBS_GET_READ_SECRET ? null : newReadSecret();
     let spec: JobSpec;
     if (req.kind === "image") {
@@ -202,10 +212,10 @@ export async function submitJob(
       workUnits(spec),
       bucket,
       now,
-      paid?.payer ?? null,
+      paid?.payer ?? x402?.payer ?? null,
       paid?.priceWei.toString() ?? null,
       paid?.signature ?? null,
-      paid ? "pending" : null,
+      paid ? "pending" : x402 ? X402_CHARGE_STATUS : null,
       read?.hash ?? null,
       key?.keyId ?? null,
       key ? 1 : 0,
@@ -228,6 +238,30 @@ export async function submitJob(
   });
   poolNudge(); // bootstrap GPU pool: start it if no two owners online can take this job
   return queued;
+}
+
+/** The hourly rate-limit bucket of a submission: per payer wallet for paid jobs, per IP for free ones. */
+function queueBucket(payer: Address | null, ip: string) {
+  return payer
+    ? { limit: PAID_JOBS_PER_HOUR, bucket: sha256Hex(`${ipSalt()}|payer|${payer.toLowerCase()}`) }
+    : { limit: serverEnv.jobRateLimit(), bucket: sha256Hex(`${ipSalt()}|${ip}`) };
+}
+
+/**
+ * The checks submitJob makes inside its transaction, made read-only beforehand: the payer's paid jobs this hour and the
+ * queue size. x402 runs it before it moves a payment into the escrow (src/server/x402.ts), so a payment is not taken
+ * for a job that would be refused; submitJob checks again when it inserts.
+ */
+export function assertCanQueue(payer: Address) {
+  const { limit, bucket } = queueBucket(payer, "");
+  const now = nowSec();
+  const window = Math.floor(now / 3600) * 3600;
+  const db = getDb();
+  const used = (db.prepare("SELECT count FROM rate_limits WHERE bucket = ? AND window_start = ?").get(bucket, window) as { count: number } | undefined)
+    ?.count ?? 0;
+  if (used >= limit) throw new ApiError(429, "rate-limited", `at most ${limit} paid jobs per hour per wallet`, { retryAfter: window + 3600 - now });
+  const open = (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status IN ('queued','running','checking')").get() as { n: number }).n;
+  if (open >= POLICY.maxOpenJobs) throw new ApiError(503, "queue-full", "the job queue is full; try again later");
 }
 
 const SELECT_JOB = `SELECT j.id, j.kind, j.model, j.spec, j.prompt_hash, j.work_units, j.status, j.dev, j.created_at, j.settled_at,
@@ -396,21 +430,56 @@ export function keyJob(id: string, key: KeyViewer, opts: { withOutput?: boolean 
   expireStaleJobs();
   if (!isJobId(id)) throw new ApiError(400, "invalid-job-id", "job id must be 0x + 64 lowercase hex characters");
   takeHourly(limitBucket("key-read", key.keyId), KEY_READS_PER_HOUR, "job reads per API key");
-  const row = getDb()
-    .prepare(
-      `SELECT id, kind, model, spec, status, created_at, settled_at, work_units, price_wei, charge_status, note, payer, api_key_id, output_type
-       FROM jobs WHERE id = ?`,
-    )
-    .get(id) as Omit<JobRow, "dev" | "prompt_hash" | "epoch_id" | "epoch_status" | "epoch_reserved" | "read_secret_hash" | "round"> | undefined;
+  const row = getDb().prepare(SELECT_VIEW).get(id) as ViewRow | undefined;
   if (!row) throw new ApiError(404, "unknown-job", "no job with this id");
   if (accessOf({ payer: row.payer, read_secret_hash: null, api_key_id: row.api_key_id }, { address: null, secret: null, key }) !== "key") {
     throw new ApiError(403, "forbidden", "this API key did not submit this job");
   }
+  return viewOf(row, opts.withOutput ? ["key", key.keyId] : null);
+}
+
+/** Wrong read secrets per IP per hour on the x402 poll path (secretJob). */
+export const WRONG_SECRETS_PER_IP_HOUR = 120;
+
+/**
+ * An x402 job read with its read secret on the OpenAI-compatible poll routes (src/server/openai.ts; x402 payers have
+ * no API key): 400 bad id, 404 unknown, 403 when the job is not an x402 job or the secret is not its own. The secret is
+ * checked first: a wrong one counts against the caller's IP (WRONG_SECRETS_PER_IP_HOUR), never against the job, so a
+ * stranger who knows a public job id cannot use up its payer's reads. Right ones count per job (KEY_READS_PER_HOUR);
+ * reading the output also counts against OUTPUT_RATE_LIMIT, per job.
+ */
+export function secretJob(id: string, secret: string, ip: string, opts: { withOutput?: boolean } = {}): KeyJob {
+  if (!isJobId(id)) throw new ApiError(400, "invalid-job-id", "job id must be 0x + 64 lowercase hex characters");
+  const row = getDb().prepare(SELECT_VIEW).get(id) as ViewRow | undefined;
+  if (!row) throw new ApiError(404, "unknown-job", "no job with this id");
+  if (row.charge_status !== X402_CHARGE_STATUS || !secretMatches(secret, row.read_secret_hash)) {
+    takeHourly(limitBucket("secret-fail", ip), WRONG_SECRETS_PER_IP_HOUR, "wrong read secrets");
+    throw new ApiError(403, "forbidden", "this read secret is not this job's");
+  }
+  takeHourly(limitBucket("secret-read", id), KEY_READS_PER_HOUR, "job reads per read secret");
+  expireStaleJobs();
+  const fresh = getDb().prepare(SELECT_VIEW).get(id) as ViewRow;
+  return viewOf(fresh, opts.withOutput ? ["job", id] : null);
+}
+
+/** A job right after its payer paid for it (the x402 create answer). No access check: the caller checks first. */
+export function jobView(id: string, opts: { withOutput?: boolean } = {}): KeyJob {
+  const row = getDb().prepare(SELECT_VIEW).get(id) as ViewRow | undefined;
+  if (!row) throw new ApiError(404, "unknown-job", "no job with this id");
+  return viewOf(row, opts.withOutput ? ["job", id] : null);
+}
+
+const SELECT_VIEW = `SELECT id, kind, model, spec, status, created_at, settled_at, work_units, price_wei, charge_status, note, payer, api_key_id,
+  output_type, read_secret_hash FROM jobs WHERE id = ?`;
+type ViewRow = Omit<JobRow, "dev" | "prompt_hash" | "epoch_id" | "epoch_status" | "epoch_reserved" | "round">;
+
+/** The KeyJob of a row; with `outputBucket` (an output rate-limit key) also the agreed output. */
+function viewOf(row: ViewRow, outputBucket: string[] | null): KeyJob {
   const spec = JSON.parse(row.spec) as JobSpec;
   let output: KeyJob["output"] = null;
-  if (opts.withOutput && row.status === "agreed" && row.output_type) {
-    takeHourly(limitBucket("output", "key", key.keyId), serverEnv.outputRateLimit(), "output reads");
-    const o = getDb().prepare("SELECT output, output_type FROM jobs WHERE id = ?").get(id) as { output: Uint8Array | null; output_type: string };
+  if (outputBucket && row.status === "agreed" && row.output_type) {
+    takeHourly(limitBucket("output", ...outputBucket), serverEnv.outputRateLimit(), "output reads");
+    const o = getDb().prepare("SELECT output, output_type FROM jobs WHERE id = ?").get(row.id) as { output: Uint8Array | null; output_type: string };
     if (o.output) output = { body: o.output, type: o.output_type };
   }
   return {

@@ -44,6 +44,12 @@
 //     key, on POST /v1/chat/completions (OpenAI shape, no_node_pair); nothing queued and nothing held
 // 11. PASS / FAIL summary; every process started here is stopped, even on failure
 //
+// With E2E_X402=1 (E2E_X402=1 npm run e2e:local) the run also covers x402 pay-per-job (src/server/x402.ts; INTERNAL
+// REVIEW ONLY build): a mock EIP-3009 token and SparecycleX402Escrow on anvil, the scheduler with X402_ENABLED=1; 9c: 402
+// -> signed TransferWithAuthorization -> escrow funded on-chain -> job agreed -> forwarded (95% to forwardTo, 5% to the
+// treasury); after the close of epoch 0 the x402 tree and the payer's receipt against the escrow events; 16b: an x402
+// job no pair agrees on is refunded in full. Without E2E_X402 none of this runs and the default run is unchanged.
+//
 // The anvil keys below are the well-known public anvil/hardhat dev keys. They are for this local test only and
 // must never be used anywhere else.
 import { spawn, spawnSync } from "node:child_process";
@@ -94,6 +100,9 @@ const acct = ANVIL_KEYS.map((k) => privateKeyToAccount(k));
 const [admin, scheduler, ownerA, ownerB, sweeper, customer] = acct;
 const treasury = privateKeyToAccount(generatePrivateKey()).address; // stands in for the treasury Safe
 const PRICE_WEI_PER_UNIT = 1_000_000_000n; // 1 gwei per work unit in this test
+/** E2E_X402=1: also run the x402 pay-per-job path (see the header). */
+const X402 = process.env.E2E_X402 === "1";
+const X402_PRICE_PER_UNIT = 10n; // mock-token units per work unit in this test
 
 const RUN_ID = new Date().toISOString().replace(/[:.]/g, "-");
 const RUN_DIR = join(ROOT, "data", `e2e-${RUN_ID}`);
@@ -224,7 +233,7 @@ function artifact(outDir, file, name) {
 function cleanEnv(extra) {
   const env = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (/^(NEXT_PUBLIC_|SCHEDULER_|SWEEP_|SPARECYCLE_)/.test(k)) continue;
+    if (/^(NEXT_PUBLIC_|SCHEDULER_|SWEEP_|SPARECYCLE_|X402_)/.test(k)) continue;
     if (["DB_PATH", "PAYOUT_CAP_PER_UNIT", "JOB_RATE_LIMIT", "LAUNCHER_WALLET", "EPOCH_POST_GAS_COST", "NODE_OPTIONS", "OUTPUT_AUTH", "OUTPUT_RATE_LIMIT", "AUTH_DOMAIN"].includes(k)) continue;
     env[k] = v;
   }
@@ -345,7 +354,17 @@ async function main() {
     () => {
       const r = spawnSync(
         FORGE,
-        ["build", "--out", forgeOut, "--cache-path", join(RUN_DIR, "forge-cache"), "src/SparecycleRewards.sol", "src/SparecycleJobPayments.sol", "test/mocks/MockPonsFeeEscrow.sol"],
+        [
+          "build",
+          "--out",
+          forgeOut,
+          "--cache-path",
+          join(RUN_DIR, "forge-cache"),
+          "src/SparecycleRewards.sol",
+          "src/SparecycleJobPayments.sol",
+          "test/mocks/MockPonsFeeEscrow.sol",
+          ...(X402 ? ["src/SparecycleX402Escrow.sol", "test/mocks/MockEIP3009.sol"] : []),
+        ],
         { cwd: join(ROOT, "contracts"), encoding: "utf8" },
       );
       if (r.status !== 0) log(`forge build not clean yet: ${(r.stderr || r.stdout).trim().split("\n").slice(-3).join(" | ")}`);
@@ -384,6 +403,23 @@ async function main() {
   check("SparecycleRewards deployed", Boolean(rewards), `${rewards} (escrow mock ${escrow})`);
   const payments = await deploy(payArt, [rewards, treasury]);
   check("SparecycleJobPayments deployed on the reward contract", Boolean(payments), payments);
+  // x402 (E2E_X402=1): a mock EIP-3009 token named like USDG and the escrow on the reward contract (12 h settle window).
+  const x402ForwardTo = privateKeyToAccount(generatePrivateKey()).address; // stands in for the Safe-controlled converter
+  let x402Token = null;
+  let x402Escrow = null;
+  if (X402) {
+    x402Token = await deploy(artifact(forgeOut, "MockEIP3009.sol", "MockEIP3009Token"), ["Global Dollar", "1", 6]);
+    x402Escrow = await deploy(artifact(forgeOut, "SparecycleX402Escrow.sol", "SparecycleX402Escrow"), [
+      admin.address,
+      rewards,
+      x402Token,
+      treasury,
+      x402ForwardTo,
+      43_200n,
+      [10_000_000n, 1_000_000_000n, 100_000_000n],
+    ]);
+    check("x402: mock EIP-3009 token and SparecycleX402Escrow deployed", Boolean(x402Token && x402Escrow), `${x402Token} ${x402Escrow}`);
+  }
   check("scheduler = anvil account 1", (await read("scheduler")).toLowerCase() === scheduler.address.toLowerCase());
   check("epoch length 30 s", (await read("epochLength")) === BigInt(EPOCH_LENGTH));
   // TS leaf == Solidity leaf
@@ -495,6 +531,16 @@ async function main() {
         CHALLENGE_COOLDOWN_HOURS: String(CHALLENGE_COOLDOWN_S / 3600),
         JOB_RATE_LIMIT: "4",
         DB_PATH: dbPath,
+        ...(X402
+          ? {
+              X402_ENABLED: "1",
+              X402_ESCROW_ADDRESS: x402Escrow,
+              X402_ASSET_ADDRESS: x402Token,
+              X402_ASSET_NAME: "Global Dollar",
+              X402_ASSET_VERSION: "1",
+              X402_PRICE_PER_UNIT: X402_PRICE_PER_UNIT.toString(),
+            }
+          : {}),
         ...extra,
       }),
     });
@@ -767,6 +813,97 @@ async function main() {
   );
   const treasuryBefore = await pub.getBalance({ address: treasury });
 
+  // ---- x402 pay-per-job (E2E_X402=1 only) ----
+  const xl = X402 ? await srcImport("lib/x402.ts") : null;
+  const { x402EscrowAbi } = X402 ? await srcImport("contracts/x402Escrow.ts") : {};
+  const tokenAbi = [
+    { type: "function", name: "mint", stateMutability: "nonpayable", inputs: [{ name: "to", type: "address" }, { name: "amount", type: "uint256" }], outputs: [] },
+    { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "a", type: "address" }], outputs: [{ type: "uint256" }] },
+  ];
+  const tokenBalance = (who) => pub.readContract({ address: x402Token, abi: tokenAbi, functionName: "balanceOf", args: [who] });
+  const escrowOf = async (id) => {
+    const [payer, deadline, state, amount] = await pub.readContract({ address: x402Escrow, abi: x402EscrowAbi, functionName: "escrows", args: [id] });
+    return { payer, deadline, state: ["none", "held", "forwarded", "refunded"][state], amount };
+  };
+  /** 402 for `body`, then a TransferWithAuthorization signed by `who` and the paid retry. */
+  const payX402 = async (who, path, body) => {
+    const first = await api("POST", path, body);
+    const header = first.headers.get("payment-required");
+    const pr = header ? xl.decodeX402Header(header) : null;
+    const r = pr?.accepts?.[0];
+    if (first.status !== 402 || !r) return { first, pr, res: null };
+    const authorization = {
+      from: who.address,
+      to: r.payTo,
+      value: r.amount,
+      validAfter: "0",
+      validBefore: String(Math.floor(Date.now() / 1000) + r.maxTimeoutSeconds),
+      nonce: generatePrivateKey(), // 32 random bytes
+    };
+    const signature = await who.signTypedData({
+      domain: xl.assetDomain(r, 31337),
+      types: xl.TRANSFER_WITH_AUTHORIZATION_TYPES,
+      primaryType: "TransferWithAuthorization",
+      message: xl.authorizationMessage(authorization),
+    });
+    const paymentHeader = xl.encodeX402Header({ x402Version: 2, accepted: r, payload: { signature, authorization } });
+    const res = await api("POST", path, body, { "payment-signature": paymentHeader });
+    return { first, pr, r, res, paymentHeader };
+  };
+  let x402Job = null;
+  if (X402) {
+    step("9c. x402 pay-per-job (E2E_X402=1): 402 -> signed EIP-3009 payment -> escrow -> agreed -> forwarded");
+    {
+      const hash = await wallet(admin).writeContract({ address: x402Token, abi: tokenAbi, functionName: "mint", args: [customer.address, 1_000_000_000n] });
+      await pub.waitForTransactionReceipt({ hash });
+    }
+    const chatBody = { model: "qwen2.5-1.5b", messages: [{ role: "user", content: "An x402 paid hello" }], max_tokens: 16 };
+    const keyless = await api("POST", "/chat/completions", chatBody, { authorization: "Bearer not-a-key" });
+    check("x402: any Authorization header keeps the key path (401, no PAYMENT-REQUIRED)", keyless.status === 401 && !keyless.headers.get("payment-required"));
+    const paidX = await payX402(customer, "/chat/completions", chatBody);
+    const r = paidX.r;
+    check(
+      "x402: no API key -> 402 x402_payment_required, PAYMENT-REQUIRED v2 exact on eip155:31337, payTo = the escrow, private",
+      paidX.first.status === 402 && paidX.first.data.error?.code === "x402_payment_required" && paidX.pr?.x402Version === 2 && r?.scheme === "exact" &&
+        r.network === "eip155:31337" && r.payTo.toLowerCase() === x402Escrow.toLowerCase() && r.asset.toLowerCase() === x402Token.toLowerCase() &&
+        r.extra?.name === "Global Dollar" && isPrivate(paidX.first),
+      JSON.stringify(r),
+    );
+    const settle = paidX.res.headers.get("payment-response") ? xl.decodeX402Header(paidX.res.headers.get("payment-response")) : null;
+    check(
+      "x402: the signed payment -> 202 with PAYMENT-RESPONSE (success, funding tx) and a read secret",
+      paidX.res.status === 202 && settle?.success === true && /^0x[0-9a-f]{64}$/.test(settle.transaction ?? "") && /^[A-Za-z0-9_-]{43}$/.test(paidX.res.data.sparecycle?.read_secret ?? ""),
+      JSON.stringify(paidX.res.data.error ?? settle),
+    );
+    const fundRcpt = await pub.getTransactionReceipt({ hash: settle.transaction });
+    const funded = (await import("viem")).parseEventLogs({ abi: x402EscrowAbi, logs: fundRcpt.logs }).find((e) => e.eventName === "Funded");
+    const amount = BigInt(r.amount);
+    check(
+      "x402: the escrow was funded on-chain by the scheduler key before the job was queued (Funded: payer, exact amount)",
+      fundRcpt.status === "success" && fundRcpt.from.toLowerCase() === scheduler.address.toLowerCase() && funded?.args.payer.toLowerCase() === customer.address.toLowerCase() &&
+        funded.args.amount === amount && (await tokenBalance(x402Escrow)) === amount,
+    );
+    const jobId = paidX.res.data.sparecycle.job_id;
+    x402Job = { jobId, secret: paidX.res.data.sparecycle.read_secret, escrowId: funded.args.escrowId, amount, pollId: paidX.res.data.id };
+    check("x402: the escrow is held on-chain under the salted escrow id (not the job id)", (await escrowOf(x402Job.escrowId)).state === "held" && x402Job.escrowId !== jobId);
+    const replay = await api("POST", "/chat/completions", chatBody, { "payment-signature": paidX.paymentHeader });
+    check("x402: the same payment again -> 409 payment_used, no job id", replay.status === 409 && replay.data.error?.code === "payment_used" && !JSON.stringify(replay.data).includes(jobId.slice(2)));
+    await waitFor("x402 job agreed", async () => (await api("GET", `/jobs/${jobId}`)).data.status === "agreed", { timeoutMs: 120_000, intervalMs: 1000 });
+    await waitFor("x402 escrow forwarded by the settle timer", async () => (await escrowOf(x402Job.escrowId)).state === "forwarded", { timeoutMs: 90_000, intervalMs: 1000 });
+    const toTreasuryX = (amount * 500n) / 10_000n;
+    check(
+      "x402: forwarded once: 95% to forwardTo (conversion), 5% to the treasury, nothing left in the escrow",
+      (await tokenBalance(x402ForwardTo)) === amount - toTreasuryX && (await tokenBalance(treasury)) === toTreasuryX && (await tokenBalance(x402Escrow)) === 0n,
+    );
+    const pollX = await api("GET", `/chat/completions/${x402Job.pollId}`, undefined, { authorization: `Bearer ${x402Job.secret}` });
+    check(
+      "x402: the read secret polls the answer; sparecycle.x402 shows forwarded",
+      pollX.status === 200 && pollX.data.choices?.[0]?.message?.content?.length > 0 && pollX.data.sparecycle?.x402?.status === "forwarded" && isPrivate(pollX),
+      JSON.stringify(pollX.data.sparecycle?.x402),
+    );
+    check("x402: a wrong secret -> 403", (await api("GET", `/chat/completions/${x402Job.pollId}`, undefined, { authorization: "Bearer wrong" })).status === 403);
+  }
+
   step("10. warp past the epoch end and close");
   const canEarly = await read("canClose", [0n]);
   if (!canEarly) {
@@ -781,6 +918,37 @@ async function main() {
   check("close posted the root", close.status === 200 && close.data.epoch.status === "posted" && /^0x[0-9a-f]{64}$/.test(close.data.epoch.postedTx ?? ""));
   const postTx = await pub.getTransactionReceipt({ hash: close.data.epoch.postedTx });
   check("root posted from the scheduler key (anvil account 1)", postTx.from.toLowerCase() === scheduler.address.toLowerCase() && postTx.status === "success");
+  if (X402) {
+    const ch0 = (await api("GET", "/epochs/0/charges")).data;
+    const rc = (await api("GET", `/jobs/${x402Job.jobId}/receipt`, undefined, { authorization: `Bearer ${x402Job.secret}` })).data;
+    const { verifyProof } = await srcImport("lib/merkle.ts");
+    const li = rc.anchor?.leafInputs;
+    const leaf =
+      li &&
+      xl.x402LeafOf(0, {
+        jobId: li.jobId,
+        escrowId: li.escrowId,
+        payer: li.payer,
+        asset: li.asset,
+        amount: BigInt(li.amount),
+        verdict: "agreed",
+        outcome: "forwarded",
+        outputHash: li.outputHash,
+        salt: li.salt,
+      });
+    check(
+      "x402: the close sealed epoch 0's x402 tree; the payer's receipt rebuilds its leaf and proves it against the published root",
+      ch0.x402?.root && rc.format === "sparecycle-x402-receipt" && rc.state === "sealed" && leaf === rc.anchor.leaf && verifyProof(rc.anchor.proof, ch0.x402.root, leaf),
+      JSON.stringify({ root: ch0.x402?.root, state: rc.state }),
+    );
+    const viemMod = await import("viem");
+    const evs = (await pub.getContractEvents({ address: x402Escrow, abi: x402EscrowAbi, fromBlock: 0n })).filter((e) => e.args.escrowId === rc.escrowId);
+    check(
+      "x402: the receipt's escrowSalt ties the job to the on-chain Funded and Forwarded events (escrowId = keccak256(jobId, salt))",
+      xl.escrowIdOf(rc.jobId, rc.escrowSalt) === rc.escrowId && evs.map((e) => e.eventName).join() === "Funded,Forwarded" && viemMod.isHex(rc.fundTx),
+    );
+    check("x402: no job id, payer or salt in the public x402 tree", ![x402Job.jobId, rc.escrowSalt, li.salt].some((v) => JSON.stringify(ch0.x402).includes(v.slice(2))));
+  }
 
   step("11. on-chain settlement checks");
   const e0 = await read("getEpoch", [0n]);
@@ -900,7 +1068,7 @@ async function main() {
   nextProc = await startNext("next-restart", { SCHEDULER_AUTOCLOSE: "1", OUTPUT_AUTH: "enforce" });
   const afterRestart = (await api("GET", "/epochs")).data.epochs;
   check("state survived the restart (epoch 0 posted, epoch 1 open)", afterRestart.find((e) => e.id === 0)?.status === "posted" && afterRestart.find((e) => e.id === 1)?.status === "open");
-  check("jobs survived the restart", (await api("GET", "/jobs?limit=20")).data.jobs.filter((j) => j.status === "agreed").length === 6); // 3 + 1 free from the rate-limit step + 1 paid + 1 team
+  check("jobs survived the restart", (await api("GET", "/jobs?limit=20")).data.jobs.filter((j) => j.status === "agreed").length === 6 + (X402 ? 1 : 0)); // 3 + 1 free from the rate-limit step + 1 paid + 1 team (+ the x402 job)
   await pub.request({ method: "evm_increaseTime", params: [EPOCH_LENGTH * 2] });
   await pub.request({ method: "evm_mine", params: [] });
   await waitFor("autoclose to post epoch 1", async () => (await api("GET", "/epochs")).data.epochs.find((e) => e.id === 1)?.status === "posted", {
@@ -1023,6 +1191,23 @@ async function main() {
     const d3 = await job(j3.id);
     check("J3 (free): its mismatch ends disagreed in round 0, no re-check (maxRounds 1)", d3.status === "disagreed" && d3.round === 0 && d3.maxRounds === 1 && d3.payment === "free", JSON.stringify({ status: d3.status, round: d3.round }));
     check("J3: only its first pair's two tasks and two results", q("SELECT COUNT(*) AS n FROM tasks WHERE job_id = ?", j3.id)[0].n === 2 && q("SELECT COUNT(*) AS n FROM results WHERE job_id = ?", j3.id)[0].n === 2);
+
+    if (X402) {
+      // J4 (x402): a paid text job that no pair agrees on -> disagreed after three rounds -> the escrow refunds in full.
+      const before = await tokenBalance(customer.address);
+      const j4 = await payX402(customer, "/chat/completions", { model: "qwen2.5-1.5b", messages: [{ role: "user", content: "an x402 job no pair agrees on" }], max_tokens: 16 });
+      check("x402 J4 accepted and escrowed", j4.res?.status === 202, j4.res?.data?.sparecycle?.job_id ?? JSON.stringify(j4.res?.data?.error ?? j4.first.data?.error ?? ""));
+      const j4Id = j4.res.data.sparecycle.job_id;
+      await waitFor("x402 J4 through its rounds", async () => final((await job(j4Id)).status), { timeoutMs: 180_000, intervalMs: 500 });
+      check("x402 J4 ends disagreed after re-check rounds", (await job(j4Id)).status === "disagreed");
+      await waitFor("x402 J4 refunded by the settle timer", async () => (await tokenBalance(customer.address)) === before, { timeoutMs: 90_000, intervalMs: 1000 });
+      const p4 = await api("GET", `/chat/completions/${j4.res.data.id}`, undefined, { authorization: `Bearer ${j4.res.data.sparecycle.read_secret}` });
+      check(
+        "x402 J4: refunded in full; the poll answers 422 not_charged and says the escrow refunded",
+        p4.status === 422 && p4.data.error?.type === "not_charged" && /refunded/.test(p4.data.error?.message ?? "") && p4.data.sparecycle?.x402?.status === "refunded",
+        JSON.stringify(p4.data),
+      );
+    }
 
     // J2: a paid text job. Round 0 on two corrupting nodes (the other four stop); round 1 waits until honest nodes return.
     await stopNodes(corrupt.slice(2).map((c) => c.name));
