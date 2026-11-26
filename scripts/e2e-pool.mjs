@@ -264,6 +264,34 @@ try {
       poolStatus().state === "running",
     JSON.stringify(c),
   );
+
+  // ---- an always-on machine that Vast stopped is started again without any job waiting, every 5 minutes ----
+  delete process.env.GPU_POOL_GROUP_OWNERS;
+  process.env.GPU_POOL_INSTANCE_IDS = "11:a,22:b,44:b";
+  process.env.GPU_POOL_ALWAYS_ON = "44";
+  db.prepare("UPDATE jobs SET status = 'agreed'").run(); // nothing waits
+  status[44] = "stopped";
+  busy.add("44"); // its host is taken: Vast queues the start
+  globalThis.__sparecyclePool.lastKeepAt = null;
+  const tE = tD + 60 * 60;
+  mark = calls.length;
+  await poolTick(tE);
+  c = since(mark);
+  check(
+    "no job waiting: the stopped always-on machine is asked to start, and the declined start is not cancelled",
+    c.some((x) => x.id === "44" && x.state === "running") && !c.some((x) => x.id === "44" && x.state === "stopped"),
+    JSON.stringify(c),
+  );
+  mark = calls.length;
+  await poolTick(tE + 60);
+  check("within 5 minutes it is not asked again", !since(mark).some((x) => x.id === "44"), JSON.stringify(since(mark)));
+  busy.delete("44");
+  mark = calls.length;
+  await poolTick(tE + 5 * 60 + 1);
+  check("after 5 minutes it is asked again and runs", since(mark).some((x) => x.id === "44" && x.state === "running") && status[44] === "running", JSON.stringify(since(mark)));
+  mark = calls.length;
+  await poolTick(tE + 11 * 60);
+  check("a running always-on machine is left alone", !since(mark).some((x) => x.id === "44"), JSON.stringify(since(mark)));
 } finally {
   server.close();
   try {

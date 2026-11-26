@@ -41,6 +41,8 @@ type Pool = {
   error: string | null;
   /** After a start where no two owner groups came up: no new start before this time. */
   backoffUntil: number | null;
+  /** Last time the always-on machines were checked (and started if Vast had stopped them). */
+  lastKeepAt: number | null;
   ticking: boolean;
 };
 
@@ -53,6 +55,7 @@ const pool = (): Pool =>
     lastStopAt: null,
     error: null,
     backoffUntil: null,
+    lastKeepAt: null,
     ticking: false,
   });
 
@@ -219,6 +222,26 @@ async function stopAll(now: number) {
   }
 }
 
+/**
+ * Always-on machines stay on even with no job waiting: every START_RETRY_SECONDS, one that Vast reports as stopped
+ * (its host was taken, or it was restarted) is asked to start again. A declined start stays queued at Vast, so the
+ * machine comes up by itself once its host is free; it is never cancelled.
+ */
+async function keepAlwaysOn(p: Pool, now: number) {
+  const keep = [...poolEnv.alwaysOn()].filter((id) => poolEnv.instanceIds().includes(id));
+  if (!keep.length || (p.lastKeepAt !== null && now - p.lastKeepAt < START_RETRY_SECONDS)) return;
+  p.lastKeepAt = now;
+  await Promise.all(
+    keep.map(async (id) => {
+      const st = await actualStatus(id).catch(() => null);
+      if (st !== null && st !== "running" && st !== "loading") {
+        const ok = await setState(id, "running").catch(() => false);
+        console.log(`[sparecycle] GPU pool: always-on machine ${id} was ${st}; start ${ok ? "requested" : "queued by Vast (host busy)"}`);
+      }
+    }),
+  );
+}
+
 /** One decision: start when jobs wait uncovered, stop after the idle window. `now` is injectable for tests. */
 export async function poolTick(now = nowSec()) {
   if (!poolConfigured()) return;
@@ -233,6 +256,7 @@ export async function poolTick(now = nowSec()) {
       const states = await Promise.all(ids.map((id) => actualStatus(id).catch(() => null)));
       p.state = states.some((s) => s === "running" || s === "loading") ? "running" : states.every((s) => s !== null) ? "stopped" : "unknown";
     }
+    await keepAlwaysOn(p, now);
     const d = demand();
     if (d.openJobs > 0) p.lastActivityAt = now;
     const recentlyStarted = p.lastStartAt !== null && now - p.lastStartAt < START_RETRY_SECONDS;
