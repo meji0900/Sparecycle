@@ -2,7 +2,9 @@
 // they can be aligned with the real contracts when those are audited and deployed. The contracts are written elsewhere
 // (brief stage 3); NOTHING HERE IS DEPLOYED (src/lib/addresses.ts: TOKEN_CONTRACTS are null).
 //
-// ASSUMED, to align with the real contracts (each item is what this code relies on):
+// ALIGNED 26 Nov 2026 with the contracts in contracts/src (SparecycleNodeStake, SparecycleHolderPool, SparecycleBurner):
+// event signatures and indexed fields below match their Solidity source; src/lib/token-contracts.test.ts checks them
+// against the compiled ABIs in contracts/out when those exist. Notes kept from the first draft:
 //   SparecycleNodeStake
 //     - stakedOf(address owner) view returns (uint256): the owner's stake in SPARE wei, slashed amounts already removed.
 //     - minStakePerNode() view returns (uint256).
@@ -23,7 +25,8 @@
 //     - event RootPosted(uint64 epochId, bytes32 root, uint256 totalEth) and event Claimed(uint64 epochId, address holder,
 //       uint8 mode, uint256 amount): ASSUMED names and fields, read only by the holder page.
 //     - the pool is funded with plain ETH (receive()) by the treasury Safe until V2 exists (brief §6.2 "Funding").
-//     - mode codes: 0 = credits, 1 = NVDA (src/lib/token-rules.ts HOLDER_MODE).
+//     - mode codes as in the contract: 1 = credits, 2 = NVDA (claims revert NvdaModeNotAvailable), 0 = never chosen
+//       (treated as credits, N18). src/lib/token-rules.ts HOLDER_MODE.
 //     - epoch ids are SparecycleRewards' epoch ids.
 //   SparecycleBurner (phase 2b, later)
 //     - event Burned(uint64 epochId, uint256 ethIn, uint256 spareBurned): no indexed fields, as given.
@@ -40,21 +43,23 @@ import { parseAbi } from "viem";
 export const nodeStakeAbi = parseAbi([
   "function stakedOf(address owner) view returns (uint256)",
   "function minStakePerNode() view returns (uint256)",
-  "function proposeSlash(address owner, uint256 amount, bytes32 evidenceHash)",
-  "event Slashed(address owner, uint256 amount, uint256 proposalId, bytes32 evidenceHash)",
-  "event SlashProposed(uint256 proposalId, address owner, uint256 amount, bytes32 evidenceHash)",
+  "function proposeSlash(address owner, uint256 amount, bytes32 evidenceHash) returns (uint256 proposalId)",
+  "event Slashed(address indexed owner, uint256 amount, uint256 indexed proposalId, bytes32 evidenceHash)",
+  "event SlashProposed(uint256 indexed proposalId, address indexed owner, uint256 amount, bytes32 evidenceHash, uint64 epoch)",
+  "function meetsMinimum(address owner, uint256 activeNodes) view returns (bool)",
 ]);
 
 export const holderPoolAbi = parseAbi([
   "function postRoot(uint64 epochId, bytes32 root, uint256 totalEth)",
   "function setMode(uint8 mode)",
   "function claim(uint64 epochId, uint8 mode, uint256 amount, bytes32[] proof)",
-  "event ModeSet(address holder, uint8 mode, uint64 effectiveEpoch)",
-  "event RootPosted(uint64 epochId, bytes32 root, uint256 totalEth)",
-  "event Claimed(uint64 epochId, address holder, uint8 mode, uint256 amount)",
+  "event ModeSet(address indexed holder, uint8 mode, uint64 effectiveEpoch)",
+  "event RootPosted(uint64 indexed epochId, bytes32 root, uint256 totalEth, uint64 claimableUntilEpoch)",
+  "event Claimed(uint64 indexed epochId, address indexed holder, uint8 mode, uint256 amount)",
+  "function fund() payable",
 ]);
 
-export const burnerAbi = parseAbi(["event Burned(uint64 epochId, uint256 ethIn, uint256 spareBurned)"]);
+export const burnerAbi = parseAbi(["event Burned(uint64 indexed epochId, uint256 ethIn, uint256 spareBurned)"]);
 
 export const spareTokenAbi = parseAbi([
   "event Transfer(address indexed from, address indexed to, uint256 value)",

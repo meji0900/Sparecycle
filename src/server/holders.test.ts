@@ -250,13 +250,13 @@ describe("synthetic scenarios (labelled: not recorded)", () => {
 describe("modes and leaves", () => {
   test("setMode in epoch N counts from N+1 only; never chose = credits (N18); NVDA (not offered) = credits", () => {
     const set = [{ mode: HOLDER_MODE.nvda, effectiveEpoch: 8, block: 100, logIndex: 0 }];
-    assert.equal(H.modeForEpoch(set, 7, [0, 1]), HOLDER_MODE.credits, "chosen during epoch 7: not yet");
-    assert.equal(H.modeForEpoch(set, 8, [0, 1]), HOLDER_MODE.nvda);
-    assert.equal(H.modeForEpoch([], 8, [0, 1]), HOLDER_MODE.credits);
+    assert.equal(H.modeForEpoch(set, 7, [HOLDER_MODE.credits, HOLDER_MODE.nvda]), HOLDER_MODE.credits, "chosen during epoch 7: not yet");
+    assert.equal(H.modeForEpoch(set, 8, [HOLDER_MODE.credits, HOLDER_MODE.nvda]), HOLDER_MODE.nvda);
+    assert.equal(H.modeForEpoch([], 8, [HOLDER_MODE.credits, HOLDER_MODE.nvda]), HOLDER_MODE.credits);
     assert.equal(H.modeForEpoch(set, 8), HOLDER_MODE.credits, "only credits is supported in this phase");
     const twice = [...set, { mode: HOLDER_MODE.credits, effectiveEpoch: 9, block: 200, logIndex: 0 }];
-    assert.equal(H.modeForEpoch(twice, 8, [0, 1]), HOLDER_MODE.nvda);
-    assert.equal(H.modeForEpoch(twice, 9, [0, 1]), HOLDER_MODE.credits);
+    assert.equal(H.modeForEpoch(twice, 8, [HOLDER_MODE.credits, HOLDER_MODE.nvda]), HOLDER_MODE.nvda);
+    assert.equal(H.modeForEpoch(twice, 9, [HOLDER_MODE.credits, HOLDER_MODE.nvda]), HOLDER_MODE.credits);
   });
 
   test("leaf = keccak256(uint64 epochId ‖ address holder ‖ uint8 mode ‖ uint256 amount), 61 bytes", () => {

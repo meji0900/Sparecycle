@@ -45,7 +45,8 @@ export const STAKED_COUNTS_AS_HELD = true;
 export const TOKEN_FEATURES_TOKEN = "SPARE" as const;
 
 /** Holder modes as the HolderPool leaf encodes them (uint8). Only credits exists in this phase; NVDA mode is gated (§6.6). */
-export const HOLDER_MODE = { credits: 0, nvda: 1 } as const;
+/** Mode codes as SparecycleHolderPool defines them (MODE_CREDITS = 1, MODE_NVDA = 2; 0 = never chosen -> credits). */
+export const HOLDER_MODE = { credits: 1, nvda: 2 } as const;
 export type HolderMode = (typeof HOLDER_MODE)[keyof typeof HOLDER_MODE];
 /** N18: the mode of a holder who never chose. Default, not yet confirmed by Fabio. */
 export const DEFAULT_HOLDER_MODE: HolderMode = HOLDER_MODE.credits;
