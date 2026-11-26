@@ -17,7 +17,7 @@ import { POLICY, serverEnv } from "./env";
 import { AUTH_REQUIRED, ApiError } from "./http";
 import { ipSalt, limitBucket, takeHourly } from "./limits";
 import { poolNudge } from "./gpu-pool";
-import { jobPriceWei } from "@/lib/job-payment";
+import { isLowBalance, jobPriceWei } from "@/lib/job-payment";
 import { heldFor, priceWeiPerUnit, teamWallets, verifyPayment, type Payment } from "./payments";
 
 type JobRow = {
@@ -37,8 +37,6 @@ type JobRow = {
   epoch_status: string | null;
   epoch_reserved: string | null;
   payer: string | null;
-  price_wei: string | null;
-  charge_status: string | null;
   read_secret_hash: string | null;
 };
 
@@ -72,11 +70,13 @@ export function expireStaleJobs() {
  * balance in the payments contract (see ./payments).
  * Every job gets a read secret (`readSecret`, returned only here): with OUTPUT_AUTH=enforce the output is served to
  * `Authorization: Bearer <readSecret>` or to a session of the paying wallet (see ./auth).
+ * A paid job's answer also carries `available` (wei the payer can still spend on new jobs, this job's price already
+ * held) and `lowBalance` (fewer than LOW_CREDIT_JOBS jobs at this price left), like the dapp's low-credit banner.
  */
 export async function submitJob(
   body: unknown,
   ip: string,
-): Promise<{ id: Hex; status: "queued"; priceWei: string | null; readSecret: string }> {
+): Promise<{ id: Hex; status: "queued"; priceWei: string | null; readSecret: string; available?: string; lowBalance?: boolean }> {
   const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const paidRequest = "payment" in b;
   const rawRequest = paidRequest ? b.request : body;
@@ -108,6 +108,7 @@ export async function submitJob(
     if (open >= POLICY.maxOpenJobs) {
       throw new ApiError(503, "queue-full", "the job queue is full; try again later");
     }
+    let availableAfter: bigint | null = null;
     if (payment) {
       // Re-checked inside the transaction so two concurrent submissions can't overspend the balance.
       const locked = heldFor(payment.payer) + payment.withdrawAmount + payment.priceWei;
@@ -117,6 +118,7 @@ export async function submitJob(
           priceWei: payment.priceWei.toString(),
         });
       }
+      availableAfter = payment.balance - locked;
     }
     const id = randomHex(32);
     const read = newReadSecret();
@@ -153,15 +155,22 @@ export async function submitJob(
       `INSERT INTO rate_limits (bucket, window_start, count) VALUES (?, ?, 1)
        ON CONFLICT(bucket, window_start) DO UPDATE SET count = count + 1`,
     ).run(bucket, window);
-    return { id, status: "queued" as const, priceWei: payment?.priceWei.toString() ?? null, readSecret: read.secret };
+    return {
+      id,
+      status: "queued" as const,
+      priceWei: payment?.priceWei.toString() ?? null,
+      readSecret: read.secret,
+      ...(payment && availableAfter !== null
+        ? { available: availableAfter.toString(), lowBalance: isLowBalance(availableAfter, payment.priceWei) }
+        : {}),
+    };
   });
   poolNudge(); // bootstrap GPU pool: start it if no two owners online can take this job
   return queued;
 }
 
 const SELECT_JOB = `SELECT j.id, j.kind, j.model, j.spec, j.prompt_hash, j.work_units, j.status, j.dev, j.created_at, j.settled_at,
-  j.epoch_id, j.output_type, j.note, e.status AS epoch_status, e.reserved AS epoch_reserved, j.payer, j.price_wei, j.charge_status,
-  j.read_secret_hash
+  j.epoch_id, j.output_type, j.note, e.status AS epoch_status, e.reserved AS epoch_reserved, j.payer, j.read_secret_hash
   FROM jobs j LEFT JOIN epochs e ON e.id = j.epoch_id`;
 
 function flags(r: JobRow) {
@@ -170,6 +179,10 @@ function flags(r: JobRow) {
   return { eligible, paid };
 }
 
+/**
+ * The public view of a job (GET /api/v1/jobs and GET /api/v1/jobs/:id). No price, charge status, payer or output
+ * hash (D7 in the feature brief): the payer reads those from the private invoice (./invoices).
+ */
 function publicJob(r: JobRow) {
   return {
     id: r.id,
@@ -183,11 +196,13 @@ function publicJob(r: JobRow) {
     epochId: r.epoch_id,
     ...flags(r),
     // Who paid: "free" (trial, shares the pot like any job), "paid" (a customer's balance) or "team" (the team's own test job).
-    payment: !r.payer ? "free" : teamWallets().has(r.payer.toLowerCase()) ? "team" : "paid",
-    priceWei: r.price_wei,
-    chargeStatus: r.charge_status,
+    payment: paymentKind(r.payer),
   };
 }
+
+/** Who paid for a job: "free" (trial), "paid" (a customer's balance) or "team" (the team's own test job). */
+export const paymentKind = (payer: string | null): "free" | "paid" | "team" =>
+  !payer ? "free" : teamWallets().has(payer.toLowerCase()) ? "team" : "paid";
 
 /** GET /api/v1/jobs */
 export function listJobs(limit: number) {
@@ -196,7 +211,7 @@ export function listJobs(limit: number) {
   return { jobs: rows.map(publicJob) };
 }
 
-const isJobId = (id: string) => /^0x[0-9a-f]{64}$/.test(id);
+export const isJobId = (id: string) => /^0x[0-9a-f]{64}$/.test(id);
 
 function getJobRow(id: string): JobRow {
   if (!isJobId(id)) throw new ApiError(400, "invalid-job-id", "job id must be 0x + 64 lowercase hex characters");
@@ -212,13 +227,13 @@ export const resultPath = (id: string) => `/api/v1/jobs/${id}/result`;
  * May `viewer` read this job's output? "secret": the job's read secret; "payer": a session of the wallet that paid
  * (paid and team jobs; a free job has no payer). Jobs created before read secrets existed match no secret.
  */
-function accessOf(job: { payer: string | null; read_secret_hash: string | null }, viewer: Viewer): "secret" | "payer" | null {
+export function accessOf(job: { payer: string | null; read_secret_hash: string | null }, viewer: Viewer): "secret" | "payer" | null {
   if (secretMatches(viewer.secret, job.read_secret_hash)) return "secret";
   if (viewer.address && job.payer && viewer.address.toLowerCase() === job.payer.toLowerCase()) return "payer";
   return null;
 }
 
-const hasCredentials = (viewer: Viewer) => viewer.address !== null || viewer.secret !== null;
+export const hasCredentials = (viewer: Viewer) => viewer.address !== null || viewer.secret !== null;
 
 /**
  * GET /api/v1/jobs/:id — status, timestamps, non-private parameters, `outputAvailable`, and `output` (the gated

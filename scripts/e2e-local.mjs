@@ -31,6 +31,7 @@
 // The anvil keys below are the well-known public anvil/hardhat dev keys. They are for this local test only and
 // must never be used anywhere else.
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cpSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -677,6 +678,11 @@ async function main() {
   const payment = await signPayment(customer, paidReq, paidPrice);
   const paid = await api("POST", "/jobs", { request: paidReq, payment });
   check("paid job accepted with the quoted price", paid.status === 201 && paid.data.priceWei === paidPrice.toString(), paid.data.id ?? paid.data.error);
+  check(
+    "paid submit answers available (after the hold) and lowBalance",
+    paid.data.available === (parseEther("0.01") - paidPrice).toString() && paid.data.lowBalance === false,
+    `${paid.data.available} ${paid.data.lowBalance}`,
+  );
   secrets[paid.data.id] = paid.data.readSecret;
   const replay = await api("POST", "/jobs", { request: paidReq, payment });
   check("same payment signature twice -> 409 payment-used", replay.status === 409 && replay.data.error === "payment-used", replay.data.error);
@@ -697,7 +703,18 @@ async function main() {
     return r.data.status === "agreed";
   }, { timeoutMs: 120_000, intervalMs: 1000 });
   const paidRow = (await api("GET", "/jobs?limit=20")).data.jobs.find((j) => j.id === paid.data.id);
-  check("job list marks it paid, charge pending", paidRow.payment === "paid" && paidRow.chargeStatus === "pending" && paidRow.priceWei === paidPrice.toString(), JSON.stringify(paidRow));
+  check("job list marks it paid, without price or charge status (D7)", paidRow.payment === "paid" && !("priceWei" in paidRow) && !("chargeStatus" in paidRow), JSON.stringify(paidRow));
+  const invoiceOf = (id) => api("GET", `/jobs/${id}/invoice`, undefined, { authorization: `Bearer ${secrets[id]}` });
+  const inv0 = await invoiceOf(paid.data.id);
+  check(
+    "invoice (read secret): price, 5% cut, held, output hash; private",
+    inv0.status === 200 && isPrivate(inv0) && inv0.data.priceWei === paidPrice.toString() && inv0.data.protocolCutWei === ((paidPrice * 500n) / 10_000n).toString() &&
+      inv0.data.chargeStatus === "pending" && inv0.data.verdict === "agreed" && /^0x[0-9a-f]{64}$/.test(inv0.data.outputHash ?? ""),
+    JSON.stringify(inv0.data),
+  );
+  const paidBytes = await api("GET", `/jobs/${paid.data.id}/result`, undefined, { authorization: `Bearer ${secrets[paid.data.id]}` });
+  check("invoice output hash = sha256 of the downloaded output", paidBytes.status === 200 && inv0.data.outputHash === `0x${createHash("sha256").update(paidBytes.data).digest("hex")}`);
+  check("invoice without credentials -> 401", (await api("GET", `/jobs/${paid.data.id}/invoice`)).status === 401);
   check("free jobs are marked free", (await api("GET", "/jobs?limit=20")).data.jobs.filter((j) => jobIds.includes(j.id)).every((j) => j.payment === "free"));
   const treasuryBefore = await pub.getBalance({ address: treasury });
 
@@ -733,7 +750,8 @@ async function main() {
   check("treasury got 5%", (await pub.getBalance({ address: treasury })) - treasuryBefore === toTreasury, toTreasury + " wei");
   const acct2 = (await api("GET", "/payments/account?address=" + customer.address)).data;
   check("customer balance reduced by the price, nothing held", BigInt(acct2.balance) === parseEther("0.01") - paidPrice && acct2.held === "0", JSON.stringify(acct2));
-  check("job marked charged", (await api("GET", "/jobs?limit=20")).data.jobs.find((j) => j.id === paid.data.id)?.chargeStatus === "charged");
+  const inv1 = (await invoiceOf(paid.data.id)).data;
+  check("invoice: charged in epoch 0, charge tx linked", inv1.chargeStatus === "charged" && inv1.chargedEpoch === 0 && inv1.links?.chargeTx?.hash === charges.tx, JSON.stringify(inv1));
   check("scheduler read the same pot", tree.potAtClose === expectedPot.toString(), `${tree.potAtClose}`);
   check("on-chain root == published root", e0.merkleRoot.toLowerCase() === tree.root.toLowerCase(), tree.root);
   check("on-chain reserved == published reserved", e0.reserved.toString() === tree.reserved, tree.reserved);

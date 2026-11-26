@@ -126,6 +126,14 @@ PaaS proxies do). IPs are stored only as salted hashes.
   signatures are never accepted as credentials, and a node only receives a job's spec while the job is queued,
   running or checking. With `OUTPUT_AUTH=off` (the default until switched) outputs are served to anyone, but always
   with `Cache-Control: private, no-store`. The two nodes of a job still see its prompt and output while they work.
+- **Invoices** (`src/server/invoices.ts`, `GET /api/v1/jobs/:id/invoice`). Price, 5% protocol cut (a rounded share:
+  the contract takes 5% of each epoch's charged batch), the 95% to the node pot, verdict, charge status, the output
+  hash (`jobs.output_hash`, the sha256 of the kept output, stored at the verdict; never the file), the verdict epoch,
+  the charged epoch and the charge / root transactions. Only for a session of the wallet that paid (team jobs: the
+  team wallet that paid) or the job's read secret, whatever `OUTPUT_AUTH` says: 401 without credentials, 403 for
+  others, 404 for an unknown id. A free job answers a "free trial, no charge" stub. Public job views carry only
+  `payment` (free / paid / team), never the price, the charge status, the payer or the hash (D7). A job that settles
+  without agreement shows `released` (not charged) at once; the stored status follows at the next epoch close.
 - Node requests are signed: headers `x-sc-from`, `x-sc-ts`, `x-sc-sig` = EIP-191 signature of
   `sparecycle|METHOD|PATH|TS|sha256(body)`, 60 s window, each signature accepted once.
 - Distinct owner / GPU checks rely on what nodes report (GPU UUIDs can be faked); a determined operator with
@@ -137,7 +145,8 @@ Public: `GET health`, `GET status`, `GET epochs`, `GET epochs/:id/tree`, `GET ep
 `GET jobs?limit=`, `POST jobs`, `GET jobs/:id`, `GET nodes`.
 Viewer-dependent (always `Cache-Control: private, no-store`, `Vary: Authorization, Cookie`): `GET jobs/:id`,
 `GET jobs/:id/result` (read secret or payer session when `OUTPUT_AUTH=enforce`), `GET jobs/:id/output` (retired: 410
-when enforced), `GET auth/nonce`, `POST auth/verify`, `POST auth/logout`.
+when enforced), `GET jobs/:id/invoice` (the private invoice, above), `GET auth/nonce`, `POST auth/verify`,
+`POST auth/logout`.
 Nodes (signed): `POST nodes/register`, `POST nodes/poll`, `POST tasks/:taskId/result`.
 Operator: `POST epochs/close`. Errors are always `{ "error": "<kebab-code>", "message": "…" }`. Shapes:
 `docs/SPEC.md`. Amounts are decimal strings (wei), timestamps unix seconds.

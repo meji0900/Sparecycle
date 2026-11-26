@@ -220,6 +220,16 @@ const MIGRATIONS: string[] = [
     note      TEXT
   );
   `,
+  // billing-invoice (feature brief #4; renumber freely when merging with other additive migrations): the sha256 of
+  // the agreed output that is kept for the submitter, stored at the verdict for the payer's private invoice
+  // (GET /api/v1/jobs/:id/invoice). Older agreed jobs: filled from the result whose output was kept (the first one
+  // received, ties by task id, exactly as submitResult picks it). Additive only.
+  `
+  ALTER TABLE jobs ADD COLUMN output_hash TEXT;
+  UPDATE jobs SET output_hash = (
+    SELECT r.output_hash FROM results r WHERE r.job_id = jobs.id ORDER BY r.received_at, r.task_id LIMIT 1
+  ) WHERE status = 'agreed' AND output IS NOT NULL;
+  `,
 ];
 
 type Holder = { db: DatabaseSync; path: string; txDepth: number };

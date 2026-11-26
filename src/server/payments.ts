@@ -246,6 +246,8 @@ export async function chargeOpenEpoch(epochId: number): Promise<string> {
     const up = db.prepare("UPDATE jobs SET charge_status = 'unpaid' WHERE id = ?");
     tx(() => unpaid.forEach((id) => up.run(id)));
   }
+  // D6 (feature brief): agreed jobs left unpaid still count for node payouts; the count goes in the operator log.
+  const unpaidNote = unpaid.length ? `; ${unpaid.length} agreed job(s) unpaid: the balance was withdrawn before the charge` : "";
   if (!list.length) return `no chargeable jobs (${unpaid.length} unpaid, rest over spend limits)`;
 
   list.sort((a, b) => (a.jobId < b.jobId ? -1 : 1));
@@ -273,14 +275,14 @@ export async function chargeOpenEpoch(epochId: number): Promise<string> {
     const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 180_000 });
     if (receipt.status !== "success") throw new Error(`charge transaction ${hash} reverted`);
     markCharged(epochId, list, hash);
-    return `charged ${list.length} jobs from ${customers.length} customers, ${total} wei (tx ${hash})`;
+    return `charged ${list.length} jobs from ${customers.length} customers, ${total} wei (tx ${hash})${unpaidNote}`;
   } catch (e) {
     const msg = describeChainError(e);
     const row = db.prepare("SELECT tx FROM charges WHERE epoch_id = ?").get(epochId) as { tx: Hex | null };
     // A sent transaction keeps 'sending' so the next attempt resolves it instead of charging again.
     if (row.tx) db.prepare("UPDATE charges SET error = ? WHERE epoch_id = ?").run(msg, epochId);
     else db.prepare("UPDATE charges SET status = 'failed', error = ? WHERE epoch_id = ?").run(msg, epochId);
-    return `charge failed: ${msg}`;
+    return `charge failed: ${msg}${unpaidNote}`;
   }
 }
 
