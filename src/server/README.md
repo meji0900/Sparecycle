@@ -111,6 +111,12 @@ PaaS proxies do). IPs are stored only as salted hashes.
   `/api/v1/admin/challenges`, audit-logged). Ineligible nodes are not counted as the "compatible peer" either.
   Challenges are unpaid and stored apart from jobs. `GET /nodes` adds `gpuFamily`, `gpuStatus`, `challengeState`;
   `GET /status` adds `gpuGate`.
+- **Idle Guard** (node client 0.4.0+). `POST nodes/heartbeat` `{ state, since }` stores the node's own state in
+  `nodes.state` / `nodes.state_since` (active | paused-busy | paused-hot | paused-hours; NULL = never reported =
+  active) and refreshes `last_seen`, so a paused node stays online. A paused node gets no job, no challenge and no
+  held lease back, and is not counted as the compatible peer. Registering clears the state. `GET /nodes` adds
+  `state` (or `offline`) but never `state_since`. Kept apart from `gpu_status` / `challenge_state`, which are the
+  scheduler's verdicts.
 - A result is accepted only from the leased node, with a valid EIP-712 receipt (domain `Sparecycle` v1, target
   chain id) and an `outputHash` the scheduler recomputes from the submitted PNG / text. Images are compared by
   64-bit dHash (≤ 12 bits apart), text by normalized edit-distance similarity (≥ 0.9).
@@ -138,7 +144,7 @@ Public: `GET health`, `GET status`, `GET epochs`, `GET epochs/:id/tree`, `GET ep
 Viewer-dependent (always `Cache-Control: private, no-store`, `Vary: Authorization, Cookie`): `GET jobs/:id`,
 `GET jobs/:id/result` (read secret or payer session when `OUTPUT_AUTH=enforce`), `GET jobs/:id/output` (retired: 410
 when enforced), `GET auth/nonce`, `POST auth/verify`, `POST auth/logout`.
-Nodes (signed): `POST nodes/register`, `POST nodes/poll`, `POST tasks/:taskId/result`.
+Nodes (signed): `POST nodes/register`, `POST nodes/poll`, `POST nodes/heartbeat`, `POST tasks/:taskId/result`.
 Operator: `POST epochs/close`. Errors are always `{ "error": "<kebab-code>", "message": "…" }`. Shapes:
 `docs/SPEC.md`. Amounts are decimal strings (wei), timestamps unix seconds.
 
