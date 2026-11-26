@@ -2,12 +2,12 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { C, Defs, DocsHeader, DocsNext, DocsSection, Ext, Note, Step, Steps } from "@/components/docs/docs-ui";
 import { CodeBlock } from "@/components/ui/code-block";
-import { ADDR, explorerAddressUrl } from "@/lib/addresses";
+import { ADDR, explorerAddressUrl, TOKEN_CONTRACTS, UNISWAP_V4 } from "@/lib/addresses";
 import { ROBINHOOD_PUBLIC_RPC } from "@/lib/chain";
 import { MAINNET } from "@/lib/proof";
 import { MAX_ROUNDS, PICKUP_TIMEOUT_SECONDS } from "@/lib/rounds";
 import { repoFile, siteOrigin } from "@/lib/site";
-import { POLICY } from "@/server/env";
+import { POLICY, serverEnv } from "@/server/env";
 
 export const metadata: Metadata = {
   title: "Billing",
@@ -19,6 +19,9 @@ export default function BillingPage() {
   const epochHours = MAINNET.epochLengthSeconds / 3600;
   const ttlHours = POLICY.jobTtlSeconds / 3600;
   const roundMinutes = (PICKUP_TIMEOUT_SECONDS + POLICY.taskLeaseSeconds) / 60;
+  // SparecycleJobPaymentsV2: documented here once the scheduler runs it (TOKEN_PAYMENTS_V2 with its address).
+  const v2 = serverEnv.tokenPaymentsV2() ? TOKEN_CONTRACTS.jobPaymentsV2 : null;
+  const hookCut = (UNISWAP_V4.spareEthPoolHookCutBps / 100).toFixed(2);
   return (
     <>
       <DocsHeader eyebrow="Reference" title="Billing">
@@ -171,6 +174,76 @@ export default function BillingPage() {
           epoch close.
         </p>
       </DocsSection>
+
+      {v2 ? (
+        <DocsSection id="v2" title="The V2 payments contract: credits and SPARE">
+          <p>
+            Paid jobs can also be paid from <Ext href={explorerAddressUrl(v2)}>SparecycleJobPaymentsV2</Ext>. New deposits on the{" "}
+            <Link href="/jobs" className="link">Jobs page</Link> go there. A balance you already hold in the first payments contract
+            (V1) stays usable for jobs and can be withdrawn any time, as above. A job is paid from one contract only, never split:
+            from V2 when your V2 balance covers it, otherwise from V1. Your job&apos;s signed message names the contract it is paid on.
+          </p>
+          <Defs
+            items={[
+              ["Deposits", "ETH you put in (deposit(), or someone else's depositFor(you)). Only your wallet can withdraw it, with the same two-step withdrawal."],
+              [
+                "Credits",
+                "ETH a holder claimed from the holder pool in credit mode. Credits pay for jobs before deposits do. They can pay for jobs only and can never be withdrawn.",
+              ],
+              ["SPARE balance", "SPARE you put in: approve the amount, then depositSpare(amount). Withdraw it with requestWithdrawSpare, then withdrawSpare, after the same lock."],
+            ]}
+          />
+          <ul className="list-disc space-y-2 pl-5 marker:text-faint">
+            <li>
+              <span className="text-text">Paying with SPARE, no discount.</span> A SPARE-paid job costs its ETH price in SPARE at the
+              epoch&apos;s SPARE price, rounded up. On the Jobs page you choose per job: ETH balance or SPARE balance. The SPARE amount
+              shown when you submit uses the last accepted price; the amount taken uses the price of the epoch that charges the job.
+            </li>
+            <li>
+              <span className="text-text">The epoch price.</span> Once per epoch the scheduler posts the price of the SPARE/ETH Uniswap v4
+              pool. The contract accepts it only within 20% of the last accepted price; otherwise SPARE charges pause for that epoch and
+              ETH charges go on. The treasury Safe sets the first reference price; until it does, SPARE payments are closed.
+            </li>
+            <li>
+              <span className="text-text">The {hookCut}% hook cut.</span> The SPARE taken is sold for ETH in the same transaction, so the
+              node pot still gets 95% of the job&apos;s ETH price. The pool&apos;s Pons hook takes {hookCut}% of every sale (1.00% hook fee
+              and a 1.90% creator tax that goes to the team wallet). That cut is paid out of the 5% protocol share: on a SPARE-paid job
+              the treasury keeps only what the sale brings in above the pot&apos;s 95% (about 2%) and the holder pool gets nothing from
+              it. Your balance and the node pot do not pay it.
+            </li>
+            <li>
+              <span className="text-text">Caps and waiting.</span> The treasury Safe sets a cap on SPARE-paid volume per epoch (in ETH
+              value). A SPARE-paid job that cannot be charged at an epoch close (no reference price yet, the price paused, the cap
+              reached, the sale would not fill within 4% of the posted price, or your SPARE balance does not cover it at that
+              price) is never charged at another price: it waits for the next close, and its invoice says why. After 8 closes it is
+              not charged at all.
+            </li>
+            <li>
+              <span className="text-text">Spend limits.</span> <C>setSpendLimit</C> caps ETH-paid and SPARE-paid jobs together (SPARE
+              ones at their ETH price); <C>setSpareSpendLimit</C> caps the SPARE taken per epoch.
+            </li>
+            <li>
+              <span className="text-text">Where the 5% goes.</span> In V2 the 5% is split 3.5% treasury, 1.5% holder pool and 0%
+              burn: the burn is postponed. Only the treasury Safe can change the split, and a change applies at least 4 epochs after
+              it is proposed.
+            </li>
+            <li>
+              <span className="text-text">Receipts.</span> While V2 is on, receipts are version 2: they also say which contract charged
+              the job, whether ETH or SPARE paid, and for SPARE the price used and the SPARE taken. The browser check reads the
+              matching <C>CustomerChargedSpare</C> event too. Saved version 1 receipts keep verifying.
+            </li>
+          </ul>
+          <Note title="Not externally audited">
+            SparecycleJobPaymentsV2, the holder pool, the burner and the Uniswap v4 swap adapter have had internal review and tests
+            only. Like V1, V2 has no owner who can move your balance; the treasury Safe sets the split, the SPARE reference price,
+            the price band, the slippage and the SPARE cap.
+          </Note>
+          <p className="text-sm">
+            Contract source: <Ext href={repoFile("contracts/src/SparecycleJobPaymentsV2.sol")}>SparecycleJobPaymentsV2.sol</Ext>; design
+            and decisions: <Ext href={repoFile("docs/contracts-v2.md")}>docs/contracts-v2.md</Ext>.
+          </p>
+        </DocsSection>
+      ) : null}
 
       <DocsSection id="free" title="Free trial jobs">
         <p>

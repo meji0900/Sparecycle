@@ -135,7 +135,7 @@ Holder share, credit mode (brief §6). Modelled on `SparecycleRewards`.
 ## Owner decisions (26–27 Nov 2026)
 
 1. **SPARE-paid jobs at 0% discount** (`SPARE_DISCOUNT_BPS = 0`). The Pons hook takes 2.90% of each swap's output
-   (`docs/uniswap-v4-adapter.md`), so a SPARE job's sale returns about 97% of its ETH price (2.90% hook + about 0.17%
+   (`docs/uniswap-v4-adapter.md`), so a SPARE job's sale brings in about 97% of its ETH price (2.90% hook + about 0.17%
    impact for 0.01 ETH on the fork). With 0% discount and burner part 0 the sale floor alone (96% of the value at the
    posted price) is above the pot's 95%: the pot gets its full share **without the discount reserve or any other
    subsidy**, and the surplus (about 1.9%) goes to the treasury. Who bears the hook cut: the protocol's 5%. The
@@ -211,13 +211,59 @@ and A14 are still open (`docs/x402-decision.md`).
   jurisdiction logic is present.
 - **Deploying the Uniswap v4 swap adapter**: it is written and fork-tested (see above), not deployed.
 - `SparecycleNodeStake` (brief §3). It is in stage 3 of §11 but not in this task.
-- **The scheduler side** (stage 4):
-  - time-weighted holder weights, exclusions and minimum (N11/N14/N15);
-  - root posting and price posting;
-  - V1+V2 dual charging;
-  - receipts with asset and price fields;
-  - the burns and holder pages.
+- **The scheduler side, not part of the payments work** (stage 4): time-weighted holder weights, exclusions and
+  minimum (N11/N14/N15), holder root posting, the burns and holder pages (built separately).
 - Copy changes listed in brief §0.7.
+
+## Scheduler and dapp (behind `TOKEN_PAYMENTS_V2`)
+
+Built in `src/server/payments-v2.ts` (with `src/server/payments.ts`), off by default. It is on only when
+`TOKEN_PAYMENTS_V2=on` **and** `TOKEN_JOB_PAYMENTS_V2_ADDRESS` is a valid address. With it off every answer of the API
+and every page is exactly what it was before V2. With it on, the scheduler key sends V2 transactions (the charge and the
+per-epoch SPARE price), exactly as it sends the V1 charge.
+
+- **Which contract holds a customer's money.** A paid job is charged on V1 or V2, never both (`jobs.pay_contract`).
+  A wallet-signed job is charged on the contract named in its signed message; the dapp signs for V2 when the V2
+  balance covers the job and for V1 otherwise ("V2 first"). An API-key job: V2 when its ETH covers the price, else V1.
+  V1 balances stay usable and withdrawable; new deposits in the dapp go to V2.
+- **Credits first (N21).** V2's available ETH = the credits left after the holds + the deposits not asked out minus
+  the holds credits do not cover. A pending withdrawal locks only deposits. The charge checks credits + deposits.
+- **SPARE.** Deposit (approve, then `depositSpare`) and two-step withdraw in the balance panel; per job the customer
+  picks "ETH balance" or "SPARE balance". Held amounts are in SPARE at the reference price. SPARE jobs are refused
+  (409 `spare-payments-closed`) until the Safe sets the first reference price.
+- **Price posting.** At each epoch close, before the V2 charge: if the contract has no price for the open epoch and the
+  Safe has set a reference, `postSparePrice(epoch, price)` with the pool's spot price from StateView `getSlot0` of the
+  verified pool key (`UNISWAP_V4`), minus nothing. The contract's 20% band decides (paused = SPARE jobs wait).
+- **One V2 charge per epoch**, with the same `v2-jobs-merkle` rule over V2's jobs (V1 has its own): `chargeWithSpare`
+  when SPARE jobs can be charged, else `charge`. `minEthOut` = the sold SPARE's value at the posted price × (1 − 2.90%
+  hook − 1% buffer), raised to the contract floor and to what the pot needs beyond the cover (fork: 0.00961 ETH for a
+  0.01 ETH job against a 0.0096 floor; the sale gave 0.0096942). `previewSpareLeg` is asked first; if it, or the
+  simulation of `chargeWithSpare`, refuses the SPARE leg, ETH goes alone and the SPARE jobs wait.
+- **Deferred, never mispriced.** A SPARE job not charged at a close keeps its hold and records why (`no-reference`,
+  `not-posted`, `paused`, `cap`, `sale`, `spare-balance`, `spend-limit`); its invoice and the balance panel show it.
+  After 8 closes (`SPARE_MAX_WAIT_EPOCHS`) it is marked unpaid (D6: never taken from the customer).
+- **Receipts version 2 and invoice version 2** (only while the flag is on): plus the contract (V1/V2), the asset and,
+  for a charged SPARE job, the price used and the SPARE taken. The verifier checks a SPARE job against V2's
+  `CustomerChargedSpare(epoch, payer, ethValue, spareAmount)`: `spareAmount = ceil(ethValue × 10^18 / price)` and
+  `ethValue ≥` the job's price. The leaf and the jobs root are unchanged; saved version 1 receipts keep verifying.
+- **Public charge answer**: `GET /api/v1/epochs/{id}/charges` gains a `v2` block (V2's charge of the epoch, the SPARE
+  leg per customer, the epoch price record).
+- **DB**: migration v13 (`pay_contract`, `pay_asset`, `spare_price`, `spare_wei`, `pay_wait`, `pay_waits`,
+  `charge_leaves.contract`, tables `v2_charges` and `v2_spare_prices`). Additive only.
+- **Tests**: `src/server/payments-v2.test.ts` (routing, credits-first holds, SPARE holds, price posting, paused price,
+  a sale that does not fill, the wait limit, receipts v2 against V2 events, flag off), `src/lib/job-receipt.test.ts`
+  (version 2 format), `E2E_V2=1 npm run e2e:local` (V2 + HolderPool + Burner + a mock adapter and StateView on anvil:
+  an ETH-paid and a SPARE-paid job charged through V2 next to a V1 job charged through V1).
+
+### After deploying (Safe)
+
+1. **Set the first SPARE reference price** on V2: `setReferenceSparePrice(price)` (wei per 10^18 SPARE, the pool's
+   spot price at that time). Until then SPARE payments are closed and the scheduler posts no price.
+2. **Set the SPARE cap** if it was deployed as 0 (`setSpareCapEthPerEpoch`): 0 keeps SPARE charges off.
+3. Nothing else is required: the split (350 / 0 / 150), the 0% discount and the 4% slippage are the deployed defaults.
+   The Burner's `maxEthPerBurn` is a constructor value; it matters only once the Safe gives the burner a share.
+4. Then set `TOKEN_PAYMENTS_V2=on` and `TOKEN_JOB_PAYMENTS_V2_ADDRESS` on the scheduler (and the V2, HolderPool and
+   Burner rows in `src/lib/addresses.ts` for `/docs/contracts`).
 
 ## Tests
 

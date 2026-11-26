@@ -23,6 +23,7 @@ import { cn } from "@/lib/utils";
 import { accountFailureText, Eth, LowCreditNotice } from "./job-balance";
 import { loadItems, MAX_ITEMS, PlaygroundHistory, saveItems, type PlayItem, type SettledFields } from "./playground-history";
 import { PlaygroundResult, showReceipt } from "./playground-result";
+import { PayFrom } from "./pay-from";
 import { OutputPrivacyNotice } from "./private-output";
 import { RadioCard, Row } from "./ui";
 import { nowMs, submitFailureText, useJobSubmit } from "./use-job-submit";
@@ -125,7 +126,7 @@ export function Playground({ rateLimit }: { rateLimit: number | null }) {
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
 
-  const { acct, paidOn, weiPerUnit, stage, busy, submit } = useJobSubmit();
+  const { acct, paidOn, weiPerUnit, stage, busy, submit, route, asset, setAsset, spareChoice } = useJobSubmit();
   const [pay, setPay] = useState<"free" | "paid">(paidOn && rateLimit === 0 ? "paid" : "free");
   const paid = paidOn && pay === "paid";
   const closed = rateLimit === 0 && !paid;
@@ -200,7 +201,9 @@ export function Playground({ rateLimit }: { rateLimit: number | null }) {
 
   const quote = paidOn ? quoteJob(requestOf(draft), weiPerUnit) : null;
   const againQuote = paidOn && againDraft ? quoteJob(requestOf(againDraft), weiPerUnit) : null;
-  const available = acct?.account ? BigInt(acct.account.available) : null;
+  // The balance this job would be paid from (V1 only: the V1 balance; with V2: see payRoute).
+  const payFrom = paidOn ? route(quote?.wei ?? null) : null;
+  const available = payFrom ? payFrom.available : acct?.account ? BigInt(acct.account.available) : null;
   const short = paid && quote !== null && available !== null && available < quote.wei;
   const cantPay = paid && (!acct?.isConnected || !quote || short);
   const cap = capOf(kind);
@@ -608,7 +611,7 @@ export function Playground({ rateLimit }: { rateLimit: number | null }) {
                     {!acct?.isConnected ? (
                       <span className="text-muted">Connect a wallet</span>
                     ) : acct.account ? (
-                      <Eth wei={acct.account.available} />
+                      <Eth wei={available ?? acct.account.available} />
                     ) : acct.failure ? (
                       <span className="text-muted">{accountFailureText(acct.failure).title}</span>
                     ) : (
@@ -616,6 +619,7 @@ export function Playground({ rateLimit }: { rateLimit: number | null }) {
                     )}
                   </Row>
                 </dl>
+                <PayFrom name="pg-pay-asset" v2={acct?.account?.v2} route={payFrom} priceWei={quote?.wei ?? null} asset={asset} setAsset={setAsset} spareChoice={spareChoice} />
                 <div className="space-y-3 border-t border-line px-5 py-3.5 text-xs leading-relaxed text-muted">
                   {!acct?.isConnected ? (
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

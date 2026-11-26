@@ -54,6 +54,12 @@ export const config = {
 
   // Paid jobs (SparecycleJobPayments). Unset address = free jobs only.
   jobPayments: addr(process.env.NEXT_PUBLIC_JOB_PAYMENTS_ADDRESS),
+  /**
+   * SparecycleJobPaymentsV2, only while the scheduler runs it (TOKEN_PAYMENTS_V2=on with TOKEN_JOB_PAYMENTS_V2_ADDRESS;
+   * next.config.ts sets this public copy from them at build time). Null otherwise: the dapp behaves as before V2.
+   * The browser's receipt check uses it to accept version 2 receipts charged on V2.
+   */
+  jobPaymentsV2: addr(process.env.NEXT_PUBLIC_JOB_PAYMENTS_V2_ADDRESS),
   /** Price of one work unit, wei. 0.5 gwei when unset. */
   jobPriceWeiPerUnit: /^\d{1,30}$/.test((process.env.NEXT_PUBLIC_JOB_PRICE_WEI_PER_UNIT ?? "").trim())
     ? BigInt(process.env.NEXT_PUBLIC_JOB_PRICE_WEI_PER_UNIT!.trim())

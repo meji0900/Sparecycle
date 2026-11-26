@@ -84,7 +84,7 @@ contract SparecycleJobPaymentsV2 is ReentrancyGuard, ISparePriceSource {
     uint64 public constant SPLIT_CHANGE_DELAY_EPOCHS = 4;
     /// @notice N2: discount on the ETH price for SPARE-paid jobs, in bps: 0 (no discount). Decided by the owner on
     ///         26-27 Nov 2026. The Pons hook takes 2.90% of every swap's output (docs/uniswap-v4-adapter.md), so a SPARE
-    ///         job's sale returns about 97% of its ETH price: at 0% discount (and burner part 0) the slippage floor
+    ///         job's sale brings in about 97% of its ETH price: at 0% discount (and burner part 0) the slippage floor
     ///         alone (100% - DEFAULT_MAX_SWAP_SLIPPAGE_BPS = 96%) is above the node pot's 95%, so the pot gets its full
     ///         95% without the discount reserve or any other subsidy. The reserve mechanism stays for later use.
     ///         N2b (share of the SPARE received that is burned) has no number of its own: it is the burner part of

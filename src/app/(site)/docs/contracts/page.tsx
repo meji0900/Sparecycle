@@ -3,7 +3,8 @@ import Link from "next/link";
 import { AddressTable } from "@/components/docs/address-table";
 import { C, DocsHeader, DocsNext, DocsSection, Ext, Note } from "@/components/docs/docs-ui";
 import { CodeBlock } from "@/components/ui/code-block";
-import { ADDR, ADDRESS_ROWS, MAINNET_CHAIN_ID, TESTNET_CHAIN_ID, explorerAddressUrl } from "@/lib/addresses";
+import { ADDR, ADDRESS_ROWS, MAINNET_CHAIN_ID, TESTNET_CHAIN_ID, TOKEN_CONTRACTS, explorerAddressUrl } from "@/lib/addresses";
+import { serverEnv } from "@/server/env";
 
 export const metadata: Metadata = {
   title: "Contracts and keys",
@@ -19,6 +20,8 @@ export default function ContractsPage() {
   const keys = mainnet.filter((r) => r.kind === "key");
   const pons = mainnet.filter((r) => r.by === "pons");
   const testnet = ADDRESS_ROWS.filter((r) => r.network === "testnet");
+  // SparecycleJobPaymentsV2 (TOKEN_PAYMENTS_V2): who controls what, once the scheduler runs it.
+  const v2 = serverEnv.tokenPaymentsV2() ? TOKEN_CONTRACTS.jobPaymentsV2 : null;
 
   return (
     <>
@@ -42,6 +45,17 @@ export default function ContractsPage() {
             <Link href="/legal/disclosures" className="link">disclosures</Link>.
           </p>
         </Note>
+        {v2 ? (
+          <Note title="SparecycleJobPaymentsV2">
+            <p>
+              <Ext href={explorerAddressUrl(v2)}>SparecycleJobPaymentsV2</Ext> also has no owner who can move a customer&apos;s balance:
+              only the customer withdraws deposits and SPARE, and credits never leave except to pay for jobs. The treasury Safe sets
+              the split of the 5% (a change applies at least 4 epochs later), the SPARE reference price, the price band, the swap
+              slippage, the SPARE cap and the discount reserve. Only the reward contract&apos;s scheduler can charge, and only for the
+              open epoch. See <Link href="/docs/billing#v2" className="link">Billing</Link>.
+            </p>
+          </Note>
+        ) : null}
       </DocsSection>
 
       <DocsSection id="keys" title="Keys (not contracts)">
