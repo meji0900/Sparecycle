@@ -54,6 +54,9 @@ export async function setupAgentApi() {
       disableAll: await import("@/app/api/v1/keys/disable-all/route"),
       jobs: await import("@/app/api/v1/jobs/route"),
       result: await import("@/app/api/v1/jobs/[id]/result/route"),
+      receipt: await import("@/app/api/v1/jobs/[id]/receipt/route"),
+      job: await import("@/app/api/v1/jobs/[id]/route"),
+      catalog: await import("@/app/api/v1/catalog/route"),
       nonce: await import("@/app/api/v1/auth/nonce/route"),
       verify: await import("@/app/api/v1/auth/verify/route"),
       chat: await import("@/app/api/v1/chat/completions/route"),
@@ -172,6 +175,26 @@ export async function setupAgentApi() {
     return (await work(nodeB, b)).status;
   }
 
+  /**
+   * Forced-mismatch hook: runs the current round of job `id` on two given nodes. Different outputs disagree, so a paid job
+   * moves on to another pair (re-check rounds); the result of the second node is returned (its status and round).
+   */
+  async function runOn(id: string, x: LocalAccount, y: LocalAccount, a: { text?: string; shade?: number; nsfw?: boolean } = {}, b = a) {
+    only(id);
+    await work(x, a);
+    return work(y, b);
+  }
+
+  /** The owner wallet a node key was registered with. */
+  const ownerOf = (node: LocalAccount) => (m.db.getDb().prepare("SELECT owner FROM nodes WHERE node_key = ?").get(node.address) as { owner: Address }).owner;
+
+  /** Marks nodes online (polled just now) or offline (last seen long ago). */
+  const setOnline = (online: LocalAccount[], offline: LocalAccount[] = []) => {
+    const up = m.db.getDb().prepare("UPDATE nodes SET last_seen = ? WHERE node_key = ?");
+    for (const n of online) up.run(m.db.nowSec(), n.address);
+    for (const n of offline) up.run(0, n.address);
+  };
+
   // ---- HTTP helpers ---------------------------------------------------------------------------------------------
   let ipSeq = 0;
   const nextIp = () => `10.9.${Math.floor(++ipSeq / 250)}.${ipSeq % 250}`;
@@ -241,5 +264,5 @@ export async function setupAgentApi() {
     rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   };
 
-  return { m, chain, logs, nodeA, nodeB, work, run, only, lastRound, req, ctx, bearer, json, assertPrivate, signIn, makeKey, customer, cleanup, payments, png };
+  return { m, chain, logs, nodeA, nodeB, mkNode, work, run, runOn, ownerOf, setOnline, only, lastRound, req, ctx, bearer, json, assertPrivate, signIn, makeKey, customer, cleanup, payments, png };
 }

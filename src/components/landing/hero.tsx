@@ -170,8 +170,11 @@ export function Hero() {
             </div>
 
             <p className="mt-5 text-sm text-muted">
-              Try it free: 5 images an hour, no wallet needed. Models today: Stable Diffusion 1.5 for images and
-              Qwen2.5-1.5B for text.
+              Try it free: 5 images an hour, no wallet needed.{" "}
+              <Link href="/models" className="link">
+                Models today: Stable Diffusion 1.5 for images and Qwen2.5-1.5B for text
+              </Link>
+              .
             </p>
             <p className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
               <Link href="/proof" className="link">

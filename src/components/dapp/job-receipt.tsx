@@ -196,7 +196,7 @@ export function ReceiptVerifier({ receipt, className }: { receipt: unknown; clas
   return (
     <div className={cn("space-y-3", className)}>
       <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" size="sm" variant="secondary" onClick={() => void run()} disabled={busy}>
+        <Button type="button" size="sm" variant="secondary" onClick={() => void run()} disabled={busy} data-verify>
           {busy ? "Checking…" : "Verify in this browser"}
         </Button>
         <span className="text-xs text-muted">

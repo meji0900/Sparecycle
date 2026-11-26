@@ -85,20 +85,23 @@ export default function McpDocs() {
                 <C>negative_prompt</C>, <C>steps</C>, <C>guidance</C>, <C>seed</C>
               </>,
               <>
-                <C>job_id</C>, <C>status</C> (queued), <C>price_wei</C>
+                <C>job_id</C>, <C>status</C> (queued), <C>price_wei</C>, <C>receipt_url</C>
               </>,
             ],
             [
               <C key="t">get_job_status</C>,
               <C key="i">job_id</C>,
               <>
-                <C>status</C>, <C>settled_at</C>, <C>charge_status</C>, <C>price_wei</C> (this key&apos;s jobs only)
+                <C>status</C>, <C>settled_at</C>, <C>charge_status</C>, <C>price_wei</C>, <C>receipt_url</C> (this key&apos;s jobs only)
               </>,
             ],
             [
               <C key="t">get_job_result</C>,
               <C key="i">job_id</C>,
-              "text content, or image content (PNG, base64); before agreement, a note that it is not ready",
+              <>
+                text content, or image content (PNG, base64), then a second text block{" "}
+                <C>{`{ "sparecycle": { "job_id", "status", "receipt_url" } }`}</C>; before agreement, a note that it is not ready
+              </>,
             ],
             [
               <C key="t">get_balance</C>,
@@ -118,6 +121,14 @@ export default function McpDocs() {
           </Link>
           .
         </p>
+        <p>
+          <C>receipt_url</C> is the job&apos;s receipt (<C>GET /api/v1/jobs/&lt;job_id&gt;/receipt</C>, read with the same key): both nodes&apos; signed
+          results, and once the epoch&apos;s charge is on-chain, the proof that ties the job to that charge. See{" "}
+          <Link href="/docs/billing" className="link">
+            Billing
+          </Link>
+          .
+        </p>
       </DocSection>
 
       <DocSection id="errors" title="Errors">
@@ -125,7 +136,12 @@ export default function McpDocs() {
           Problems with a job are tool errors (<C>isError: true</C>) whose text is JSON: <C>{`{ "error": { "code", "type", "message" } }`}</C>, with the same
           codes as the OpenAI-compatible API. A job the two nodes did not agree on comes back from <C>get_job_result</C> as <C>results_did_not_match</C>,{" "}
           <C>job_expired</C> or <C>content_rejected</C> with type <C>not_charged</C>: nothing was charged for it. Another key&apos;s job is{" "}
-          <C>forbidden</C>; a job over the key&apos;s cap for today is <C>key_daily_cap_reached</C>.
+          <C>forbidden</C>; a job over the key&apos;s cap for today is <C>key_daily_cap_reached</C>. When no two nodes with different owners can take the
+          model now, <C>submit_job</C> fails with <C>no_node_pair</C> and nothing is queued, held or charged; try again later (
+          <Link href="/models" className="link">
+            Models
+          </Link>{" "}
+          shows live capacity).
         </p>
         <p>
           A missing or bad key is an HTTP <C>401</C> with a JSON-RPC error. An unknown tool is JSON-RPC error <C>-32602</C>; the protocol&apos;s own errors

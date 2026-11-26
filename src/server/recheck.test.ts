@@ -610,8 +610,10 @@ describe("a round with a first lease but no verdict", () => {
   });
 
   test("a round that never got a lease uses up nothing: the job waits, then expires at the TTL", async () => {
+    await nodes(2); // a pair online when the job is created (the capacity guard of ./capacity), then gone
     const payer = newPayer();
     const j = await submitPaid(payer, textRequest("no pair online"));
+    onlyOnline();
     advance(5 * 3600); // no compatible pair online for 5 hours
     expireStaleJobs();
     assert.equal(job(j.id).round, 0);

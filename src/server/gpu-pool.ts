@@ -12,6 +12,9 @@
 //                           start needs only the other owner's machine). They still count for their group when the
 //                           pool starts; a declined or failed start of one is never cancelled. Must also be listed in
 //                           GPU_POOL_INSTANCE_IDS.
+//   GPU_POOL_GROUP_OWNERS   "a:0x…,b:0x…": optional, the owner wallet of each group. A group whose owner already has a
+//                           node online that can take the waiting jobs is not started again, so a start wakes only the
+//                           machines of the MISSING owner group (without it, only an always-on machine covers a group).
 //   GPU_POOL_IDLE_MINUTES   default 10
 //   VAST_API_URL            default https://console.vast.ai (tests point it at a mock)
 //
@@ -22,8 +25,12 @@
 //
 // The pool nodes' owner wallets belong in PROJECT_NODE_OWNERS: they never get a payout (see payouts.ts) and the
 // status page marks them as run by Sparecycle. Without VAST_API_KEY and GPU_POOL_INSTANCE_IDS this module is idle.
+//
+// The capacity guard of job creation (./capacity) asks poolStartInfo() whether the pool can still bring a pair up: while
+// the pool backs off and no pair is online, a new job is refused with 503 no-node-pair instead of waiting in the queue.
+import { MODELS, type ModelId } from "@/lib/protocol";
+import { pairOnline, readyOwners, type PoolStart } from "./capacity";
 import { getDb, nowSec } from "./db";
-import { POLICY } from "./env";
 
 type PoolState = "unknown" | "starting" | "running" | "stopping" | "stopped";
 type Pool = {
@@ -61,6 +68,15 @@ export const poolEnv = {
       .filter((m): m is RegExpExecArray => m !== null)
       .map((m) => ({ id: m[1], group: m[2] ?? `#${m[1]}` })),
   instanceIds: () => poolEnv.instances().map((i) => i.id),
+  /** Owner wallet (lowercase) of each owner group, from GPU_POOL_GROUP_OWNERS ("group:0xwallet,…"). */
+  groupOwners: () =>
+    new Map(
+      (str(process.env.GPU_POOL_GROUP_OWNERS) ?? "")
+        .split(",")
+        .map((s) => /^\s*([A-Za-z0-9_#-]+)\s*:\s*(0x[0-9a-fA-F]{40})\s*$/.exec(s))
+        .filter((m): m is RegExpExecArray => m !== null)
+        .map((m) => [m[1], m[2].toLowerCase()] as const),
+    ),
   /** Pool machines that are started like the others but never stopped (GPU_POOL_ALWAYS_ON). */
   alwaysOn: () =>
     new Set(
@@ -104,30 +120,39 @@ async function actualStatus(id: string): Promise<string | null> {
   return body.instances?.actual_status ?? null;
 }
 
-/** Open jobs, and distinct online owners whose nodes can take each open model. */
+/**
+ * Open jobs, and the models of open jobs that no pair of nodes online can take (./capacity pairOnline: different owners
+ * and GPUs on the same backend, not paused, past the GPU gate).
+ */
 function demand() {
-  const db = getDb();
-  const open = db.prepare("SELECT model, COUNT(*) AS n FROM jobs WHERE status IN ('queued','running','checking') GROUP BY model").all() as {
+  const open = getDb().prepare("SELECT model, COUNT(*) AS n FROM jobs WHERE status IN ('queued','running','checking') GROUP BY model").all() as {
     model: string;
     n: number;
   }[];
-  const since = nowSec() - POLICY.onlineWindowSeconds;
-  const nodes = db.prepare("SELECT owner, caps FROM nodes WHERE last_seen >= ?").all(since) as { owner: string; caps: string }[];
-  const tagOf: Record<string, string> = { sd15: "image:sd15", "qwen2.5-1.5b": "text:qwen2.5-1.5b" };
-  const short = open.filter((o) => {
-    const owners = new Set(nodes.filter((n) => (JSON.parse(n.caps) as string[]).includes(tagOf[o.model] ?? "")).map((n) => n.owner.toLowerCase()));
-    return owners.size < 2;
-  });
-  return { openJobs: open.reduce((s, o) => s + o.n, 0), uncovered: short.length > 0 };
+  const uncovered = open.filter((o) => o.model in MODELS && !pairOnline(o.model as ModelId)).map((o) => o.model as ModelId);
+  return { openJobs: open.reduce((s, o) => s + o.n, 0), uncovered };
 }
 
-async function startAll(now: number) {
+/**
+ * Owner groups that are already present: their owner wallet (GPU_POOL_GROUP_OWNERS) has a node online that can take a job
+ * of every uncovered model. Their machines need no start, so the pool wakes only the missing groups.
+ */
+function groupsOnline(uncovered: ModelId[]): Set<string> {
+  const owners = poolEnv.groupOwners();
+  if (!owners.size || !uncovered.length) return new Set();
+  const ready = uncovered.map((m) => readyOwners(m));
+  return new Set([...owners].filter(([, owner]) => ready.every((set) => set.has(owner))).map(([group]) => group));
+}
+
+async function startAll(now: number, uncovered: ModelId[]) {
   const p = pool();
   p.state = "starting";
   p.lastStartAt = now;
   try {
     const all = poolEnv.instances();
     const keep = poolEnv.alwaysOn();
+    // Owner groups whose owner already has a node online for the waiting jobs (GPU_POOL_GROUP_OWNERS).
+    const present = groupsOnline(uncovered);
     // Always-on machines first: one that is already up counts even if Vast declines a repeated start.
     const first = await Promise.all(
       all
@@ -138,8 +163,9 @@ async function startAll(now: number) {
           return { ...i, ok };
         }),
     );
-    // An owner group with an always-on machine up needs no spare started.
-    const covered = new Set(first.filter((r) => r.ok).map((r) => r.group));
+    // An owner group with an always-on machine up, or whose owner is already online, needs no spare started: only the
+    // machines of the missing owner groups are woken.
+    const covered = new Set([...first.filter((r) => r.ok).map((r) => r.group), ...present]);
     const rest = await Promise.all(
       all
         .filter((i) => !keep.has(i.id) && !covered.has(i.group))
@@ -149,7 +175,7 @@ async function startAll(now: number) {
     const declined = results.filter((r) => !r.ok);
     // Cancel declined starts now, or Vast would bring them up later, outside the pool's watch (never an always-on one).
     await Promise.all(declined.filter((r) => !keep.has(r.id)).map((r) => setState(r.id, "stopped").catch(() => false)));
-    const groupsUp = new Set(results.filter((r) => r.ok).map((r) => r.group));
+    const groupsUp = new Set([...results.filter((r) => r.ok).map((r) => r.group), ...present]);
     if (groupsUp.size < 2 && new Set(all.map((i) => i.group)).size >= 2) {
       // One owner alone cannot run a job: stop what did start (except always-on machines) and try again later.
       await Promise.all(
@@ -211,9 +237,9 @@ export async function poolTick(now = nowSec()) {
     if (d.openJobs > 0) p.lastActivityAt = now;
     const recentlyStarted = p.lastStartAt !== null && now - p.lastStartAt < START_RETRY_SECONDS;
     const backingOff = p.backoffUntil !== null && now < p.backoffUntil;
-    if (d.uncovered && !recentlyStarted && !backingOff && p.state !== "starting") {
+    if (d.uncovered.length && !recentlyStarted && !backingOff && p.state !== "starting") {
       // Also covers a running pool whose nodes went missing (e.g. Vast stopped a container): ask again.
-      await startAll(now);
+      await startAll(now, d.uncovered);
     } else if (d.openJobs === 0 && p.state !== "stopped" && now - p.lastActivityAt >= poolEnv.idleSeconds()) {
       await stopAll(now);
     }
@@ -235,6 +261,23 @@ export function startPoolTimer() {
   g.__sparecyclePoolTimer.unref?.();
   console.log(`[sparecycle] GPU pool on: ${poolEnv.instanceIds().length} instance(s), stop after ${Math.round(poolEnv.idleSeconds() / 60)} min idle`);
   poolNudge();
+}
+
+/**
+ * Can the pool bring machines up now? For the capacity guard and the catalog (./capacity): configured and not backing
+ * off after a start where fewer than two owner groups came up. No IDs, no key.
+ */
+export function poolStartInfo(now = nowSec()): PoolStart {
+  if (!poolConfigured()) return { configured: false, canStart: false, groups: 0, instances: 0, retryAfter: null };
+  const p = pool();
+  const backingOff = p.backoffUntil !== null && now < p.backoffUntil;
+  return {
+    configured: true,
+    canStart: !backingOff,
+    groups: new Set(poolEnv.instances().map((i) => i.group)).size,
+    instances: poolEnv.instanceIds().length,
+    retryAfter: backingOff && p.backoffUntil !== null ? p.backoffUntil - now : null,
+  };
 }
 
 /** For /api/v1/status: no IDs, no key. */

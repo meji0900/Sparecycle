@@ -40,6 +40,11 @@ export function DocsSidebar() {
         <p className="px-3 text-xs text-faint">More</p>
         <ul className="mt-1.5 space-y-0.5 text-sm">
           <li>
+            <Link href={DOCS_LINKS.models} className="block rounded-m px-3 py-1.5 text-muted hover:text-text">
+              Models and prices
+            </Link>
+          </li>
+          <li>
             <Link href={DOCS_LINKS.changelog} className="block rounded-m px-3 py-1.5 text-muted hover:text-text">
               Changelog
             </Link>

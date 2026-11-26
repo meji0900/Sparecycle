@@ -55,6 +55,7 @@ export function SiteFooter() {
             <Link href="/app/claim" className="text-muted hover:text-text">Claim</Link>
             <Link href="/nodes" className="text-muted hover:text-text">Install guide</Link>
             <Link href="/jobs" className="text-muted hover:text-text">Submit a job</Link>
+            <Link href={DOCS_LINKS.models} className="text-muted hover:text-text">Models and prices</Link>
             <Link href="/token" className="text-muted hover:text-text">Token facts</Link>
             <Link href="/proof" className="text-muted hover:text-text">Mainnet proof</Link>
           </div>

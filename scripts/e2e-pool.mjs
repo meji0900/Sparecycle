@@ -216,6 +216,54 @@ try {
     c.some((x) => x.id === "11" && x.state === "stopped") && !c.some((x) => x.id === "44" && x.state === "stopped") && status[44] === "running",
     JSON.stringify(c),
   );
+
+  // ---- the capacity guard of job creation (src/server/capacity.ts) and the pool ----
+  const { modelCapacity } = await srcImport("server/capacity.ts");
+  const { poolStartInfo } = await srcImport("server/gpu-pool.ts");
+  const jobsNow = () => db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n;
+  const tryJob = async (prompt) => {
+    try {
+      return { ok: true, job: await submitJob({ kind: "text", params: { model: "qwen2.5-1.5b", prompt, maxTokens: 16 } }, "127.0.0.2") };
+    } catch (e) {
+      return { ok: false, e };
+    }
+  };
+  // The pool backs off (owner A's host was busy) and no pool node is online: no pair can be reached.
+  const n0 = jobsNow();
+  const refused = await tryJob("while the pool backs off");
+  check(
+    "while the pool backs off and no pair is online: 503 no-node-pair with retryAfter, nothing queued",
+    !refused.ok && refused.e.status === 503 && refused.e.code === "no-node-pair" && refused.e.extra?.retryAfter > 0 && jobsNow() === n0,
+    refused.ok ? "accepted" : `${refused.e.code} ${JSON.stringify(refused.e.extra)}`,
+  );
+  check("the catalog capacity says so too (pair null, retryAfter)", modelCapacity(poolStartInfo()).sd15.pair === null && poolStartInfo().canStart === false);
+  // The back-off is over: the stopped machines of owners A and B (registered, offline, project-run) can be started.
+  globalThis.__sparecyclePool.backoffUntil = null;
+  const cap = modelCapacity(poolStartInfo());
+  check("pool can start: pair reachable through the pool for both models", cap.sd15.pair === "pool" && cap["qwen2.5-1.5b"].pair === "pool", JSON.stringify(cap));
+  const accepted = await tryJob("the pool brings a pair up");
+  check("so the job is accepted and queued", accepted.ok && jobsNow() === n0 + 1, accepted.ok ? accepted.job.id : accepted.e.code);
+  // Let the nudge of that submit run out before the next scripted tick.
+  await waitFor(() => !globalThis.__sparecyclePool.ticking);
+
+  // ---- GPU_POOL_GROUP_OWNERS: a group whose owner is already online is not started; only the missing group is woken ----
+  delete process.env.GPU_POOL_ALWAYS_ON;
+  process.env.GPU_POOL_INSTANCE_IDS = "11:a,22:b,33:b";
+  process.env.GPU_POOL_GROUP_OWNERS = `a:${ownerA},b:${ownerB}`;
+  busy.clear();
+  db.prepare("UPDATE nodes SET last_seen = ? WHERE owner = ?").run(nowSec(), ownerA); // owner A's node is online
+  globalThis.__sparecyclePool.state = "stopped";
+  globalThis.__sparecyclePool.backoffUntil = null;
+  const tD = tC + 60 + 6 * 60 + 15 * 60 + 2 * 60;
+  mark = calls.length;
+  await poolTick(tD);
+  c = since(mark);
+  check(
+    "owner A online: only owner B's machines are started (22, 33), not owner A's (11)",
+    c.some((x) => x.id === "22" && x.state === "running") && c.some((x) => x.id === "33" && x.state === "running") && !c.some((x) => x.id === "11") &&
+      poolStatus().state === "running",
+    JSON.stringify(c),
+  );
 } finally {
   server.close();
   try {
