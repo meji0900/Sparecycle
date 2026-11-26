@@ -122,10 +122,21 @@ describe("token-feature addresses can be set by env (server start or build)", ()
     };
   };
 
-  test("unset: every value is null (not live), except NodeStake, deployed 26 Nov 2026 (ADDR.nodeStake)", () => {
+  test("unset: every value is null (not live), except NodeStake, deployed 26 Nov 2026 (ADDR.nodeStake), and the Uniswap v4 values verified 27 Nov 2026", () => {
     const r = load({});
     assert.deepEqual(r.c, { nodeStake: "0x6565874F5c281c618DcFb5DF52c7E554ae8a866B", holderPool: null, burner: null, jobPaymentsV2: null });
     assert.equal(r.s, null);
+    assert.equal(r.u.poolManager, "0x8366a39CC670B4001A1121B8F6A443A643e40951");
+    assert.equal(r.u.stateView, "0xF3334192D15450CdD385c8B70e03f9A6bD9E673b");
+    assert.equal(r.u.universalRouter, "0x204FAca1764B154221e35c0d20aBb3c525710498");
+    assert.deepEqual(r.u.spareEthPoolKey, {
+      currency0: "0x0000000000000000000000000000000000000000",
+      currency1: "0x012D695B94377E0c7b9EdEE3d824259BaA37cf3A",
+      fee: 0,
+      tickSpacing: 200,
+      hooks: "0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044",
+    });
+    assert.ok(r.x.includes("0x8366a39CC670B4001A1121B8F6A443A643e40951"), "the PoolManager is on the exclusion list");
   });
 
   test("set: checksummed, the pool key built for native ETH / SPARE, the stake contract excluded from holder weights; malformed values ignored", () => {

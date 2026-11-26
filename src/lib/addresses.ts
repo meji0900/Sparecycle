@@ -388,10 +388,53 @@ function poolKeyFromEnv(): V4PoolKey | null {
 }
 
 /**
- * Uniswap v4 on Robinhood Chain, as the burn path (phase 2a) needs it. None of these is recorded and checked yet, so
- * all are null and no burn payload can be completed. `spareEthPoolId` is the SPARE/ETH v4 pool id as DexScreener
- * listed it on 26 Nov 2026 (third-party, not read on-chain): a pool key filled in later must hash to it
- * (src/server/burns.ts checks this) or no payload is prepared.
+ * Uniswap v4 on Robinhood Chain (4663), verified 27 Nov 2026 (evidence in docs/uniswap-v4-adapter.md):
+ * - The three contracts are Uniswap's own: each is listed under "Robinhood Chain: 4663" on
+ *   developers.uniswap.org/docs/protocols/v4/deployments and in github.com/Uniswap/contracts deployments/4663.json,
+ *   has code on-chain and is verified on Sourcify (match). StateView.poolManager() returns the PoolManager.
+ * - The pool key is read from the PoolManager's Initialize event for the pool id (block 123,451,046, tx
+ *   0x8d9b666219ad3fcf09127b8115ae5b398fd16d296a6ab7cad1dc0c7db85274b5): native ETH / SPARE, fee 0, tick spacing 200,
+ *   hooks = the Pons v2 meme hook (PONS.memeHook). keccak256(abi.encode(key)) equals `spareEthPoolId`, the id
+ *   DexScreener also lists. The hook takes 2.90% of every swap's output (100 bps hook fee + 190 bps creator tax,
+ *   frozen for this pool when Pons registered it), so a quote that ignores the hook is 2.90% too high.
+ * Each value can still be overridden by its TOKEN_V4_* environment variable.
+ */
+export const UNISWAP_V4_DEFAULTS = {
+  /** PoolManager (v4-core). Holds every v4 pool's tokens. */
+  poolManager: "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+  /** StateView (v4-periphery lens over the PoolManager's storage). */
+  stateView: "0xF3334192D15450CdD385c8B70e03f9A6bD9E673b",
+  /**
+   * Universal Router 2.1.2, `latest.UniversalRouter` in deployments/4663.json (the docs also list an earlier router,
+   * 0x8876789976dEcBfCbBbe364623C63652db8C0904). Both decode v4 ExactInputSingleParams with minHopPriceX36 (Sourcify
+   * source); src/server/burns.ts encodes that layout, and a fork test ran that payload on both routers.
+   */
+  universalRouter: "0x204FAca1764B154221e35c0d20aBb3c525710498",
+  /** The SPARE/ETH pool key, from the Initialize event (see above). */
+  spareEthPoolKey: {
+    currency0: "0x0000000000000000000000000000000000000000",
+    currency1: ADDR.spareToken,
+    fee: 0,
+    tickSpacing: 200,
+    hooks: PONS.memeHook,
+  },
+  /**
+   * The Pons hook's cut of every swap's output on this pool, in bps: hookFeeBps 100 + creatorTaxBps 190, read from the
+   * hook's launches(poolId) (fixed at registration; no setter changes them).
+   */
+  spareEthPoolHookCutBps: 290,
+} as const satisfies {
+  poolManager: Address;
+  stateView: Address;
+  universalRouter: Address;
+  spareEthPoolKey: V4PoolKey;
+  spareEthPoolHookCutBps: number;
+};
+
+/**
+ * Uniswap v4 on Robinhood Chain, as the burn path (phase 2a) and the swap adapter need it: the verified defaults above,
+ * each overridable by env. `spareEthPoolId` is the SPARE/ETH pool id (PoolManager Initialize event); a pool key set by
+ * env must hash to it (src/server/burns.ts checks this) or no payload is prepared.
  */
 export const UNISWAP_V4: {
   poolManager: Address | null;
@@ -399,12 +442,15 @@ export const UNISWAP_V4: {
   universalRouter: Address | null;
   spareEthPoolId: Hex;
   spareEthPoolKey: V4PoolKey | null;
+  /** The hook's cut of each swap's output (bps); quotes for this pool must take it off. */
+  spareEthPoolHookCutBps: number;
 } = {
-  poolManager: tokenEnvAddress("TOKEN_V4_POOL_MANAGER_ADDRESS"),
-  stateView: tokenEnvAddress("TOKEN_V4_STATE_VIEW_ADDRESS"),
-  universalRouter: tokenEnvAddress("TOKEN_V4_UNIVERSAL_ROUTER_ADDRESS"),
+  poolManager: tokenEnvAddress("TOKEN_V4_POOL_MANAGER_ADDRESS") ?? UNISWAP_V4_DEFAULTS.poolManager,
+  stateView: tokenEnvAddress("TOKEN_V4_STATE_VIEW_ADDRESS") ?? UNISWAP_V4_DEFAULTS.stateView,
+  universalRouter: tokenEnvAddress("TOKEN_V4_UNIVERSAL_ROUTER_ADDRESS") ?? UNISWAP_V4_DEFAULTS.universalRouter,
   spareEthPoolId: "0x6c779d26cc59abb9f22d348257ee013b66d2a5f0d9dcf1bb9fa9338874eab1bd",
-  spareEthPoolKey: poolKeyFromEnv(),
+  spareEthPoolKey: poolKeyFromEnv() ?? { ...UNISWAP_V4_DEFAULTS.spareEthPoolKey },
+  spareEthPoolHookCutBps: UNISWAP_V4_DEFAULTS.spareEthPoolHookCutBps,
 };
 
 /**

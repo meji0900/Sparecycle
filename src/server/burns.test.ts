@@ -28,15 +28,18 @@ const Q96 = 1n << 96n;
 const POOL = { sqrtPriceX96: 2000n * Q96, liquidity: 9_180n * 10n ** 18n, lpFee: 3000, block: 123n };
 
 describe("the math", () => {
-  test("reserves, cap (1% of the ETH side), quote and minOut (2% under the quote)", () => {
+  test("reserves, cap (1% of the ETH side), quote (net of the hook's 2.90% output cut) and minOut (2% under the quote)", () => {
     const r = B.reservesOf(POOL);
     assert.equal(r.eth, parseEther("4.59"));
     assert.equal(r.spare, 18_360_000n * 10n ** 18n);
     assert.equal(B.burnCapOf(POOL), parseEther("0.0459"));
     const amountIn = parseEther("0.0459");
     const inAfterFee = (amountIn * 997_000n) / 1_000_000n;
-    const quote = (r.spare * inAfterFee) / (r.eth + inAfterFee);
+    const gross = (r.spare * inAfterFee) / (r.eth + inAfterFee);
+    assert.equal(UNISWAP_V4.spareEthPoolHookCutBps, 290, "Pons hook: 100 bps fee + 190 bps creator tax on the output");
+    const quote = gross - (gross * 290n) / 10_000n;
     assert.equal(B.quoteSpareOut(POOL, amountIn), quote);
+    assert.ok(B.minOutOf(quote) < gross - (gross * 290n) / 10_000n, "minOut sits under what the pool gives after the hook");
     assert.equal(B.minOutOf(quote), (quote * BigInt(10_000 - BURN_MAX_SLIPPAGE_BPS)) / 10_000n);
     assert.ok(quote < (amountIn * 4_000_000n), "price impact: less than the spot price gives");
   });
@@ -57,7 +60,7 @@ describe("the math", () => {
   });
 });
 
-// A pool key of our own (test values) and its id; the production key is null in src/lib/addresses.ts.
+// A pool key of our own (test values) and its id; the production key is UNISWAP_V4.spareEthPoolKey (src/lib/addresses.ts).
 const SPARE = ADDR.spareToken;
 const KEY = { currency0: BURN_SINKS.zero, currency1: SPARE, fee: 0x800000, tickSpacing: 200, hooks: getAddress("0x00000000000000000000000000000000000000cc") };
 const ROUTER = getAddress("0x00000000000000000000000000000000000000ee");
@@ -74,11 +77,11 @@ describe("the unsigned payload", () => {
     const [actions, params] = decodeAbiParameters([{ type: "bytes" }, { type: "bytes[]" }], inputs[0]);
     assert.equal(actions, `0x${[V4_ACTION.SWAP_EXACT_IN_SINGLE, V4_ACTION.SETTLE_ALL, V4_ACTION.TAKE].map((x) => x.toString(16).padStart(2, "0")).join("")}`);
     const [swap] = decodeAbiParameters(
-      [{ type: "tuple", components: [{ name: "poolKey", type: "tuple", components: [{ name: "currency0", type: "address" }, { name: "currency1", type: "address" }, { name: "fee", type: "uint24" }, { name: "tickSpacing", type: "int24" }, { name: "hooks", type: "address" }] }, { name: "zeroForOne", type: "bool" }, { name: "amountIn", type: "uint128" }, { name: "amountOutMinimum", type: "uint128" }, { name: "hookData", type: "bytes" }] }],
+      [{ type: "tuple", components: [{ name: "poolKey", type: "tuple", components: [{ name: "currency0", type: "address" }, { name: "currency1", type: "address" }, { name: "fee", type: "uint24" }, { name: "tickSpacing", type: "int24" }, { name: "hooks", type: "address" }] }, { name: "zeroForOne", type: "bool" }, { name: "amountIn", type: "uint128" }, { name: "amountOutMinimum", type: "uint128" }, { name: "minHopPriceX36", type: "uint256" }, { name: "hookData", type: "bytes" }] }],
       params[0],
     );
     assert.deepEqual(swap.poolKey, KEY);
-    assert.deepEqual([swap.zeroForOne, swap.amountIn, swap.amountOutMinimum, swap.hookData], [true, 7n, 5n, "0x"]);
+    assert.deepEqual([swap.zeroForOne, swap.amountIn, swap.amountOutMinimum, swap.minHopPriceX36, swap.hookData], [true, 7n, 5n, 0n, "0x"], "v4-periphery layout of the routers on chain 4663 (minHopPriceX36 0 = off)");
     assert.deepEqual(decodeAbiParameters([{ type: "address" }, { type: "uint256" }], params[1]), [BURN_SINKS.zero, 7n], "SETTLE_ALL native ETH, at most amountIn");
     assert.deepEqual(decodeAbiParameters([{ type: "address" }, { type: "address" }, { type: "uint256" }], params[2]), [SPARE, BURN_SINKS.dead, 0n], "TAKE all SPARE to dead");
   });
@@ -122,10 +125,14 @@ describe("plans per charged epoch (scratch DB, chain stubbed)", () => {
     mock.method(tokenChain, "burnTxContext", async () => ({ to: ADDR.treasurySafe, input: "0x" as Hex, safeExecution: null, ethIn: null, time: 0 }));
   });
 
-  test("today (no StateView, no router, no pool key): incomplete, nothing bought, the whole share carried over", async () => {
+  test("burn path not recorded (no StateView, no router, no pool key): incomplete, nothing bought, the whole share carried over", async () => {
     charge(1, parseEther("0.1"));
     charge(2, parseEther("0.2"), "sending"); // not confirmed: not planned
-    const line = await B.prepareBurns();
+    // The v4 values are recorded in src/lib/addresses.ts since 27 Nov 2026; this is the path for when they are not.
+    mock.method(tokenChain, "poolState", async () => {
+      throw new m.chainIo.NotLiveError("Uniswap v4 StateView");
+    });
+    const line = await B.prepareBurns({ ...B.defaultBurnInfra(), router: null, poolKey: null });
     assert.match(line, /epoch 1: incomplete/);
     const p = plan(1);
     assert.equal(p.status, "incomplete");
@@ -135,7 +142,7 @@ describe("plans per charged epoch (scratch DB, chain stubbed)", () => {
     assert.match(String(p.missing), /StateView/);
     assert.equal(p.safe_tx, null);
     assert.equal(plan(2), undefined, "an unconfirmed charge is not planned");
-    assert.match(await B.prepareBurns(), /no new charge/);
+    assert.match(await B.prepareBurns({ ...B.defaultBurnInfra(), router: null, poolKey: null }), /no new charge/);
   });
 
   test("with the burn path filled in: the cap binds, the plan is prepared and unsigned, the rest carries over", async () => {

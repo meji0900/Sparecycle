@@ -6,7 +6,7 @@
 //   due      = share + carry-in                                    (what earlier plans did not buy)
 //   cap      = 1% of the pool's quote-side (ETH) liquidity          (N12; virtual in-range reserve L / sqrtP at the read)
 //   buy      = min(due, cap); carry-out = due - buy                  (never buy at any price on a thin pool)
-//   minOut   = the constant-product quote of `buy` at the read, minus 2% (N12)
+//   minOut   = the constant-product quote of `buy` at the read, net of the pool hook's 2.90% output cut, minus 2% (N12)
 //   payload  = one SafeTx: Universal Router execute(V4_SWAP ETH -> SPARE, amountOutMinimum = minOut) with the bought SPARE
 //              taken straight to the dead address (BURN_METHOD "dead"), or paid to the Safe and then SPARE.burn()
 //              (BURN_METHOD "burn", batched through MultiSendCallOnly). Router deadline: BURN_PAYLOAD_TTL_SECONDS.
@@ -65,12 +65,17 @@ export function reservesOf(pool: Pick<PoolRead, "sqrtPriceX96" | "liquidity">): 
 export const burnCapOf = (pool: Pick<PoolRead, "sqrtPriceX96" | "liquidity">): bigint =>
   (reservesOf(pool).eth * BigInt(BURN_CAP_BPS_OF_QUOTE_LIQUIDITY)) / 10_000n;
 
-/** SPARE out for `amountIn` ETH, constant product on the in-range reserves after the LP fee (hundredths of a bip). */
+/**
+ * SPARE out for `amountIn` ETH: constant product on the in-range reserves after the LP fee (hundredths of a bip), less
+ * the pool hook's cut of the output (UNISWAP_V4.spareEthPoolHookCutBps: the Pons hook takes 2.90% of every swap's
+ * output in afterSwap; without it every minOut would sit above what the pool can give).
+ */
 export function quoteSpareOut(pool: Pick<PoolRead, "sqrtPriceX96" | "liquidity" | "lpFee">, amountIn: bigint): bigint {
   const { eth, spare } = reservesOf(pool);
   const inAfterFee = (amountIn * BigInt(1_000_000 - pool.lpFee)) / 1_000_000n;
   if (eth + inAfterFee === 0n) return 0n;
-  return (spare * inAfterFee) / (eth + inAfterFee);
+  const out = (spare * inAfterFee) / (eth + inAfterFee);
+  return out - (out * BigInt(UNISWAP_V4.spareEthPoolHookCutBps)) / 10_000n;
 }
 
 /** minOut = quote x (1 - BURN_MAX_SLIPPAGE_BPS). */
@@ -108,6 +113,9 @@ const exactInputSingle = [
       { name: "zeroForOne", type: "bool" },
       { name: "amountIn", type: "uint128" },
       { name: "amountOutMinimum", type: "uint128" },
+      // The routers on chain 4663 (v4-periphery after 4.0, Sourcify source) carry a per-hop price floor here; 0 = off
+      // (amountOutMinimum still applies). Without this field the router would read the payload shifted by a word.
+      { name: "minHopPriceX36", type: "uint256" },
       { name: "hookData", type: "bytes" },
     ],
   },
@@ -123,7 +131,7 @@ export function encodeBurnSwap(p: { poolKey: PoolKey; amountIn: bigint; minOut: 
     [V4_ACTION.SWAP_EXACT_IN_SINGLE, V4_ACTION.SETTLE_ALL, p.takeTo === "dead" ? V4_ACTION.TAKE : V4_ACTION.TAKE_ALL],
   );
   const swap = encodeAbiParameters(exactInputSingle, [
-    { poolKey: p.poolKey, zeroForOne: true, amountIn: p.amountIn, amountOutMinimum: p.minOut, hookData: "0x" },
+    { poolKey: p.poolKey, zeroForOne: true, amountIn: p.amountIn, amountOutMinimum: p.minOut, minHopPriceX36: 0n, hookData: "0x" },
   ]);
   const settle = encodeAbiParameters([{ type: "address" }, { type: "uint256" }], [p.poolKey.currency0, p.amountIn]);
   const take =

@@ -16,10 +16,9 @@ interface ISparecycleRewardsForV2 {
 /// @notice Swaps between native ETH and SPARE. The Uniswap v4 specifics (PoolManager unlock / swap / settle / take on
 ///         the SPARE/ETH pool key, and the pool's hook) live behind this interface, so the payment and burn contracts
 ///         never touch the pool directly and tests can use a mock.
-/// @dev    A real adapter is NOT built yet. It goes in `contracts/src/adapters/UniswapV4SpareAdapter.sol`, takes the
-///         Uniswap v4 PoolManager address and the SPARE/ETH PoolKey as constructor parameters ([PLACEHOLDER]: the
-///         PoolManager is not in src/lib/addresses.ts yet; the pool id seen on DexScreener is third-party data and
-///         must be re-read on-chain before use), and needs its own audit and a fork test against the live pool.
+/// @dev    The real adapter is `contracts/src/adapters/UniswapV4SpareAdapter.sol` (internal review only, not externally
+///         audited, not deployed): the Uniswap v4 PoolManager and the SPARE/ETH PoolKey are its constructor
+///         parameters, verified on-chain in docs/uniswap-v4-adapter.md and fork-tested against the live pool.
 ///         Every implementation MUST:
 ///         - revert when it cannot deliver at least the given minimum output;
 ///         - pay the output to `to` in the same call (ETH with a plain call, SPARE with `transfer`);

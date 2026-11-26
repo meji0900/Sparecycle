@@ -6,8 +6,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
-import { getAddress } from "viem";
+import { encodeAbiParameters, getAddress, keccak256 } from "viem";
 import { ADDR, ADDRESS_ROWS, BURN_SINKS, HOLDER_CONTRACT_ALLOWLIST, HOLDER_EXCLUSIONS, SAFE_MULTISEND_CALL_ONLY, SPARE_START_BLOCK, TOKEN_CONTRACTS, UNISWAP_V4 } from "./addresses";
+import { PONS } from "./pons";
 import * as R from "./token-rules";
 
 const ROOT = join(import.meta.dirname, "..", "..");
@@ -50,12 +51,38 @@ describe("section 10 defaults", () => {
 });
 
 describe("addresses of the token features", () => {
-  test("only NodeStake is deployed (26 Nov 2026); the other token contracts, the v4 infrastructure and the start block are null", () => {
+  test("only NodeStake is deployed (26 Nov 2026); the other token contracts and the start block are null", () => {
     assert.deepEqual(TOKEN_CONTRACTS, { nodeStake: ADDR.nodeStake, holderPool: null, burner: null, jobPaymentsV2: null });
-    assert.deepEqual([UNISWAP_V4.poolManager, UNISWAP_V4.stateView, UNISWAP_V4.universalRouter, UNISWAP_V4.spareEthPoolKey], [null, null, null, null]);
     assert.equal(SAFE_MULTISEND_CALL_ONLY, null);
     assert.equal(SPARE_START_BLOCK, null);
     assert.match(UNISWAP_V4.spareEthPoolId, /^0x[0-9a-f]{64}$/);
+  });
+
+  test("the v4 infrastructure: the values verified on-chain 27 Nov 2026 (docs/uniswap-v4-adapter.md), checksummed", () => {
+    assert.deepEqual([UNISWAP_V4.poolManager, UNISWAP_V4.stateView, UNISWAP_V4.universalRouter], [
+      "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+      "0xF3334192D15450CdD385c8B70e03f9A6bD9E673b",
+      "0x204FAca1764B154221e35c0d20aBb3c525710498",
+    ]);
+    for (const a of [UNISWAP_V4.poolManager, UNISWAP_V4.stateView, UNISWAP_V4.universalRouter]) assert.equal(getAddress(a!), a);
+    assert.deepEqual(UNISWAP_V4.spareEthPoolKey, {
+      currency0: "0x0000000000000000000000000000000000000000",
+      currency1: ADDR.spareToken,
+      fee: 0,
+      tickSpacing: 200,
+      hooks: PONS.memeHook,
+    });
+    assert.equal(UNISWAP_V4.spareEthPoolId, "0x6c779d26cc59abb9f22d348257ee013b66d2a5f0d9dcf1bb9fa9338874eab1bd");
+    const k = UNISWAP_V4.spareEthPoolKey!;
+    const id = keccak256(
+      encodeAbiParameters(
+        [{ type: "address" }, { type: "address" }, { type: "uint24" }, { type: "int24" }, { type: "address" }],
+        [k.currency0, k.currency1, k.fee, k.tickSpacing, k.hooks],
+      ),
+    );
+    assert.equal(id, UNISWAP_V4.spareEthPoolId, "the key hashes to the pool id");
+    assert.equal(UNISWAP_V4.spareEthPoolHookCutBps, 290);
+    assert.ok(HOLDER_EXCLUSIONS.some((e) => e.address === UNISWAP_V4.poolManager), "the PoolManager is excluded from holder weights");
   });
 
   test("the exclusion list: checksummed, the brief's entries, and nothing allow-listed", () => {

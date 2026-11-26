@@ -110,10 +110,15 @@ Holder share, credit mode (brief §6). Modelled on `SparecycleRewards`.
 - `src/libraries/SpareBurn.sol`: burn-or-dead logic with exact-amount checks.
 - **Swap adapter**: all Uniswap v4 specifics sit behind `ISpareSwapAdapter` (`buySpare`, `sellSpare`, both with a
   minimum output). Tests use `test/mocks/V2Mocks.sol:MockSwapAdapter`.
-  - **A real v4 adapter is not built.** It goes in `contracts/src/adapters/UniswapV4SpareAdapter.sol`.
-  - It takes the PoolManager and the SPARE/ETH PoolKey as constructor parameters. Both are `[PLACEHOLDER]`: the
-    PoolManager is not in `src/lib/addresses.ts` yet, and the pool id from DexScreener is third-party data.
-  - It needs its own audit and a fork test against the live pool.
+  - **The v4 adapter** is `contracts/src/adapters/UniswapV4SpareAdapter.sol` (internal review only, not externally
+    audited, not deployed). It calls the PoolManager directly for one fixed pool key; the PoolManager and the
+    SPARE/ETH PoolKey were verified on-chain and are in `src/lib/addresses.ts` (`UNISWAP_V4_DEFAULTS`).
+  - Addresses and their evidence, the pool's hook, measured price impact, fork tests and risks:
+    `docs/uniswap-v4-adapter.md`.
+  - **Before deploying V2 and the Burner with it:** the pool's Pons hook takes 2.90% of every swap's output, more than
+    the 2% default of `maxSwapSlippageBps` (V2) and `maxSlippageBps` (Burner). With the defaults every SPARE sale and
+    every burn reverts at its floor; the Safe must raise both (a fork test passes at 500 bps) or the posted price
+    must already be net of the hook.
 
 ## Defaults (all "Default, not yet confirmed by Fabio")
 
@@ -174,7 +179,7 @@ and A14 are still open (`docs/x402-decision.md`).
 - **NVDA mode (6b).** Gates G1–G3 (brief §6.6) have not passed. Mode 2 exists only in the leaf format. `setMode(2)`
   and mode-2 claims revert `NvdaModeNotAvailable()`. No NVDA token, Chainlink feed, swap, market-hours or
   jurisdiction logic is present.
-- **The Uniswap v4 swap adapter** (see above).
+- **Deploying the Uniswap v4 swap adapter**: it is written and fork-tested (see above), not deployed.
 - `SparecycleNodeStake` (brief §3). It is in stage 3 of §11 but not in this task.
 - **The scheduler side** (stage 4):
   - time-weighted holder weights, exclusions and minimum (N11/N14/N15);
@@ -238,7 +243,8 @@ come from `src/lib/addresses.ts`. The adapter and the burn cap stay `[PLACEHOLDE
 - **Discount economics** (decision 1). SPARE payments need a subsidy and stop without one.
 - **Credits locked forever** if unused (decision 8).
 - **Deploy order** must not be interrupted (predicted addresses). The constructors revert if it is.
-- **The Uniswap v4 adapter** is unwritten and is the riskiest part. Pool hooks (Pons) may take fees.
+- **The Uniswap v4 adapter** is the riskiest part and has had internal review only. The pool's Pons hook takes
+  2.90% of every swap's output, above both 2% slippage defaults (`docs/uniswap-v4-adapter.md`).
 - **SPARE `burn()`** was verified on a fork. A token upgrade (if any) could change it, and `SpareBurn` would then
   revert rather than mis-burn.
 - **Not reviewed**: forced ETH (selfdestruct) into V2 is unaccounted and stuck; it cannot be stolen.

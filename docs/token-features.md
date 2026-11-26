@@ -57,7 +57,7 @@ checking it on the explorer; once final it can also be written into `addresses.t
 | `TOKEN_HOLDER_POOL_ADDRESS` | `SparecycleHolderPool` |
 | `TOKEN_BURNER_ADDRESS` | `SparecycleBurner` (phase 2b; only its `Burned` events are read) |
 | `TOKEN_JOB_PAYMENTS_V2_ADDRESS` | `SparecycleJobPaymentsV2` (recorded; nothing calls it yet) |
-| `TOKEN_V4_POOL_MANAGER_ADDRESS` | Uniswap v4 PoolManager on Robinhood Chain (excluded from holder weights; its `Swap` event gives a burn's ETH in) |
+| `TOKEN_V4_POOL_MANAGER_ADDRESS` | Uniswap v4 PoolManager on Robinhood Chain (excluded from holder weights; its `Swap` event gives a burn's ETH in). All four `TOKEN_V4_*` values default to the ones verified on-chain in `UNISWAP_V4_DEFAULTS` (`docs/uniswap-v4-adapter.md`); set them only to override |
 | `TOKEN_V4_STATE_VIEW_ADDRESS` | Uniswap v4 StateView (the price read of a burn plan) |
 | `TOKEN_V4_UNIVERSAL_ROUTER_ADDRESS` | Uniswap v4 Universal Router (the burn swap) |
 | `TOKEN_V4_POOL_KEY` | `fee,tickSpacing,hooks` of the SPARE/ETH pool (currency0 native ETH, currency1 SPARE). It must hash to the recorded pool id or no burn payload is prepared |
@@ -122,8 +122,10 @@ Per closed epoch with a confirmed charge (oldest first, so carry-over chains in 
 - **Cap** (N12) = 1% of the pool's quote-side (ETH) liquidity at the read: the in-range virtual reserve
   `L x 2^96 / sqrtPriceX96` from StateView `getSlot0` / `getLiquidity`. **Buy** = min(due, cap); the rest carries over.
   Never split into many small buys.
-- **minOut** = the constant-product quote of the buy at the read (after the LP fee), minus 2% (N12). A hook fee or a
-  moved price makes the swap revert: nothing is spent and the amount carries over.
+- **minOut** = the constant-product quote of the buy at the read (after the LP fee, and net of the Pons hook's 2.90%
+  cut of the output, `UNISWAP_V4.spareEthPoolHookCutBps`), minus 2% (N12). A moved price makes the swap revert:
+  nothing is spent and the amount carries over. The router call encodes v4-periphery's `ExactInputSingleParams` with
+  `minHopPriceX36 = 0`, the layout of both Universal Routers on chain 4663 (`docs/uniswap-v4-adapter.md`).
 - **Payload**: one SafeTx to the Universal Router, `execute(V4_SWAP)` with `SWAP_EXACT_IN_SINGLE` (exact `amountIn`
   ETH, `amountOutMinimum = minOut`), `SETTLE_ALL`, and `TAKE` of all SPARE straight to the dead address
   (`BURN_METHOD = "dead"`, the default while `burn()` is only a bytecode heuristic). `BURN_METHOD = "burn"` instead
