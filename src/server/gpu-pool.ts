@@ -5,9 +5,16 @@
 //
 //   VAST_API_KEY            secret, typed by the operator (never logged, never returned)
 //   GPU_POOL_INSTANCE_IDS   "61906174,61906182": the pool's instances (two, with different owner wallets, because a
-//                           job's two copies always go to two different owners)
+//                           job's two copies always go to two different owners). An entry may name its owner group,
+//                           "61906174:a,61906182:b,62000000:b": a spare machine for the same owner; a start succeeds
+//                           when machines of at least two groups come up. Entries without a group are their own group.
 //   GPU_POOL_IDLE_MINUTES   default 10
 //   VAST_API_URL            default https://console.vast.ai (tests point it at a mock)
+//
+// A stopped Vast instance can lose its GPU to another renter. Vast then answers a start with success:false
+// ("resources unavailable, state change queued") and would start it later on its own, unwatched. So a start that
+// fails is cancelled at once, and when machines of fewer than two groups come up, the started ones are stopped
+// too (one owner alone cannot run a job) and the pool waits START_BACKOFF_SECONDS before trying again.
 //
 // The pool nodes' owner wallets belong in PROJECT_NODE_OWNERS: they never get a payout (see payouts.ts) and the
 // status page marks them as run by Sparecycle. Without VAST_API_KEY and GPU_POOL_INSTANCE_IDS this module is idle.
@@ -21,22 +28,35 @@ type Pool = {
   lastStartAt: number | null;
   lastStopAt: number | null;
   error: string | null;
+  /** After a start where no two owner groups came up: no new start before this time. */
+  backoffUntil: number | null;
   ticking: boolean;
 };
 
 const g = globalThis as typeof globalThis & { __sparecyclePool?: Pool; __sparecyclePoolTimer?: ReturnType<typeof setInterval> };
 const pool = (): Pool =>
-  (g.__sparecyclePool ??= { state: "unknown", lastActivityAt: nowSec(), lastStartAt: null, lastStopAt: null, error: null, ticking: false });
+  (g.__sparecyclePool ??= {
+    state: "unknown",
+    lastActivityAt: nowSec(),
+    lastStartAt: null,
+    lastStopAt: null,
+    error: null,
+    backoffUntil: null,
+    ticking: false,
+  });
 
 const str = (v: string | undefined) => (v && v.trim() !== "" ? v.trim() : null);
 export const poolEnv = {
   apiKey: () => str(process.env.VAST_API_KEY),
   apiUrl: () => (str(process.env.VAST_API_URL) ?? "https://console.vast.ai").replace(/\/+$/, ""),
-  instanceIds: () =>
+  /** Pool machines and their owner group ("id" or "id:group"; no group = its own group). */
+  instances: () =>
     (str(process.env.GPU_POOL_INSTANCE_IDS) ?? "")
       .split(",")
-      .map((s) => s.trim())
-      .filter((s) => /^\d+$/.test(s)),
+      .map((s) => /^\s*(\d+)\s*(?::\s*([A-Za-z0-9_-]+)\s*)?$/.exec(s))
+      .filter((m): m is RegExpExecArray => m !== null)
+      .map((m) => ({ id: m[1], group: m[2] ?? `#${m[1]}` })),
+  instanceIds: () => poolEnv.instances().map((i) => i.id),
   idleSeconds: () => {
     const n = Number(str(process.env.GPU_POOL_IDLE_MINUTES) ?? "10");
     return Number.isFinite(n) && n > 0 ? Math.round(n * 60) : 600;
@@ -46,8 +66,11 @@ export const poolConfigured = () => poolEnv.apiKey() !== null && poolEnv.instanc
 
 /** A start can take a few minutes (container boot + model load); don't send another before this. */
 const START_RETRY_SECONDS = 5 * 60;
+/** After a start where fewer than two owner groups came up (their hosts were busy), wait this long. */
+const START_BACKOFF_SECONDS = 15 * 60;
 
-async function setState(id: string, state: "running" | "stopped") {
+/** Asks Vast to start or stop an instance. Returns false when Vast declines (success:false, e.g. its host is busy). */
+async function setState(id: string, state: "running" | "stopped"): Promise<boolean> {
   const res = await fetch(`${poolEnv.apiUrl()}/api/v0/instances/${id}/`, {
     method: "PUT",
     headers: { authorization: `Bearer ${poolEnv.apiKey()}`, "content-type": "application/json" },
@@ -55,6 +78,8 @@ async function setState(id: string, state: "running" | "stopped") {
     signal: AbortSignal.timeout(20_000),
   });
   if (!res.ok) throw new Error(`Vast ${state} ${id}: HTTP ${res.status}`);
+  const body = (await res.json().catch(() => null)) as { success?: boolean } | null;
+  return body?.success !== false;
 }
 
 async function actualStatus(id: string): Promise<string | null> {
@@ -89,10 +114,29 @@ async function startAll(now: number) {
   p.state = "starting";
   p.lastStartAt = now;
   try {
-    await Promise.all(poolEnv.instanceIds().map((id) => setState(id, "running")));
+    const all = poolEnv.instances();
+    const results = await Promise.all(all.map(async (i) => ({ ...i, ok: await setState(i.id, "running") })));
+    const declined = results.filter((r) => !r.ok);
+    // Cancel declined starts now, or Vast would bring them up later, outside the pool's watch.
+    await Promise.all(declined.map((r) => setState(r.id, "stopped").catch(() => false)));
+    const groupsUp = new Set(results.filter((r) => r.ok).map((r) => r.group));
+    if (groupsUp.size < 2 && new Set(all.map((i) => i.group)).size >= 2) {
+      // One owner alone cannot run a job: stop what did start and try again later.
+      await Promise.all(results.filter((r) => r.ok).map((r) => setState(r.id, "stopped").catch(() => false)));
+      p.state = "stopped";
+      p.lastStopAt = now;
+      p.backoffUntil = now + START_BACKOFF_SECONDS;
+      p.error = `A pool machine could not start (its host is busy); trying again in ${START_BACKOFF_SECONDS / 60} min.`;
+      console.error(`[sparecycle] GPU pool: Vast declined ${declined.map((r) => r.id).join(", ")}; fewer than two owners up, pool stopped`);
+      return;
+    }
     p.state = "running";
     p.error = null;
-    console.log(`[sparecycle] GPU pool: started ${poolEnv.instanceIds().length} instance(s) for waiting jobs`);
+    p.backoffUntil = null;
+    console.log(
+      `[sparecycle] GPU pool: started ${results.length - declined.length} instance(s) for waiting jobs` +
+        (declined.length ? ` (Vast declined ${declined.map((r) => r.id).join(", ")}, cancelled)` : ""),
+    );
   } catch (e) {
     p.error = e instanceof Error ? e.message : String(e);
     p.state = "unknown";
@@ -131,7 +175,8 @@ export async function poolTick(now = nowSec()) {
     const d = demand();
     if (d.openJobs > 0) p.lastActivityAt = now;
     const recentlyStarted = p.lastStartAt !== null && now - p.lastStartAt < START_RETRY_SECONDS;
-    if (d.uncovered && !recentlyStarted && p.state !== "starting") {
+    const backingOff = p.backoffUntil !== null && now < p.backoffUntil;
+    if (d.uncovered && !recentlyStarted && !backingOff && p.state !== "starting") {
       // Also covers a running pool whose nodes went missing (e.g. Vast stopped a container): ask again.
       await startAll(now);
     } else if (d.openJobs === 0 && p.state !== "stopped" && now - p.lastActivityAt >= poolEnv.idleSeconds()) {

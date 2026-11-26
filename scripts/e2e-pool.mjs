@@ -17,8 +17,10 @@ const check = (name, ok, extra = "") => {
 };
 
 // ---- mock Vast API: PUT /api/v0/instances/:id/ {state}, GET /api/v0/instances/:id/?owner=me ----
-const status = { 11: "stopped", 22: "stopped" };
+const status = { 11: "stopped", 22: "stopped", 33: "stopped" };
 const calls = [];
+/** Instances whose host is busy: Vast declines their start (success:false) and queues it. */
+const busy = new Set();
 const server = createServer((req, res) => {
   const m = /^\/api\/v0\/instances\/(\d+)\/(\?.*)?$/.exec(req.url ?? "");
   if (!m || req.headers.authorization !== "Bearer test-key") {
@@ -30,6 +32,12 @@ const server = createServer((req, res) => {
     if (req.method === "PUT") {
       const { state } = JSON.parse(body);
       calls.push({ id: m[1], state });
+      if (state === "running" && busy.has(m[1])) {
+        res
+          .writeHead(200, { "content-type": "application/json" })
+          .end('{"success":false,"msg":"Required resources are currently unavailable, state change queued."}');
+        return;
+      }
       status[m[1]] = state;
       res.writeHead(200, { "content-type": "application/json" }).end('{"success":true}');
     } else {
@@ -114,6 +122,54 @@ try {
   );
   const both = allocate({ pot: 1000n, capPerUnit: null, jobs: [{ units: 100, owners: [ownerA, ownerB] }], exclude });
   check("a job done by two project nodes reserves nothing", both.entries.length === 0 && both.reserved === 0n);
+
+  // ---- a host is busy: Vast declines a start (success:false) ----
+  // Owner B has a spare machine (33). The pool nodes go offline and a new job waits.
+  process.env.GPU_POOL_INSTANCE_IDS = "11:a,22:b,33:b";
+  db.prepare("UPDATE nodes SET last_seen = 0").run();
+  db.prepare("UPDATE jobs SET status = 'queued'").run();
+  const since = (n) => calls.slice(n);
+  const tA = t0 + 3000;
+  busy.add("22");
+  let mark = calls.length;
+  await poolTick(tA);
+  let c = since(mark);
+  check(
+    "a declined start is cancelled at once, and the pool runs on the other owner's spare",
+    c.filter((x) => x.state === "running").length === 3 &&
+      c.some((x) => x.id === "22" && x.state === "stopped") &&
+      !c.some((x) => x.id !== "22" && x.state === "stopped") &&
+      poolStatus().state === "running" &&
+      poolStatus().error === null,
+    JSON.stringify(c),
+  );
+
+  // Both owner-B machines busy: owner A alone cannot run a job, so everything is stopped and the pool backs off.
+  busy.add("33");
+  mark = calls.length;
+  const tB = tA + 6 * 60;
+  await poolTick(tB);
+  c = since(mark);
+  const stoppedIds = new Set(c.filter((x) => x.state === "stopped").map((x) => x.id));
+  check(
+    "fewer than two owners up: every machine is stopped (declined starts cancelled)",
+    stoppedIds.has("11") && stoppedIds.has("22") && stoppedIds.has("33") && poolStatus().state === "stopped",
+    JSON.stringify(c),
+  );
+  const err = String(poolStatus().error ?? "");
+  check("the status says why, without instance ids", err.includes("could not start") && !/(11|22|33)/.test(err), err);
+  mark = calls.length;
+  await poolTick(tB + 10 * 60);
+  check("no new start during the back-off", since(mark).length === 0, JSON.stringify(since(mark)));
+  busy.clear();
+  mark = calls.length;
+  await poolTick(tB + 15 * 60 + 1);
+  c = since(mark);
+  check(
+    "after the back-off it tries again and runs",
+    c.filter((x) => x.state === "running").length === 3 && poolStatus().state === "running" && poolStatus().error === null,
+    JSON.stringify(c),
+  );
 } finally {
   server.close();
   try {

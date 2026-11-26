@@ -340,8 +340,8 @@ Until there are enough contributors, the project runs its own bootstrap pool of 
 - `PAID_TEST_OWNERS` lists project wallets that **are** paid, for an openly labelled team test of the payout path; they stay marked as Sparecycle nodes, with "paid test node".
 - Two project owners: `node scripts/pool-owners.mjs init` (keys in `.keys/`, unfunded).
 - Machine setup: rent with `--onstart-cmd "bash /root/pool-start.sh"`, run [scripts/gpu-pool-node.sh](scripts/gpu-pool-node.sh), sign the node key with `node scripts/pool-owners.mjs sign a|b <nodeKey>`, write `~/pool-node.env`, stop the machine. Then set `VAST_API_KEY` (typed in via `--stdin`), `GPU_POOL_INSTANCE_IDS` and `PROJECT_NODE_OWNERS` on Railway.
-- Risk: while stopped, the host GPU can be rented by someone else, so the machine may not be able to start.
-- Test without Vast/GPU: `node scripts/e2e-pool.mjs` (10/10).
+- Risk: while stopped, the host GPU can be rented by someone else, so the machine may not be able to start. Vast then declines the start (`success:false`, "resources unavailable"). The pool cancels that queued start at once (so the machine cannot come up later unwatched), and if machines of fewer than two owners came up it stops the rest and tries again after 15 minutes. A spare machine per owner (`GPU_POOL_INSTANCE_IDS=id:a,id:b,id:b`) lets the pool run while one host is busy.
+- Test without Vast/GPU: `node scripts/e2e-pool.mjs` (15/15, including busy hosts and a spare machine).
 
 ## Sweep bot
 
@@ -394,7 +394,7 @@ npm test                        # allowlist and challenge unit tests
 npm run check:bench             # re-derives the committed bench verdicts and challenge references with the current code
 npm run e2e:local               # anvil + scheduler + 2 dev-runner nodes, incl. private outputs and a challenge round
 npm run test:private-outputs    # who can read a job result (401 / 403 / 200 / 410)
-node scripts/e2e-pool.mjs       # on-demand GPU pool with a fake Vast (10 checks)
+node scripts/e2e-pool.mjs       # on-demand GPU pool with a fake Vast (15 checks, incl. busy hosts)
 node scripts/e2e-backends.mjs   # real Vulkan/CPU nodes
 node scripts/e2e-testnet.mjs    # Robinhood testnet 46630
 npm run prelaunch:check         # read-only report before launch
