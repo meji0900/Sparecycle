@@ -284,9 +284,9 @@ export function JobBalance() {
         <>
           {v2 ? (
             <>
-              <div className="border-b border-line px-5 py-3">
+              <dl className="border-b border-line">
                 <Row label="Wallet">{address ? <Hex value={address} /> : <Dash />}</Row>
-              </div>
+              </dl>
               <V2Balance v2={v2} address={address} canTransact={isConnected && !wrongNetwork} reload={acct.reload} />
               <div className="px-5 pt-4">
                 <h3 className="text-sm font-medium text-text">Older balance (V1 payments contract)</h3>
