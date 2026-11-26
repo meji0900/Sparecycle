@@ -4,7 +4,7 @@
 // Commit hashes and commit dates are not used as evidence (the repository history has been rewritten).
 import { MAINNET_TXS, OWNERSHIP_TXS, FIRST_PAYOUT_TXS, PAYMENTS_TX } from "./proof";
 import { ADDR, explorerAddressUrl, sourcifyUrl } from "./addresses";
-import { repoFile, REPO_URL } from "./site";
+import { LIVE_SITE, repoFile, REPO_URL } from "./site";
 
 export type ChangelogKind = "contract" | "scheduler" | "node" | "site" | "docs";
 
@@ -33,6 +33,59 @@ export const KIND_LABEL: Record<ChangelogKind, string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    id: "agent-api",
+    title: "API keys, an OpenAI-compatible API and an MCP server",
+    date: "2026-11-26",
+    kind: "scheduler",
+    summary:
+      "A wallet can create spend-only API keys, each with its own daily cap (UTC day) and an off switch; a key can never withdraw. With a key, OpenAI client libraries can call /v1/chat/completions (Qwen2.5-1.5B) and /v1/images/generations (Stable Diffusion 1.5) by changing only the base URL. Answers come back only after two nodes agree, asynchronously with polling; a mismatch is a not-charged error, never a made-up answer. An MCP server offers four tools: submit a job, its status, its result, the balance. Pay-per-request over HTTP (x402) is a written design only.",
+    evidence: [
+      { label: "Docs: OpenAI-compatible API", url: `${LIVE_SITE}/docs/api/openai` },
+      { label: "Docs: API keys", url: `${LIVE_SITE}/docs/api/keys` },
+      { label: "Docs: MCP server", url: `${LIVE_SITE}/docs/api/mcp` },
+      { label: "x402 decision record", url: repoFile("docs/x402-decision.md") },
+    ],
+  },
+  {
+    id: "billing-invoice",
+    title: "Private invoice for every paid job, and a clearer balance panel",
+    date: "2026-11-26",
+    kind: "scheduler",
+    summary:
+      "The payer of a job can open its invoice: price, the 5% protocol cut (rounded, charged per epoch batch), whether the two results matched, whether it was charged, and the output hash (not the file), which the browser can check against the downloaded output. The public job list no longer shows prices or charge status. The balance panel shows balance, held, withdrawal pending and available, starts a withdrawal in one click and shows when it can be completed; a banner warns when fewer than five jobs are left.",
+    evidence: [
+      { label: "Docs: billing", url: `${LIVE_SITE}/docs/billing` },
+      { label: "API: GET /jobs/{id}/invoice", url: `${LIVE_SITE}/api/v1/openapi.json` },
+    ],
+  },
+  {
+    id: "idle-guard",
+    title: "Idle Guard: the node list shows why a node is resting",
+    date: "2026-11-26",
+    kind: "node",
+    summary:
+      "Node client 0.4.0 reports its own state: active, paused because the owner is using the GPU, paused because the GPU is too hot, or paused outside its chosen hours. A paused node stays online and gets no job. The node sends only its state and when that state began, never temperatures or process names, and the public list shows the state but not when it began. The busy and heat checks are NVIDIA-only; other nodes pause on their hours.",
+    evidence: [
+      { label: "Node list", url: `${LIVE_SITE}/nodes` },
+      { label: "Node client README: Idle Guard", url: repoFile("node-client/README.md") },
+      { label: "Download checksums", url: `${LIVE_SITE}/downloads/SHA256SUMS.txt` },
+    ],
+  },
+  {
+    id: "docs-changelog-roadmap",
+    title: "Docs, this changelog, a roadmap and an OpenAPI description",
+    date: "2026-11-26",
+    kind: "docs",
+    summary:
+      "Copy-paste guides from a first job to a first node online, a contracts page with every address and its verification status, billing and API references, an OpenAPI 3.1 description of the API, this changelog with an RSS feed, and a roadmap without dates.",
+    evidence: [
+      { label: "Docs", url: `${LIVE_SITE}/docs` },
+      { label: "Contracts and keys", url: `${LIVE_SITE}/docs/contracts` },
+      { label: "OpenAPI", url: `${LIVE_SITE}/api/v1/openapi.json` },
+      { label: "RSS feed", url: `${LIVE_SITE}/changelog.xml` },
+    ],
+  },
   {
     id: "gpu-pool-busy-host",
     title: "Project GPU pool handles a busy host",

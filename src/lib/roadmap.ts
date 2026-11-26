@@ -19,23 +19,16 @@ export const ROADMAP_STATUSES: { id: RoadmapStatus; label: string; note: string 
 
 export const ROADMAP: RoadmapItem[] = [
   {
-    id: "api-keys-openai-mcp",
-    title: "API keys, an OpenAI-compatible API and an MCP server",
-    status: "in-progress",
-    summary:
-      "Keys tied to a wallet, each with its own daily spending cap and an off switch, so scripts and agents can submit paid jobs without a wallet signature for every job. Only the wallet can ever withdraw. On top of the keys: an API that OpenAI client libraries can call, and an MCP server with a few tools over the public API.",
-  },
-  {
     id: "browser-verified-receipts",
     title: "Receipts you can verify in your browser",
-    status: "planned",
+    status: "in-progress",
     summary:
       "A receipt for every paid job, matched or not charged, that your browser checks against what the payments contract recorded on-chain, without trusting the Sparecycle server.",
   },
   {
     id: "recheck-on-new-pair",
     title: "Re-check a mismatched job on a new node pair",
-    status: "planned",
+    status: "in-progress",
     summary:
       "When the two results of a paid job do not match, run it again on a different pair of nodes, with other owners and other GPUs, before leaving it uncharged.",
   },
