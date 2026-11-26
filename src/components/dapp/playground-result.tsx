@@ -7,12 +7,14 @@ import { Button, buttonStyles } from "@/components/ui/button";
 import { StatusTag, type Tone } from "@/components/ui/status";
 import { apiDown, type JobDetail, type StatusResponse } from "@/lib/dapp/api";
 import { useJobInvoice } from "@/lib/dapp/invoice";
+import { useJobReceipt } from "@/lib/dapp/receipt";
 import { useJobOutput } from "@/lib/dapp/job-output";
 import { TERMINAL } from "@/lib/dapp/jobs";
 import { chargeWords } from "@/lib/dapp/paid-jobs";
 import { useApiGet, useNow } from "@/lib/dapp/use-api";
 import { cn } from "@/lib/utils";
 import { JobInvoicePanel } from "./job-invoice";
+import { JobReceiptPanel } from "./job-receipt";
 import { settledFields, type PlayItem } from "./playground-history";
 import { outputLockText, SignInToView } from "./private-output";
 
@@ -161,6 +163,9 @@ export function PlaygroundResult({
   // The price and what happened to it: the private invoice (read with this browser's key or the wallet session).
   const invoice = useJobInvoice(item && hasPayer ? item.id : null, item?.secret, { refreshKey: status, poll: true });
   const inv = invoice.state === "ready" && invoice.invoice.invoice ? invoice.invoice : null;
+  // The payer's receipt, once the results are compared (provisional, then sealed when its charge is on-chain).
+  const decided = !!status && TERMINAL.includes(status);
+  const receipt = useJobReceipt(item && hasPayer && decided ? item.id : null, item?.secret, { refreshKey: status });
   const lock = hasOutput ? outputLockText(out.state, hasPayer) : null;
   const seed = typeof job?.params?.seed === "number" ? job.params.seed : (item?.usedSeed ?? item?.seed ?? null);
   const failKind = status === "disagreed" || status === "expired" || status === "rejected" ? status : null;
@@ -340,6 +345,7 @@ export function PlaygroundResult({
         ) : null}
 
         {item && !sending && !gone && hasPayer ? <JobInvoicePanel state={invoice} /> : null}
+        {item && !sending && !gone && hasPayer && decided ? <JobReceiptPanel state={receipt} /> : null}
       </div>
     </section>
   );

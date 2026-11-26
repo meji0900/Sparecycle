@@ -3,6 +3,7 @@ import { ApiKeysPanel } from "@/components/dapp/api-keys-panel";
 import { PageHeader } from "@/components/dapp/app-shell";
 import { JobAccountProvider, JobBalance } from "@/components/dapp/job-balance";
 import { JobLifecycle } from "@/components/dapp/job-lifecycle";
+import { ReceiptChecker } from "@/components/dapp/job-receipt";
 import { JobSubmit } from "@/components/dapp/job-submit";
 import { LiveRecentJobs } from "@/components/dapp/recent-jobs";
 import { SectionTitle } from "@/components/dapp/ui";
@@ -58,6 +59,10 @@ export default function JobsPage() {
               {/* API keys pay from the same balance (src/server/apikeys.ts); management needs a wallet sign-in. */}
               <div className="mt-10 max-w-[880px]">
                 <ApiKeysPanel />
+              </div>
+              {/* A saved job receipt, checked against the chain in this browser, without the Sparecycle API. */}
+              <div className="mt-10 max-w-[880px]">
+                <ReceiptChecker />
               </div>
             </JobAccountProvider>
             {/* Disclosure: who paid for each recent job, team-funded test jobs included. */}

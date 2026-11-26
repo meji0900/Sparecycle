@@ -62,7 +62,8 @@ export default function ApiPage() {
             [
               "Caching",
               <>
-                Anything that depends on who asks (job detail, results, sign-in) is sent with <C>Cache-Control: private, no-store</C>.
+                Anything that depends on who asks (job detail, results, invoices, receipts, sign-in) is sent with{" "}
+                <C>Cache-Control: private, no-store</C>.
               </>,
             ],
             ["Trust", "One scheduler runs this API. It is centralized in this MVP; settled payouts on-chain cannot be changed afterwards."],
@@ -78,7 +79,7 @@ export default function ApiPage() {
               "Read secret",
               <>
                 Returned once by <C>POST /jobs</C> as <C>readSecret</C>; the scheduler stores only its hash. Send it as{" "}
-                <C>Authorization: Bearer &lt;readSecret&gt;</C> to read that job&apos;s result.
+                <C>Authorization: Bearer &lt;readSecret&gt;</C> to read that job&apos;s result, invoice and receipt.
               </>,
             ],
             [
@@ -86,7 +87,7 @@ export default function ApiPage() {
               <>
                 Sign-In with Ethereum (EIP-4361), gasless: <C>GET /auth/nonce</C>, sign the message with your wallet,{" "}
                 <C>POST /auth/verify</C>. The answer sets an HttpOnly cookie <C>sc_session</C> for {sessionHours} hours that reads
-                the results of jobs this wallet paid for.
+                the results, invoices and receipts of jobs this wallet paid for.
               </>,
             ],
             [

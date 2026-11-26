@@ -3,6 +3,7 @@
 import { agentApiJobsNote } from "./openapi-agent";
 import type { OpenApiModule } from "./openapi";
 import { JOB_PAYMENT_WINDOW_SECONDS } from "./job-payment";
+import { JOBS_HASH_RULE, JOBS_LEAF_RULE, LEAF_CHARGE_STATUS, LEAF_VERDICT } from "./job-receipt";
 import { JOB_STATUSES, LIMITS } from "./protocol";
 import { POLICY } from "@/server/env";
 
@@ -94,11 +95,16 @@ export const coreApi: OpenApiModule = {
       parameters: [epochIdParam],
       get: {
         operationId: "getEpochCharges",
-        summary: "The per-job charge list of an epoch",
-        description:
-          "Its hash is the listHash of the Charged event of SparecycleJobPayments for that epoch. status is \"none\" when nothing was charged in the epoch.",
+        summary: "What an epoch's charge committed: per-customer totals and the jobs-tree leaves (v2), or the per-job list (v1)",
+        description: [
+          `hashRule "${JOBS_HASH_RULE}" (every charge since job receipts): listHash, the listHash of the Charged event of SparecycleJobPayments for that epoch, is the root of a Merkle tree over the paid and team jobs that reached a final charge status since the last confirmed charge (charged, released = not charged, unpaid). The answer lists each customer's total (equal to the CustomerCharged events) and the sorted leaves, so anyone can rebuild the root; it names no job ids, per-job payers or prices. A payer proves their own job with its receipt (GET /jobs/{id}/receipt).`,
+          "",
+          `Leaf: ${JOBS_LEAF_RULE}. Codes: verdict agreed ${LEAF_VERDICT.agreed}, disagreed ${LEAF_VERDICT.disagreed}, expired ${LEAF_VERDICT.expired}, rejected ${LEAF_VERDICT.rejected}; chargeStatus charged ${LEAF_CHARGE_STATUS.charged}, released ${LEAF_CHARGE_STATUS.released}, unpaid ${LEAF_CHARGE_STATUS.unpaid}.`,
+          "",
+          "Charges stored before job receipts keep their v1 answer unchanged: the per-job list, whose keccak256 (UTF-8 JSON) is the listHash. status is \"none\" when nothing was charged in the epoch (no Charged event, so no on-chain anchor for receipts of that epoch).",
+        ].join("\n"),
         tags: ["Epochs", "Payments"],
-        responses: { "200": json(ref("Charges"), "The charge list."), "400": error("The epoch id is not a non-negative integer.") },
+        responses: { "200": json(ref("Charges"), "The charge."), "400": error("The epoch id is not a non-negative integer.") },
       },
     },
     "/jobs": {
@@ -218,6 +224,30 @@ export const coreApi: OpenApiModule = {
           "401": { description: "No credentials were sent (empty body)." },
           "403": error("These credentials cannot read this job's invoice."),
           "404": error("unknown-job"),
+        },
+      },
+    },
+    "/jobs/{id}/receipt": {
+      parameters: [jobIdParam],
+      get: {
+        operationId: "getJobReceipt",
+        summary: "The payer's receipt of a paid or team job, checkable against the Charged event (a stub for a free trial job)",
+        description: [
+          "Available from the verdict on. state is \"provisional\" until the charge that commits the job's leaf to a jobs root is confirmed on-chain, then \"sealed\": anchor then holds the leaf inputs, the leaf, the Merkle proof and the jobs root (the listHash of the Charged event of epochId, sent in chargeTx). nodes holds both nodes' EIP-712 receipts (domain Sparecycle v1: jobId, node, outputHash, gpuMs, epoch).",
+          "",
+          "pending.reason of a provisional receipt: waiting-for-charge, charge-unconfirmed, no-anchor (the epoch close after the verdict charged nothing, so there is no Charged event to anchor it; it goes into the next charge's jobs root) or charged-before-receipts (charged in a v1 charge list, no proof).",
+          "",
+          "The epoch payout root (GET /epochs/{id}/tree) covers node payouts only, never jobs. Save the receipt as a file and check it in a browser against the chain's public RPC, without this API (the Verify panel on the Jobs page). Same credentials as /jobs/{id}/invoice, enforced whatever OUTPUT_AUTH says. Always Cache-Control: private, no-store and Vary: Authorization, Cookie.",
+        ].join("\n"),
+        tags: ["Jobs"],
+        security: [{ readSecret: [] }, { walletSession: [] }],
+        responses: {
+          "200": json({ oneOf: [ref("JobReceipt"), ref("FreeReceiptStub")] }, "The receipt, or the free trial stub."),
+          "400": error("invalid-job-id"),
+          "401": { description: "No credentials were sent (empty body)." },
+          "403": error("These credentials cannot read this job's receipt."),
+          "404": error("unknown-job"),
+          "409": error("no-verdict: the two results are not compared yet."),
         },
       },
     },
@@ -645,15 +675,111 @@ export const coreApi: OpenApiModule = {
       },
       Charges: {
         type: "object",
+        description: `hashRule "${JOBS_HASH_RULE}": customers + leaves (no per-job list). Older charges (v1): jobs + the v1 hashRule text. status "none": nothing charged.`,
         properties: {
           epochId: { type: "integer" },
-          status: { type: "string" },
+          status: { enum: ["none", "sending", "done", "failed"] },
           listHash: nullable(ref("Hash")),
           totalWei: ref("Wei"),
           tx: nullable(ref("Hash")),
-          jobs: { type: "array", items: { type: "object", properties: { jobId: ref("JobId"), payer: ref("Address"), priceWei: ref("Wei") } } },
-          hashRule: { type: "string" },
+          hashRule: { type: "string", description: `"${JOBS_HASH_RULE}", or the v1 rule "keccak256(utf8(JSON.stringify(jobs))) with jobs sorted by jobId".` },
+          customers: {
+            type: "array",
+            description: "v2: each customer's total for the epoch, equal to its CustomerCharged event.",
+            items: { type: "object", properties: { customer: ref("Address"), amountWei: ref("Wei") } },
+          },
+          leaves: { type: "array", items: ref("Hash"), description: "v2: the sorted leaves of the jobs tree; their root is listHash." },
+          leafRule: { type: "string" },
+          codes: { type: "object", description: "v2: the uint8 codes of verdict and chargeStatus in a leaf." },
+          jobs: {
+            type: "array",
+            description: "v1 only, served as stored.",
+            items: { type: "object", properties: { jobId: ref("JobId"), payer: ref("Address"), priceWei: ref("Wei"), apiKeyId: nullable({ type: "string" }) } },
+          },
         },
+      },
+      JobReceipt: {
+        type: "object",
+        description: "Version 1 of a job receipt. Every field is checked by the Verify panel; a receipt with other fields is refused.",
+        required: [
+          "format",
+          "version",
+          "state",
+          "chainId",
+          "paymentsContract",
+          "jobId",
+          "payer",
+          "priceWei",
+          "verdict",
+          "chargeStatus",
+          "outputHash",
+          "nodes",
+          "epochId",
+          "chargeTx",
+          "anchor",
+          "pending",
+        ],
+        properties: {
+          format: { const: "sparecycle-job-receipt" },
+          version: { const: 1 },
+          state: { enum: ["provisional", "sealed"] },
+          chainId: { type: "integer" },
+          paymentsContract: ref("Address"),
+          jobId: ref("JobId"),
+          payer: ref("Address"),
+          priceWei: ref("Wei"),
+          verdict: { enum: ["agreed", "disagreed", "expired", "rejected"] },
+          chargeStatus: { enum: ["pending", "charged", "released", "unpaid"], description: "pending only while provisional." },
+          outputHash: nullable({ ...ref("Hash"), description: "sha256 of the kept output of an agreed job." }),
+          nodes: {
+            type: "array",
+            maxItems: 2,
+            items: {
+              type: "object",
+              properties: {
+                node: ref("Address"),
+                outputHash: ref("Hash"),
+                gpuMs: { type: "integer" },
+                epoch: { type: "integer" },
+                signature: { type: "string", pattern: "^0x[0-9a-fA-F]{130}$", description: "EIP-712 Receipt, domain Sparecycle v1, the chain id above." },
+              },
+            },
+          },
+          epochId: nullable({ type: "integer", description: "The epoch whose charge committed the leaf (sealed)." }),
+          chargeTx: nullable(ref("Hash")),
+          anchor: nullable({
+            type: "object",
+            properties: {
+              hashRule: { const: JOBS_HASH_RULE },
+              leafInputs: {
+                type: "object",
+                properties: {
+                  epochId: { type: "integer" },
+                  jobId: ref("JobId"),
+                  payer: ref("Address"),
+                  priceWei: ref("Wei"),
+                  verdict: { type: "integer", description: "uint8 code" },
+                  chargeStatus: { type: "integer", description: "uint8 code" },
+                  outputHash: { ...ref("Hash"), description: "0x00…00 unless agreed." },
+                },
+              },
+              leaf: ref("Hash"),
+              proof: { type: "array", items: ref("Hash") },
+              listHash: ref("Hash"),
+            },
+          }),
+          pending: nullable({
+            type: "object",
+            properties: {
+              reason: { enum: ["waiting-for-charge", "charge-unconfirmed", "no-anchor", "charged-before-receipts"] },
+              epochId: nullable({ type: "integer" }),
+            },
+          }),
+        },
+      },
+      FreeReceiptStub: {
+        type: "object",
+        properties: { jobId: ref("JobId"), payment: { const: "free" }, receipt: { const: false }, note: { type: "string" } },
       },
       Node: {
         type: "object",

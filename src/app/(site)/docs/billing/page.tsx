@@ -3,6 +3,7 @@ import Link from "next/link";
 import { C, Defs, DocsHeader, DocsNext, DocsSection, Ext, Note, Step, Steps } from "@/components/docs/docs-ui";
 import { CodeBlock } from "@/components/ui/code-block";
 import { ADDR, explorerAddressUrl } from "@/lib/addresses";
+import { ROBINHOOD_PUBLIC_RPC } from "@/lib/chain";
 import { MAINNET } from "@/lib/proof";
 import { repoFile, siteOrigin } from "@/lib/site";
 import { POLICY } from "@/server/env";
@@ -10,7 +11,7 @@ import { POLICY } from "@/server/env";
 export const metadata: Metadata = {
   title: "Billing",
   description:
-    "How paying for Sparecycle jobs works: deposit into the payments contract, what is held, when you are charged (only when two results match) and how to withdraw.",
+    "How paying for Sparecycle jobs works: deposit into the payments contract, what is held, when you are charged (only when two results match), job receipts you can check against the chain, and how to withdraw.",
 };
 
 export default function BillingPage() {
@@ -66,9 +67,59 @@ export default function BillingPage() {
           </li>
         </ul>
         <Note title="What is public">
-          Every charge is on-chain: the <C>CustomerCharged</C> event shows your wallet and the amount per epoch, and the
-          epoch&apos;s charge list (<C>GET /api/v1/epochs/&#123;id&#125;/charges</C>) lists job ids, payers and prices.
+          Every charge is on-chain: the <C>CustomerCharged</C> event shows your wallet and the amount per epoch. The epoch&apos;s
+          charge (<C>GET /api/v1/epochs/&#123;id&#125;/charges</C>) shows each wallet&apos;s total and the leaves of the jobs tree
+          below, not job ids or prices. Charge lists from before job receipts list job ids, payers and prices. The leaf of a job
+          that was not charged has nothing secret in it, so someone who knows its job id and guesses your wallet can recompute it.
         </Note>
+      </DocsSection>
+
+      <DocsSection id="receipts" title="Job receipts">
+        <p>
+          Every paid job also gets a receipt, next to its invoice on the <Link href="/jobs" className="link">Jobs page</Link> and in
+          the playground. It appears as soon as the two results are compared and stays{" "}
+          <span className="text-text">provisional</span> until the epoch&apos;s charge is confirmed on-chain; then it is{" "}
+          <span className="text-text">sealed</span>.
+        </p>
+        <ul className="list-disc space-y-2 pl-5 marker:text-faint">
+          <li>
+            A receipt holds the job id, your wallet, the price, whether the results matched, whether you were charged, the hash of
+            the output and the signed statements (EIP-712) of both nodes about the result each of them sent.
+          </li>
+          <li>
+            At each epoch close that charges at least one job, the scheduler builds a Merkle tree over every paid job settled since
+            the last charge: charged, not charged and unpaid. Its root goes on-chain as the <C>listHash</C> of the payments
+            contract&apos;s <C>Charged</C> event. A sealed receipt carries your job&apos;s leaf and the proof that leads to that root.
+          </li>
+          <li>
+            <span className="text-text">Verify in this browser</span> recomputes the leaf from the receipt, follows the proof and reads
+            the <C>Charged</C> event of the charge transaction from Robinhood Chain&apos;s public RPC (<C>{ROBINHOOD_PUBLIC_RPC}</C>),
+            not through Sparecycle. Changing any field of the receipt makes the check fail.
+          </li>
+          <li>
+            Save the receipt as a JSON file. <span className="text-text">Check a job receipt</span> on the Jobs page checks a saved
+            file the same way, also while the Sparecycle API is unreachable.
+          </li>
+        </ul>
+        <Note title="Which root is checked">
+          The epoch&apos;s payout Merkle root, the one node owners claim from, covers node payouts: one leaf per node owner. Jobs and
+          payers are not in it. A job receipt is checked against the jobs root in the <C>Charged</C> event instead.
+        </Note>
+        <Note title="An epoch without a charge">
+          If an epoch close charges no job, the contract emits no <C>Charged</C> event, so there is no on-chain anchor for that
+          epoch. Receipts of jobs that were not charged then say &ldquo;no on-chain anchor for this epoch&rdquo;, which is not a failed
+          check. They go into the jobs root of the next epoch that charges a job.
+        </Note>
+        <Note tone="warn" title="If the public RPC does not load">
+          Some internet providers, including many in Indonesia, block Robinhood Chain&apos;s public RPC by DNS. The check then says
+          so and lets you paste another RPC URL of your choice. It never falls back to Sparecycle&apos;s own relay.
+        </Note>
+        <p>
+          What a passing check shows: your job&apos;s line (job, wallet, price, verdict, charge status, output hash) is in the root
+          committed on-chain with that charge. It does not show that the nodes computed the output correctly; the node signatures
+          show which node keys reported the results. Over the API, with the job&apos;s read secret or a session of the paying wallet:
+        </p>
+        <CodeBlock label="Terminal" code={`curl -s -H "Authorization: Bearer READ_SECRET" ${siteOrigin()}/api/v1/jobs/JOB_ID/receipt`} />
       </DocsSection>
 
       <DocsSection id="withdraw" title="Withdraw">

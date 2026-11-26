@@ -1,5 +1,6 @@
 // SQLite storage of the scheduler (Node's built-in node:sqlite). All scheduler state lives here, so a restart
-// loses nothing: nodes, jobs, tasks, results, epochs, payout leaves, rate limits and seen request signatures.
+// loses nothing: nodes, jobs, tasks, results, epochs, payout leaves, charge (jobs-tree) leaves, rate limits and seen
+// request signatures.
 // One process per DB file (run one replica); WAL mode; schema migrations run on first open.
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -281,6 +282,29 @@ const MIGRATIONS: string[] = [
     created_at       INTEGER NOT NULL
   );
   CREATE UNIQUE INDEX api_requests_idem ON api_requests(key_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+  `,
+  // v9 (job receipts, feature brief #8 option B; src/lib/job-receipt.ts, src/server/receipts.ts). Additive only.
+  // A charge now commits a Merkle root over every paid / team job that reached a final charge status (charged,
+  // released, unpaid) and is not yet in a confirmed jobs root: that root is the listHash of the Charged event
+  // (charges.hash_rule = 'v2-jobs-merkle'). Charges stored before this keep 'v1' (listHash = keccak256 of the JSON
+  // list) and are served unchanged. charge_leaves holds each charge's leaves (like payouts for the payout tree);
+  // jobs.receipt_epoch is the epoch whose confirmed charge holds the job's leaf (NULL = not yet in a confirmed root).
+  `
+  ALTER TABLE charges ADD COLUMN hash_rule TEXT NOT NULL DEFAULT 'v1';
+  ALTER TABLE jobs ADD COLUMN receipt_epoch INTEGER;
+  CREATE TABLE charge_leaves (
+    epoch_id      INTEGER NOT NULL,           -- the charge epoch: the leaf's epochId and the Charged event's epochId
+    job_id        TEXT NOT NULL,
+    payer         TEXT NOT NULL,              -- checksummed wallet
+    price_wei     TEXT NOT NULL,              -- decimal string
+    verdict       TEXT NOT NULL,              -- agreed | disagreed | expired | rejected (uint8 code: src/lib/job-receipt.ts)
+    charge_status TEXT NOT NULL,              -- charged | released | unpaid
+    output_hash   TEXT,                       -- NULL = 0x00…00 in the leaf
+    leaf          TEXT NOT NULL,
+    PRIMARY KEY (epoch_id, job_id)
+  );
+  CREATE INDEX charge_leaves_job ON charge_leaves(job_id);
+  CREATE INDEX jobs_receipt_open ON jobs(charge_status) WHERE payer IS NOT NULL AND receipt_epoch IS NULL;
   `,
 ];
 

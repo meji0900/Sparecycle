@@ -141,6 +141,22 @@ PaaS proxies do). IPs are stored only as salted hashes.
   others, 404 for an unknown id. A free job answers a "free trial, no charge" stub. Public job views carry only
   `payment` (free / paid / team), never the price, the charge status, the payer or the hash (D7). A job that settles
   without agreement shows `released` (not charged) at once; the stored status follows at the next epoch close.
+- **Job receipts** (`src/server/receipts.ts`, `src/lib/job-receipt.ts`, `GET /api/v1/jobs/:id/receipt`; feature brief
+  #8, option B). `chargeOpenEpoch` builds a jobs tree over the jobs it charges plus every paid / team job released or
+  left unpaid since the last confirmed charge (`jobs.receipt_epoch IS NULL`; the first such charge also takes the ones
+  settled before receipts existed), stores its leaves (`charge_leaves`, like `payouts` for the payout tree) with the
+  charge row (`charges.hash_rule = 'v2-jobs-merkle'`) before sending, and passes the root as `listHash` to
+  `charge(...)`. Leaf: `keccak256(abi.encode(uint64 epochId, bytes32 jobId, address payer, uint256 priceWei, uint8
+  verdict, uint8 chargeStatus, bytes32 outputHash))`, codes in `src/lib/job-receipt.ts`, sorted-pair tree. When the
+  charge is confirmed (`markCharged`, also from the crash-recovery path) the jobs get `receipt_epoch` and their
+  receipts are `sealed`; before that a receipt is `provisional` from the verdict on (waiting for the charge, charge
+  unconfirmed, or `no-anchor` when the epoch close after the verdict charged nothing: no `Charged` event, D15; such
+  jobs go into the next charge's tree). A receipt carries both nodes' EIP-712 receipts (`results.signature`), the
+  leaf inputs, the proof, the jobs root and the charge transaction; same access as the invoice. A failed (unsent)
+  attempt and a `sending` attempt found not mined are deleted with their leaves; `resolveSending` still looks up
+  `Charged(epochId, listHash)` with the stored hash. `GET epochs/:id/charges` serves v2 charges as per-customer totals
+  plus the sorted leaves (no job ids, D7) and v1 charges (stored before receipts) exactly as stored. The leaves are in
+  the DB snapshot (`backup.ts`); `scripts/backup-trees.mjs` also saves each v2 charge answer off the server.
 - Node requests are signed: headers `x-sc-from`, `x-sc-ts`, `x-sc-sig` = EIP-191 signature of
   `sparecycle|METHOD|PATH|TS|sha256(body)`, 60 s window, each signature accepted once.
 - Distinct owner / GPU checks rely on what nodes report (GPU UUIDs can be faked); a determined operator with
@@ -148,11 +164,12 @@ PaaS proxies do). IPs are stored only as salted hashes.
 
 ## Endpoints (`/api/v1`)
 
-Public: `GET health`, `GET status`, `GET epochs`, `GET epochs/:id/tree`, `GET epochs/:id/proof?account=`,
+Public: `GET health`, `GET status`, `GET epochs`, `GET epochs/:id/tree`, `GET epochs/:id/proof?account=`, `GET epochs/:id/charges`,
 `GET jobs?limit=`, `POST jobs`, `GET jobs/:id`, `GET nodes`.
 Viewer-dependent (always `Cache-Control: private, no-store`, `Vary: Authorization, Cookie`): `GET jobs/:id`,
 `GET jobs/:id/result` (read secret or payer session when `OUTPUT_AUTH=enforce`), `GET jobs/:id/output` (retired: 410
-when enforced), `GET jobs/:id/invoice` (the private invoice, above), `GET auth/nonce`, `POST auth/verify`,
+when enforced), `GET jobs/:id/invoice` (the private invoice, above), `GET jobs/:id/receipt` (the job receipt,
+above), `GET auth/nonce`, `POST auth/verify`,
 `POST auth/logout`.
 Nodes (signed): `POST nodes/register`, `POST nodes/poll`, `POST nodes/heartbeat`, `POST tasks/:taskId/result`.
 Operator: `POST epochs/close`. Errors are always `{ "error": "<kebab-code>", "message": "…" }`. Shapes:

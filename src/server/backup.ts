@@ -1,7 +1,8 @@
 // Daily SQLite snapshot of the scheduler database: `VACUUM INTO <db dir>/backups/sparecycle-<UTC stamp>.db`, keeping
-// the newest DB_BACKUP_KEEP (default 7). Guards against corruption or a bad migration, not against losing the
-// volume itself: the public /api/v1/epochs/{id}/tree endpoint lets anyone mirror every published Merkle tree, and
-// `node scripts/backup-trees.mjs <site>` downloads them all off the server.
+// the newest DB_BACKUP_KEEP (default 7). The whole file, so payout leaves (`payouts`) and jobs-tree leaves
+// (`charge_leaves`) are in it. Guards against corruption or a bad migration, not against losing the volume itself: the
+// public /api/v1/epochs/{id}/tree and /charges endpoints let anyone mirror every published payout tree and jobs tree,
+// and `node scripts/backup-trees.mjs <site>` downloads them all off the server.
 // DB_BACKUP_HOURS: hours between snapshots (default 24, 0 = off). Uses the same synchronous DB handle as the API,
 // so a snapshot briefly blocks requests (milliseconds for a DB of this size).
 import { mkdirSync, readdirSync, rmSync } from "node:fs";

@@ -101,8 +101,9 @@ export default function DisclosuresPage() {
               </>
             ) : null}
             , a Safe that needs two signatures to move funds. Both of its keys are currently held by the project owner. The
-            scheduler key is trusted to charge only for verified jobs; every charge list is published at
-            /api/v1/epochs/&#123;id&#125;/charges, and you can cap what it may charge you per epoch.
+            scheduler key is trusted to charge only for verified jobs. What every charge committed is published at
+            /api/v1/epochs/&#123;id&#125;/charges: each wallet&apos;s total and the root of a jobs tree that you can check your own job receipts
+            against. You can cap what it may charge you per epoch.
           </p>
         </LegalSection>
       ) : null}

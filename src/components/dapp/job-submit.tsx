@@ -9,6 +9,7 @@ import { apiDown, type ApiFailure, type JobDetail } from "@/lib/dapp/api";
 import { useJobOutput } from "@/lib/dapp/job-output";
 import { jobTag, lifecycleStage, modelLabel, TERMINAL } from "@/lib/dapp/jobs";
 import { useJobInvoice } from "@/lib/dapp/invoice";
+import { useJobReceipt } from "@/lib/dapp/receipt";
 import { chargeWords, formatEth, formatGwei, paymentTag, quoteJob, showPayment } from "@/lib/dapp/paid-jobs";
 import { useApiGet } from "@/lib/dapp/use-api";
 import { formatInt, formatTime } from "@/lib/format";
@@ -16,6 +17,7 @@ import { LIMITS } from "@/lib/protocol";
 import { cn } from "@/lib/utils";
 import { accountFailureText, Eth, LowCreditNotice } from "./job-balance";
 import { JobInvoicePanel } from "./job-invoice";
+import { JobReceiptPanel } from "./job-receipt";
 import { JobLifecycle } from "./job-lifecycle";
 import { OutputPrivacyNotice, outputLockText, SignInToView } from "./private-output";
 import { RadioCard, Row } from "./ui";
@@ -556,6 +558,8 @@ function JobCard({ id, secret }: { id: string; secret: string | null }) {
   const payerJob = job?.payment === "paid" || job?.payment === "team";
   const invoice = useJobInvoice(payerJob ? id : null, secret, { refreshKey: job?.status, poll: true });
   const inv = invoice.state === "ready" && invoice.invoice.invoice ? invoice.invoice : null;
+  // The payer's receipt (provisional from the verdict, sealed once its charge is on-chain) with the in-browser check.
+  const receipt = useJobReceipt(payerJob && terminal ? id : null, secret, { refreshKey: job?.status });
 
   return (
     <article className="rounded-l border border-line">
@@ -610,6 +614,7 @@ function JobCard({ id, secret }: { id: string; secret: string | null }) {
             ) : null}
             {job.status === "agreed" && !hasOutput ? <p className="text-sm text-muted">Agreed. The output is not stored.</p> : null}
             {payerJob ? <JobInvoicePanel state={invoice} /> : null}
+            {payerJob && terminal ? <JobReceiptPanel state={receipt} /> : null}
           </>
         ) : fail ? (
           <p className="text-sm text-muted">

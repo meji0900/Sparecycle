@@ -161,6 +161,17 @@ console.log(res.status, await res.json()); // keep id and readSecret`;
               Do not submit personal or sensitive text.
             </Note>
           </Step>
+          <Step n={6} title="Keep the receipt (paid jobs)">
+            <p>
+              A paid job shows a receipt under its invoice as soon as the two results are compared. Once the epoch&apos;s charge is
+              on-chain the receipt is sealed: save it as a JSON file and choose Verify to check it against the chain yourself, through
+              Robinhood Chain&apos;s public RPC rather than Sparecycle. See{" "}
+              <Link href="/docs/billing#receipts" className="link">
+                job receipts
+              </Link>
+              .
+            </p>
+          </Step>
         </Steps>
       </DocsSection>
 
@@ -218,7 +229,9 @@ console.log(res.status, await res.json()); // keep id and readSecret`;
         <CodeBlock label="Node.js with viem" code={script} />
         <p>
           Read the result the same way as a free job, with the <C>readSecret</C> from the answer, or with a session of the
-          paying wallet (see <Link href="/docs/api#auth" className="link">authentication</Link>).
+          paying wallet (see <Link href="/docs/api#auth" className="link">authentication</Link>). The same credentials read the
+          job&apos;s invoice (<C>GET /api/v1/jobs/JOB_ID/invoice</C>) and its receipt (<C>GET /api/v1/jobs/JOB_ID/receipt</C>,{" "}
+          <C>409 no-verdict</C> until the results are compared).
         </p>
       </DocsSection>
 
