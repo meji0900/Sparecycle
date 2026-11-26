@@ -194,6 +194,9 @@ Per closed epoch with a confirmed charge (oldest first, so carry-over chains in 
 
 ### Holder page (`/token/holders`, `src/server/holder-page.ts`, `TOKEN_HOLDER_PAGE`)
 
+With the flag off, `src/proxy.ts` (matcher `/token/holders` only) rewrites the path to one no route matches, so it answers
+exactly the 404 page of any unknown URL; the page also calls `notFound()` as a second guard.
+
 Only on-chain data, each figure with its proof link (transaction, event log or contract read), `[NOT LIVE YET]` for
 every part whose contract is not deployed (never a zero or a sample number), and "last read at" with the block. Sections:
 burned (2a / 2b / slashes apart, burn rows, carried-over rows), distributed (roots and credit claims), staked (total,

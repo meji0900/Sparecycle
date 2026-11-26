@@ -4,10 +4,13 @@
 // Run: npm test
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { registerHooks } from "node:module";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 
 for (const k of Object.keys(process.env)) if (k.startsWith("TOKEN_")) delete process.env[k];
+// next/server has no ESM exports map: Next's bundler resolves it, plain Node needs the file name (for src/proxy.ts).
+registerHooks({ resolve: (specifier, context, next) => next(specifier === "next/server" ? "next/server.js" : specifier, context) });
 const { resolveTokenCopyState, tokenCopyState, tokenFlags } = await import("./token-copy-state");
 const { TOKEN_COPY_OFF } = await import("@/lib/token-copy");
 
@@ -45,6 +48,22 @@ describe("token copy state", () => {
     });
     assert.equal(reads, 0);
     assert.deepEqual([s.burns, s.holders, s.holderPage, s.stakeRequired], [true, true, true, false]);
+  });
+
+  test("flag off: the proxy rewrites /token/holders to an unmatched path (the plain 404 of any unknown URL); on: passes", async () => {
+    const { proxy, config } = await import("../proxy");
+    const { NextRequest } = await import("next/server");
+    assert.deepEqual(config.matcher, ["/token/holders"], "no other path reaches the proxy");
+    const off = proxy(new NextRequest("http://127.0.0.1/token/holders"));
+    assert.match(off.headers.get("x-middleware-rewrite") ?? "", /\/_sparecycle-not-found$/);
+    process.env.TOKEN_HOLDER_PAGE = "on";
+    try {
+      const on = proxy(new NextRequest("http://127.0.0.1/token/holders"));
+      assert.equal(on.headers.get("x-middleware-rewrite"), null);
+      assert.equal(on.headers.get("x-middleware-next"), "1");
+    } finally {
+      delete process.env.TOKEN_HOLDER_PAGE;
+    }
   });
 
   test("the holder page is linked from /token and /proof only behind TOKEN_HOLDER_PAGE", () => {

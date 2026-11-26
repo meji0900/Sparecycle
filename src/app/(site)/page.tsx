@@ -6,15 +6,13 @@ import { OnchainStatus } from "@/components/landing/onchain-status";
 import { ProductPanel } from "@/components/landing/product-panel";
 import { WhoFor } from "@/components/landing/who-for";
 import { Disclosures, Faq, Features, Mechanics, Roadmap, RunANode, TokenSection } from "@/components/landing/sections";
-import { tokenCopy } from "@/lib/token-copy";
-import { tokenCopyState } from "@/server/token-copy-state";
+import { TOKEN_COPY_OFF, tokenCopy, type TokenCopy } from "@/lib/token-copy";
+import { tokenCopyState, tokenFlags } from "@/server/token-copy-state";
 
 // Pons factory reads are refreshed at most once a minute.
 export const revalidate = 60;
 
-export default async function Home() {
-  // Token features (docs/token-features.md): the lines a TOKEN_* flag makes false follow the flags; all off = today's copy.
-  const copy = tokenCopy(await tokenCopyState());
+function Landing({ copy }: { copy: TokenCopy }) {
   return (
     <>
       <Hero noTokenFact={copy.heroNoToken} />
@@ -34,4 +32,16 @@ export default async function Home() {
       <Disclosures extra={copy.facts} />
     </>
   );
+}
+
+/** With a TOKEN_* flag on: the copy follows the flags (and the stake minimum read from the chain). */
+async function LandingWithTokenCopy() {
+  return <Landing copy={tokenCopy(await tokenCopyState())} />;
+}
+
+export default function Home() {
+  // Token features (docs/token-features.md): the lines a TOKEN_* flag makes false follow the flags. With every flag off
+  // the page renders synchronously with today's copy, exactly as before.
+  const f = tokenFlags();
+  return f.burns || f.holders || f.stakeGate || f.holderPage ? <LandingWithTokenCopy /> : <Landing copy={tokenCopy(TOKEN_COPY_OFF)} />;
 }
