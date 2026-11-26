@@ -22,12 +22,13 @@ import type { Hex } from "viem";
 import { jobPriceWei } from "@/lib/job-payment";
 import { LIMITS, MODEL_IDS, MODELS, parseJobRequest, SpecError, type JobRequest, type JobStatus, type ModelId } from "@/lib/protocol";
 import { keyFromRequest } from "./apikeys";
-import { requestHost, type KeyViewer } from "./auth";
+import { bearerToken, requestHost, type KeyViewer } from "./auth";
 import { getDb, nowSec } from "./db";
 import { POLICY, serverEnv } from "./env";
 import { ApiError, clientIp, PRIVATE_HEADERS, privateJson, readBody } from "./http";
-import { jobStatusOf, keyJob, submitJob, type KeyJob } from "./jobs";
+import { jobStatusOf, jobView, keyJob, secretJob, submitJob, X402_CHARGE_STATUS, type KeyJob } from "./jobs";
 import { priceWeiPerUnit } from "./payments";
+import { isX402Job, x402Applies, x402Pay, x402PaymentInfo } from "./x402";
 
 /** A6 (Default, not yet confirmed by Fabio): at most one `system` message, then exactly one `user` message. No multi-turn. */
 export const CHAT_MAX_SYSTEM_MESSAGES = 1;
@@ -90,6 +91,15 @@ const FROM_API: Record<string, [number, string, string]> = {
   "queue-full": [503, "queue_full", "server_error"],
   "payments-off": [503, "payments_off", "server_error"],
   "api-keys-off": [503, "api_keys_off", "server_error"],
+  // x402 (./x402; only thrown while X402_ENABLED=1)
+  "payment-in-progress": [409, "payment_in_progress", "invalid_request_error"],
+  "payment-used": [409, "payment_used", "invalid_request_error"],
+  "payment-refunded": [409, "payment_refunded", "invalid_request_error"],
+  "payment-pending": [503, "payment_pending", "server_error"],
+  "x402-off": [503, "x402_off", "server_error"],
+  "x402-unavailable": [503, "x402_unavailable", "server_error"],
+  "x402-paused": [503, "x402_paused", "server_error"],
+  "x402-over-cap": [400, "x402_amount_over_cap", "invalid_request_error"],
 };
 
 /** Job-spec fields -> the OpenAI parameter they came from. */
@@ -400,7 +410,10 @@ export async function submitForKey(
 /** The response format an image job was created with (A8 default when unknown). */
 export function formatOf(jobId: string): ImageFormat {
   const row = getDb().prepare("SELECT response_format FROM api_requests WHERE job_id = ?").get(jobId) as { response_format: ImageFormat | null } | undefined;
-  return row?.response_format ?? DEFAULT_IMAGE_RESPONSE_FORMAT;
+  if (row?.response_format) return row.response_format;
+  // An x402 job keeps its format with its escrow record (./x402).
+  const x = getDb().prepare("SELECT response_format FROM x402_escrows WHERE job_id = ?").get(jobId) as { response_format: ImageFormat | null } | undefined;
+  return x?.response_format ?? DEFAULT_IMAGE_RESPONSE_FORMAT;
 }
 
 // ---- Prefer: wait ----------------------------------------------------------------------------------------
@@ -444,7 +457,7 @@ export function jobIdFrom(raw: string, prefix: "chatcmpl-" | "img-"): string {
  * A final outcome that was never charged, as a 422 `not_charged` error (brief 2.7); null for any other status.
  * 422 is not in the OpenAI SDKs' retry list, so a client does not resubmit by itself.
  */
-export function notCharged(job: Pick<KeyJob, "id" | "status" | "note">): OpenAIError | null {
+export function notCharged(job: Pick<KeyJob, "id" | "status" | "note"> & Partial<Pick<KeyJob, "chargeStatus">>): OpenAIError | null {
   const outcome: Partial<Record<JobStatus, [string, string]>> = {
     disagreed: ["results_did_not_match", "The results of the two nodes did not match, so there is no answer. Nothing was charged for this job."],
     expired:
@@ -455,8 +468,10 @@ export function notCharged(job: Pick<KeyJob, "id" | "status" | "note">): OpenAIE
   };
   const hit = outcome[job.status];
   if (!hit) return null;
-  const err = new OpenAIError(422, hit[0], "not_charged", hit[1], null, { "x-should-retry": "false" });
-  err.sparecycle = { job_id: job.id, status: job.status, charged: false, note: job.note };
+  const x402 = job.chargeStatus === X402_CHARGE_STATUS;
+  const message = x402 ? hit[1].replace("Nothing was charged for this job.", "The payment held in escrow is refunded to the payer.") : hit[1];
+  const err = new OpenAIError(422, hit[0], "not_charged", message, null, { "x-should-retry": "false" });
+  err.sparecycle = { job_id: job.id, status: job.status, charged: false, note: job.note, ...(x402 ? { x402: x402PaymentInfo(job.id) } : {}) };
   return err;
 }
 
@@ -574,8 +589,66 @@ async function created(req: Request, key: KeyViewer, jobId: string, replayed: bo
   }
 }
 
+// ---- x402 (./x402; only while X402_ENABLED=1 and configured) -------------------------------------------------------
+
+/**
+ * A create call without any Authorization header while x402 is on: 402 with PAYMENT-REQUIRED, or, with a valid
+ * PAYMENT-SIGNATURE, the paid job's 202 answer with PAYMENT-RESPONSE and `sparecycle.read_secret` (given once). Once the
+ * job is queued nothing can turn the answer into an error: the secret is the payer's only API credential for the job.
+ */
+async function createX402(req: Request, surface: "chat" | "images"): Promise<Response> {
+  const body = await bodyOf(req);
+  const parsed = surface === "chat" ? { request: chatRequest(body.json), format: null } : imagesRequest(body.json);
+  const out = await x402Pay(req, parsed.request, { surface, bodyText: body.text, format: parsed.format, ip: clientIp(req) });
+  if (out.kind === "required") return privateJson(out.body, out.status, out.headers);
+  const format = (out.format ?? parsed.format ?? DEFAULT_IMAGE_RESPONSE_FORMAT) as ImageFormat;
+  const render = (job: KeyJob) => {
+    const o = (surface === "chat" ? chatObject(job) : imagesObject(req, job, format)) as { sparecycle: Record<string, unknown> };
+    o.sparecycle = { ...o.sparecycle, x402: x402PaymentInfo(job.id), read_secret: out.readSecret };
+    return o;
+  };
+  const headers: Record<string, string> = { "payment-response": out.paymentResponse };
+  try {
+    const wait = preferWait(req);
+    if (wait > 0) {
+      await waitForVerdict(out.jobId, wait, req.signal);
+      headers["preference-applied"] = `wait=${wait}`;
+    }
+    const job = jobView(out.jobId, { withOutput: true });
+    return answer(job, render(job), true, headers);
+  } catch {
+    const job = jobView(out.jobId); // the plain queued answer, with the secret
+    return privateJson(render({ ...job, status: "queued", settledAt: null, output: null }), 202, headers);
+  }
+}
+
+/**
+ * Who reads a polled job: an API key; or the read secret of an x402 job (any other Bearer token, only for a job that has
+ * an x402 escrow record). For every other request this is exactly requireKey(), with the same errors in the same order.
+ */
+function readerOf(req: Request, rawId: string, prefix: "chatcmpl-" | "img-"): { key: KeyViewer } | { secret: string } {
+  const key = keyFromRequest(req);
+  if (key) return { key };
+  const token = bearerToken(req);
+  const id = new RegExp(`^${prefix}(0x[0-9a-f]{64})$`).exec(rawId)?.[1];
+  if (token && id && isX402Job(id)) return { secret: token };
+  return { key: requireKey(req) };
+}
+
+const readJob = (req: Request, r: { key: KeyViewer } | { secret: string }, id: string, withOutput = false): KeyJob =>
+  "key" in r ? keyJob(id, r.key, { withOutput }) : secretJob(id, r.secret, clientIp(req), { withOutput });
+
+/** The x402 block added to a polled x402 job. */
+function withX402<T>(job: KeyJob, body: T): T {
+  if (job.chargeStatus !== X402_CHARGE_STATUS) return body;
+  const o = body as { sparecycle: Record<string, unknown> };
+  o.sparecycle = { ...o.sparecycle, x402: x402PaymentInfo(job.id) };
+  return body;
+}
+
 /** POST /v1/chat/completions */
 export async function createChat(req: Request): Promise<Response> {
+  if (x402Applies(req)) return createX402(req, "chat");
   const key = requireKey(req);
   const idem = idempotencyKeyOf(req);
   const body = await bodyOf(req);
@@ -586,9 +659,9 @@ export async function createChat(req: Request): Promise<Response> {
 
 /** GET /v1/chat/completions/chatcmpl-<jobId> */
 export async function pollChat(req: Request, rawId: string): Promise<Response> {
-  const key = requireKey(req);
+  const reader = readerOf(req, rawId, "chatcmpl-");
   const jobId = jobIdFrom(rawId, "chatcmpl-");
-  let job = keyJob(jobId, key);
+  let job = readJob(req, reader, jobId);
   if (job.kind !== "text") throw new OpenAIError(404, "not_found", "invalid_request_error", "No chat completion with this id.");
   const headers: Record<string, string> = {};
   const wait = preferWait(req);
@@ -596,12 +669,13 @@ export async function pollChat(req: Request, rawId: string): Promise<Response> {
     await waitForVerdict(jobId, wait, req.signal);
     headers["preference-applied"] = `wait=${wait}`;
   }
-  job = keyJob(jobId, key, { withOutput: true });
-  return answer(job, chatObject(job), false, headers);
+  job = readJob(req, reader, jobId, true);
+  return answer(job, withX402(job, chatObject(job)), false, headers);
 }
 
 /** POST /v1/images/generations */
 export async function createImage(req: Request): Promise<Response> {
+  if (x402Applies(req)) return createX402(req, "images");
   const key = requireKey(req);
   const idem = idempotencyKeyOf(req);
   const body = await bodyOf(req);
@@ -612,9 +686,9 @@ export async function createImage(req: Request): Promise<Response> {
 
 /** GET /v1/images/generations/img-<jobId> (a Sparecycle extension: OpenAI has no such call). */
 export async function pollImage(req: Request, rawId: string): Promise<Response> {
-  const key = requireKey(req);
+  const reader = readerOf(req, rawId, "img-");
   const jobId = jobIdFrom(rawId, "img-");
-  let job = keyJob(jobId, key);
+  let job = readJob(req, reader, jobId);
   if (job.kind !== "image") throw new OpenAIError(404, "not_found", "invalid_request_error", "No image generation with this id.");
   const headers: Record<string, string> = {};
   const wait = preferWait(req);
@@ -622,8 +696,8 @@ export async function pollImage(req: Request, rawId: string): Promise<Response> 
     await waitForVerdict(jobId, wait, req.signal);
     headers["preference-applied"] = `wait=${wait}`;
   }
-  job = keyJob(jobId, key, { withOutput: true });
-  return answer(job, imagesObject(req, job, formatOf(jobId)), false, headers);
+  job = readJob(req, reader, jobId, true);
+  return answer(job, withX402(job, imagesObject(req, job, formatOf(jobId))), false, headers);
 }
 
 /** GET /v1/models — exactly the two live models. `created` is left out: no release date is published for them. */

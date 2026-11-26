@@ -55,6 +55,19 @@ export function schedulerAccount() {
   return key ? privateKeyToAccount(key) : null;
 }
 
+let schedulerSends: Promise<unknown> = Promise.resolve();
+
+/**
+ * Runs `send` (one broadcast from the scheduler key: nonce lookup + eth_sendRawTransaction, not the receipt wait) after
+ * every earlier one, so two sends in this process never pick the same nonce. Used by every scheduler-key transaction:
+ * the root post, the charge and the x402 escrow calls (src/server/x402.ts), which can run concurrently.
+ */
+export function sendAsScheduler<T>(send: () => Promise<T>): Promise<T> {
+  const run = schedulerSends.then(send, send);
+  schedulerSends = run.catch(() => undefined);
+  return run;
+}
+
 export const rootPostingConfigured = () => rewardAddress() !== null && schedulerAccount() !== null;
 
 /** Short, secret-free error text (decoded revert name when there is one). */
@@ -92,7 +105,7 @@ export async function postRoot(
     args: [epochId, root, reserved],
   });
   const wallet = createWalletClient({ account, chain: targetChain, transport: http(targetChain.rpcUrls.default.http[0]) });
-  const hash = await wallet.writeContract(request);
+  const hash = await sendAsScheduler(() => wallet.writeContract(request));
   onSent(hash);
   const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 180_000 });
   if (receipt.status !== "success") return { hash, success: false, endedAt: null };

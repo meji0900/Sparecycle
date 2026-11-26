@@ -145,6 +145,73 @@ export default function ApiPage() {
         })}
       </DocsSection>
 
+      <DocsSection id="x402" title="x402 pay-per-job">
+        <Note tone="warn" title="Internal review only — not externally audited">
+          A capped launch, switched on per scheduler (it is off unless the operator enables it). The escrow contract has had an
+          internal security review only. Check before you rely on it: a request to <C>POST /v1/chat/completions</C> without any{" "}
+          <C>Authorization</C> header answers <C>402</C> with a <C>PAYMENT-REQUIRED</C> header when x402 is on, and{" "}
+          <C>401</C> when it is off.
+        </Note>
+        <p>
+          An agent without an API key can pay for one job with{" "}
+          <Ext href="https://github.com/x402-foundation/x402">x402</Ext> (version 2, scheme <C>exact</C>, an EIP-3009 signed
+          transfer). The money is held in an escrow contract (<Ext href={repoFile("contracts/src/SparecycleX402Escrow.sol")}>source</Ext>)
+          until the two nodes have compared their results.
+        </p>
+        <Defs
+          items={[
+            [
+              "1. Ask",
+              <>
+                Send the request without a key. The <C>402</C> answer carries the price of this job (its work units times the
+                price per work unit, in the payment asset&apos;s smallest unit), the asset, the network and <C>payTo</C>: the escrow
+                contract, never a wallet. A request above the escrow&apos;s per-job limit answers <C>400 x402_amount_over_cap</C>.
+              </>,
+            ],
+            [
+              "2. Pay",
+              <>
+                Sign a <C>TransferWithAuthorization</C> for exactly that amount to the escrow (most x402 clients do this from the{" "}
+                <C>PAYMENT-REQUIRED</C> header) and send the same request again with <C>PAYMENT-SIGNATURE</C>. The scheduler checks
+                the signature and moves the payment into the escrow from its own key; only then is the job queued. The{" "}
+                <C>202</C> answer carries <C>PAYMENT-RESPONSE</C> (the funding transaction) and <C>sparecycle.read_secret</C>.
+              </>,
+            ],
+            [
+              "3. Poll",
+              <>
+                Poll <C>sparecycle.poll</C> with <C>Authorization: Bearer &lt;read_secret&gt;</C>. The secret is shown once; the
+                paying wallet can also sign in to read the result. Sending the same payment again answers{" "}
+                <C>409 payment_used</C>.
+              </>,
+            ],
+            [
+              "Outcome",
+              <>
+                The two results match: the payment is forwarded, 95% for the node reward pot and 5% to the treasury. The reward
+                pot pays ETH, so the pot share goes to a Safe-controlled address (a <C>Forwarded</C> event names it); converting
+                it and adding it to the pot is a separate, manual Safe transaction. The results do not match, the job expires or is
+                rejected: the whole payment is refunded. After the escrow&apos;s deadline anyone can call <C>refund</C>, so a stopped scheduler cannot keep a payment.
+              </>,
+            ],
+            [
+              "Limits",
+              <>
+                The escrow caps each payment, the total held at once and what one wallet can pay per epoch. The treasury Safe can
+                change these limits, pause new payments and set the conversion address; it cannot move a held payment.
+              </>,
+            ],
+            [
+              "Trust",
+              <>
+                The scheduler key decides between forward and refund, as it decides verdicts today. Payments and their outcomes
+                are public on-chain; at low volume their timing can link a paying wallet to a job in the public job list.
+              </>,
+            ],
+          ]}
+        />
+      </DocsSection>
+
       <DocsSection id="limits" title="Limits">
         <Defs
           items={[

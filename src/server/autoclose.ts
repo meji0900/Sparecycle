@@ -8,6 +8,7 @@ import { autocloseTick } from "./epochs";
 import { startPoolTimer } from "./gpu-pool";
 import { startSweepTimer } from "./sweep";
 import { startBackupTimer } from "./backup";
+import { startX402Timer } from "./x402";
 
 const g = globalThis as typeof globalThis & { __sparecycleBooted?: boolean; __sparecycleAutoclose?: ReturnType<typeof setInterval> };
 
@@ -23,6 +24,7 @@ export function bootScheduler() {
   startPoolTimer();
   startSweepTimer();
   startBackupTimer();
+  startX402Timer(); // x402 escrow settlement (./x402): only when X402_ENABLED=1 and configured
   if (!serverEnv.autoclose() || g.__sparecycleAutoclose) return;
   let running = false;
   g.__sparecycleAutoclose = setInterval(() => {

@@ -34,7 +34,7 @@ import {
   type LeafVerdict,
 } from "@/lib/job-receipt";
 import { buildTree } from "@/lib/merkle";
-import { describeChainError, schedulerAccount } from "./chain-io";
+import { describeChainError, schedulerAccount, sendAsScheduler } from "./chain-io";
 import { getDb, nowSec, tx } from "./db";
 import { ApiError } from "./http";
 
@@ -380,7 +380,7 @@ export async function chargeOpenEpoch(epochId: number): Promise<string> {
       args: [BigInt(epochId), customers, amounts, listHash],
     });
     const wallet = createWalletClient({ account, chain: targetChain, transport: http(targetChain.rpcUrls.default.http[0]) });
-    const hash = await wallet.writeContract(request);
+    const hash = await sendAsScheduler(() => wallet.writeContract(request));
     db.prepare("UPDATE charges SET tx = ? WHERE epoch_id = ?").run(hash, epochId);
     const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 180_000 });
     if (receipt.status !== "success") throw new Error(`charge transaction ${hash} reverted`);

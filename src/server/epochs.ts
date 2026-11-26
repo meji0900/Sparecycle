@@ -17,6 +17,7 @@ import { POLICY, serverEnv } from "./env";
 import { ApiError } from "./http";
 import { allocate, type AgreedJob } from "./payouts";
 import { chargeOpenEpoch, paymentsAddress } from "./payments";
+import { sealX402Epoch } from "./x402";
 import {
   describeChainError,
   postRoot,
@@ -322,6 +323,10 @@ async function closeEpochUnlocked(): Promise<CloseSummary> {
   if (mode === "contract" && paymentsAddress()) {
     console.log(`[sparecycle] epoch ${open.id} job payments: ${await chargeOpenEpoch(open.id)}`);
   }
+  // x402 (./x402): escrows that reached an outcome go into this epoch's x402 tree. Silent when there are none (always,
+  // unless x402 was ever on); never throws.
+  const x402Seal = sealX402Epoch(open.id);
+  if (x402Seal) console.log(`[sparecycle] epoch ${open.id} x402: ${x402Seal}`);
 
   // Pot: what the contract will hold for this epoch at close. Without a contract there is no pot (0).
   const pot = mode === "contract" ? await chainRead("pot", () => readPotAtClose(BigInt(open.id))) : 0n;

@@ -26,6 +26,26 @@ const idemHeader = {
   description: "Same key + same body within the job TTL returns the first job instead of queuing another one.",
 };
 const notCharged = oaiErr("Not charged: `results_did_not_match`, `job_expired` or `content_rejected` (type `not_charged`).");
+/**
+ * x402 pay-per-job (src/server/x402.ts): answered only where the scheduler has X402_ENABLED=1 (off by default). Capped
+ * launch, INTERNAL REVIEW ONLY — NOT EXTERNALLY AUDITED.
+ */
+const X402_NOTE =
+  "Only where x402 is switched on (X402_ENABLED, off by default; capped launch, INTERNAL REVIEW ONLY — NOT EXTERNALLY AUDITED): a request with no Authorization header at all is paid per job with x402 v2 instead of an API key.";
+const paymentSignatureHeader = {
+  name: "PAYMENT-SIGNATURE",
+  in: "header",
+  required: false,
+  schema: { type: "string", description: "base64 of the JSON X402PaymentPayload" },
+  description: `${X402_NOTE} The x402 payment for this request: an EIP-3009 TransferWithAuthorization to the escrow (payTo) for exactly the quoted amount.`,
+};
+const x402Created = "With x402: also a PAYMENT-RESPONSE header (base64 X402SettleResponse; `transaction` = the escrow funding) and `sparecycle.read_secret` (given once: send it as Bearer on the poll URL).";
+const x402Responses = {
+  402: oaiErr(
+    `\`insufficient_balance\` (an API key whose wallet cannot pay). ${X402_NOTE} Without any Authorization header: \`x402_payment_required\` or \`x402_payment_rejected\`, with a PAYMENT-REQUIRED header (base64 X402PaymentRequired, also in the body's \`x402\` field).`,
+  ),
+  409: oaiErr("x402 only: `payment_used` (that authorization already paid; one answer for every replay), `payment_in_progress`, `payment_refunded`."),
+};
 
 export const agentApiPaths = {
   "/api/v1/keys": {
@@ -141,24 +161,26 @@ export const agentApiPaths = {
       summary: "Create a chat completion job (qwen2.5-1.5b); async, 202 by default",
       tags: ["OpenAI-compatible"],
       security: apiKey,
-      parameters: [preferHeader, idemHeader],
+      description: `${X402_NOTE} See X402PaymentRequired.`,
+      parameters: [preferHeader, idemHeader, paymentSignatureHeader],
       requestBody: { required: true, content: { "application/json": { schema: ref("ChatCompletionRequest") } } },
       responses: {
         200: json(ref("ChatCompletion"), "Agreed within the Prefer: wait time."),
-        202: json(ref("ChatCompletion"), "Queued: `choices` is empty; poll `sparecycle.poll`."),
-        400: oaiErr("`invalid_request` (param set), `streaming_not_supported`, `idempotency_key_reused`."),
+        202: json(ref("ChatCompletion"), "Queued: `choices` is empty; poll `sparecycle.poll`. " + x402Created),
+        400: oaiErr("`invalid_request` (param set), `streaming_not_supported`, `idempotency_key_reused`; x402 only: `x402_amount_over_cap`."),
         401: oaiErr("`invalid_api_key`."),
-        402: oaiErr("`insufficient_balance`."),
+        ...x402Responses,
         404: oaiErr("`model_not_found`."),
         422: notCharged,
         429: oaiErr("`key_daily_cap_reached` or `rate_limited`."),
-        503: oaiErr("`queue_full`, `payments_off`, `api_keys_off`."),
+        503: oaiErr("`queue_full`, `payments_off`, `api_keys_off`; x402 only: `x402_unavailable`, `x402_paused`, `payment_pending`."),
       },
     },
   },
   "/api/v1/chat/completions/{id}": {
     get: {
       summary: "Poll a chat completion job (what chat.completions.retrieve calls)",
+      description: "With the API key that created it; an x402 job with its read secret (Bearer) instead.",
       tags: ["OpenAI-compatible"],
       security: apiKey,
       parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", pattern: "^chatcmpl-0x[0-9a-f]{64}$" } }, preferHeader],
@@ -176,24 +198,26 @@ export const agentApiPaths = {
       summary: "Create an image job (sd15); async, 202 by default",
       tags: ["OpenAI-compatible"],
       security: apiKey,
-      parameters: [preferHeader, idemHeader],
+      description: `${X402_NOTE} See X402PaymentRequired.`,
+      parameters: [preferHeader, idemHeader, paymentSignatureHeader],
       requestBody: { required: true, content: { "application/json": { schema: ref("ImageRequest") } } },
       responses: {
         200: json(ref("ImagesResponse"), "Agreed within the Prefer: wait time."),
-        202: json(ref("ImagesResponse"), "Queued: `data` is empty; poll `sparecycle.poll`."),
-        400: oaiErr("`invalid_request` (param set), `streaming_not_supported`, `idempotency_key_reused`."),
+        202: json(ref("ImagesResponse"), "Queued: `data` is empty; poll `sparecycle.poll`. " + x402Created),
+        400: oaiErr("`invalid_request` (param set), `streaming_not_supported`, `idempotency_key_reused`; x402 only: `x402_amount_over_cap`."),
         401: oaiErr("`invalid_api_key`."),
-        402: oaiErr("`insufficient_balance`."),
+        ...x402Responses,
         404: oaiErr("`model_not_found`."),
         422: notCharged,
         429: oaiErr("`key_daily_cap_reached` or `rate_limited`."),
-        503: oaiErr("`queue_full`."),
+        503: oaiErr("`queue_full`; x402 only: `x402_unavailable`, `x402_paused`, `payment_pending`."),
       },
     },
   },
   "/api/v1/images/generations/{id}": {
     get: {
       summary: "Poll an image job (Sparecycle extension)",
+      description: "With the API key that created it; an x402 job with its read secret (Bearer) instead.",
       tags: ["OpenAI-compatible"],
       security: apiKey,
       parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", pattern: "^img-0x[0-9a-f]{64}$" } }, preferHeader],
@@ -280,8 +304,52 @@ export const agentApiComponents = {
           required: ["message", "type", "param", "code"],
         },
         sparecycle: { type: "object" },
+        x402: { $ref: "#/components/schemas/X402PaymentRequired" },
       },
       required: ["error"],
+    },
+    X402PaymentRequirements: {
+      type: "object",
+      description: "x402 v2 PaymentRequirements, scheme exact on EVM (EIP-3009). INTERNAL REVIEW ONLY — NOT EXTERNALLY AUDITED.",
+      properties: {
+        scheme: { const: "exact" },
+        network: { type: "string", description: "CAIP-2, e.g. eip155:4663", example: "eip155:4663" },
+        amount: { type: "string", pattern: "^\\d+$", description: "Atomic units of the asset: the request's work units x the x402 price per work unit." },
+        asset: { type: "string", description: "The EIP-3009 payment asset." },
+        payTo: { type: "string", description: "The escrow contract (SparecycleX402Escrow), never a wallet." },
+        maxTimeoutSeconds: { type: "integer" },
+        extra: {
+          type: "object",
+          properties: { name: { type: "string" }, version: { type: "string" }, assetTransferMethod: { const: "eip3009" } },
+          required: ["name", "version"],
+        },
+      },
+      required: ["scheme", "network", "amount", "asset", "payTo", "maxTimeoutSeconds", "extra"],
+    },
+    X402PaymentRequired: {
+      type: "object",
+      description:
+        "x402 v2 PaymentRequired (PAYMENT-REQUIRED header, base64 JSON). The `sparecycle-escrow` extension says how the payment is held: in the escrow before the job is queued, forwarded only when two nodes agree, refunded otherwise.",
+      properties: {
+        x402Version: { const: 2 },
+        error: { type: "string", description: "Why a sent payment was refused (x402 reason code)." },
+        resource: { type: "object", properties: { url: { type: "string" }, description: { type: "string" }, mimeType: { type: "string" }, serviceName: { type: "string" } } },
+        accepts: { type: "array", items: { $ref: "#/components/schemas/X402PaymentRequirements" } },
+        extensions: { type: "object" },
+      },
+      required: ["x402Version", "resource", "accepts"],
+    },
+    X402SettleResponse: {
+      type: "object",
+      description: "x402 v2 SettleResponse (PAYMENT-RESPONSE header, base64 JSON): the payment is held in the escrow; `transaction` funded it.",
+      properties: {
+        success: { type: "boolean" },
+        transaction: { type: "string" },
+        network: { type: "string" },
+        payer: { type: "string" },
+        amount: { type: "string" },
+      },
+      required: ["success", "transaction", "network"],
     },
     ApiKey: {
       type: "object",

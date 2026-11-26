@@ -30,8 +30,9 @@ import type { Viewer } from "./auth";
 import { getDb } from "./db";
 import { AUTH_REQUIRED, ApiError } from "./http";
 import { chargeStatusOf } from "./invoices";
-import { accessOf, expireStaleJobs, hasCredentials, isJobId, paymentKind } from "./jobs";
+import { accessOf, expireStaleJobs, hasCredentials, isJobId, paymentKind, X402_CHARGE_STATUS } from "./jobs";
 import { paymentsAddress } from "./payments";
+import { x402Receipt } from "./x402";
 
 type Row = {
   id: string;
@@ -168,7 +169,10 @@ function sealed(r: Row): Pick<JobReceipt, "payer" | "priceWei" | "verdict" | "ch
  * GET /api/v1/jobs/:id/receipt. Malformed id -> 400; no credentials -> 401 auth-required (an empty body); unknown
  * job -> 404; credentials that can't read this job -> 403; no verdict yet -> 409 no-verdict.
  */
-export function jobReceipt(id: string, viewer: Viewer): JobReceipt | FreeReceiptStub {
+/** The receipt of a job paid with x402 into the escrow (./x402): escrow events and the epoch's x402 tree. */
+export type X402Receipt = NonNullable<ReturnType<typeof x402Receipt>>;
+
+export function jobReceipt(id: string, viewer: Viewer): JobReceipt | FreeReceiptStub | X402Receipt {
   if (!isJobId(id)) throw new ApiError(400, "invalid-job-id", "job id must be 0x + 64 lowercase hex characters");
   if (!hasCredentials(viewer)) {
     throw new ApiError(401, AUTH_REQUIRED, "sign in with the paying wallet or send the job's read secret (Authorization: Bearer)");
@@ -182,6 +186,10 @@ export function jobReceipt(id: string, viewer: Viewer): JobReceipt | FreeReceipt
     .get(id) as Row | undefined;
   if (!r) throw new ApiError(404, "unknown-job", "no job with this id");
   if (!accessOf(r, viewer)) throw new ApiError(403, "forbidden", "only the wallet that paid for this job or its read secret can read its receipt");
+  if (r.charge_status === X402_CHARGE_STATUS) {
+    const x = x402Receipt(r.id);
+    if (x) return x;
+  }
   if (paymentKind(r.payer) === "free" || r.price_wei === null || !/^\d+$/.test(r.price_wei)) {
     return { jobId: r.id, payment: "free", receipt: false, note: "free trial, no charge: no receipt" };
   }
