@@ -294,7 +294,7 @@ export function HolderClaims({
               <th className={th}>Share</th>
               <th className={th}>State</th>
               <th className={th}>Claim until</th>
-              <th className={th}>Root</th>
+              <th className={th}>Root posted in</th>
               <th className={th}>
                 <span className="sr-only">Action</span>
               </th>
