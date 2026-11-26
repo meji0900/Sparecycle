@@ -144,38 +144,38 @@ side gets 4.67 of 5.77 ETH (constant product: never the whole side).
 
 ## Using it with V2 and the Burner: the slippage settings
 
-Both contracts check a floor against the epoch's accepted SPARE price, with a 2% default slippage:
+Both contracts check a floor against the epoch's accepted SPARE price. **Owner decision of 26–27 Nov 2026: 4% in both**
+(`DEFAULT_MAX_SLIPPAGE_BPS` and `DEFAULT_MAX_SWAP_SLIPPAGE_BPS` = 400):
 
-- `SparecycleBurner.maxSlippageBps` = 200 (`burnEpoch` needs `minOut ≥ value × 98%`);
-- `SparecycleJobPaymentsV2.maxSwapSlippageBps` = 200 (`chargeWithSpare` needs `minEthOut ≥ sale value × 98%`).
+- `SparecycleBurner.maxSlippageBps` = 400 (`burnEpoch` needs `minOut ≥ value × 96%`);
+- `SparecycleJobPaymentsV2.maxSwapSlippageBps` = 400 (`chargeWithSpare` needs `minEthOut ≥ sale value × 96%`).
 
-The hook alone takes 2.90%, so **with the defaults every burn and every SPARE sale reverts at the adapter's minimum
-check** (`test_Fork_DefaultSlippageIsBelowTheHookCut`). Nothing is lost: the burn's epoch stays open for a retry, and
-the SPARE jobs stay uncharged (deferred). To use the adapter, either:
+The hook takes 2.90% and impact is about size / ETH side (0.17% for 0.01 ETH), so a fill lands near 97% of the posted
+value and the 4% floor leaves about 1% for movement since the price was posted. The earlier 2% default would have
+made every burn and every SPARE sale revert at the adapter's minimum check (`test_Fork_TwoPercentWouldNotFitTheHookCut`
+keeps that as a regression). Both stay Safe-settable up to 1,000 bps.
 
-- the Safe raises both settings after deploy: `setMaxSlippageBps` (Burner) and `setMaxSwapSlippageBps` (V2), at most
-  1,000 bps. 290 bps hook + impact + price movement since the posted price: the fork test uses **500 bps** (a test
-  value, not a decision); or
-- the scheduler posts a price that is already net of the hook. One price serves both directions, though, so this does
-  not work for both buys and sells at once.
+With the same decision, SPARE-paid jobs have **0% discount** and the split is **350 / 0 / 150** (burn postponed), so
+the whole SPARE payment is sold and the sale pays the pot by itself (`test_Fork_ZeroDiscountSpareChargeNeedsNoSubsidy`,
+fork of 27 Nov 2026): a SPARE-only charge of 0.01 ETH (226,847.86 SPARE at the spot price) sold for 0.0096942 ETH
+against a contract floor of 0.0096 and a scheduler minimum of 0.00961 (value minus the 2.90% hook and a 1% buffer);
+the live pot got exactly 0.0095 ETH, the Safe the 0.0001942 ETH surplus, the discount reserve stayed empty, nothing
+was burned. After a Safe split change to 200 / 150 / 150 (`test_Fork_AfterSplitChange_SpareChargeAndBurnAtDefaults`)
+the charge burned 1.5% of the SPARE and `burnEpoch` bought and burned 3,314.56 SPARE for 0.00015 ETH (floor
+3,266.61) at the 4% default.
 
-With 500 bps on the fork (`test_Fork_SpareChargeAndBurnEndToEnd`): a SPARE-paid charge of 0.01 ETH (231,783.47 SPARE,
-sale floor 0.00842175 ETH) paid the live pot exactly 95% of both legs and burned the burner part of the SPARE; then,
-after the epoch closed, `burnEpoch` spent 0.01015 ETH and burned 254,152.46 SPARE (floor 248,330.23), and SPARE's
-total supply fell by exactly that.
-
-The discount economics also change: a SPARE-paid job's sale returns about 0.9 × 0.985 × 0.969 ≈ 86% of its ETH
-price, so about 9% of each SPARE job must come from the ETH treasury part, the discount reserve or the ETH burner part
-(the fork test funds the reserve).
+Who bears the hook cut on a SPARE sale: the protocol's 5%. The pot gets its 95% and the customer pays the job's ETH
+price in SPARE; what is left of the fee is the sale's surplus (about 1.9%, to the treasury). On a burn buy the cut is
+taken in SPARE, so fewer SPARE are burned per ETH.
 
 ## Tests
 
 | Suite | Tests | What |
 | --- | --- | --- |
 | `test/adapters/UniswapV4SpareAdapter.t.sol` | 18 (1 fuzz, 512 runs) | Against `test/mocks/MockPoolManager.sol` (v4 flash accounting: `unlock` reverts unless every delta is settled; 290 bps output fee like the hook). Key and id; the live key hashes to the live id and the hook address bits; constructor checks; buy to `to`, exact-input params and price limit; min-out at the edge; bad amounts and recipients; partial fill; zero output; sell pays ETH from the adapter; exact pull; allowance; refusing recipient; re-entry from the recipient blocked; callback only from the PoolManager; ETH only from the PoolManager during a call; fuzz buy-then-sell keeps nothing. |
-| `test/adapters/UniswapV4SpareAdapterWiring.t.sol` | 2 | The real adapter (over the mock PoolManager) in V2 and the Burner: default slippage fails, Safe-raised slippage passes, V2 accepts the sale's ETH from the adapter, burns are exact. Runs in CI. |
+| `test/adapters/UniswapV4SpareAdapterWiring.t.sol` | 2 | The real adapter (over the mock PoolManager) in V2 and the Burner: the 4% defaults pass (SPARE-only charge with no reserve, burn buy), a 2% setting fails, V2 accepts the sale's ETH from the adapter, burns are exact. Runs in CI. |
 | `test/fork/V4AdapterFork.t.sol` | 8 | Live pool. Re-reads every fact above; 0.001 / 0.01 ETH buys and sells (outputs = V4Quoter), min-out reverts at +1 wei, a large dump, the adapter keeps nothing; the burns.ts router payload on both routers. |
-| `test/fork/V4AdapterWiringFork.t.sol` | 2 | Fresh V2 + Burner + HolderPool with the real adapter against the live SparecycleRewards `0x68A0…8Fe9`, the treasury Safe `0xb262…c71B` and the live pool: defaults revert; at 500 bps a SPARE-paid charge and a `burnEpoch` go through end to end. |
+| `test/fork/V4AdapterWiringFork.t.sol` | 4 | Fresh V2 + Burner + HolderPool with the real adapter against the live SparecycleRewards `0x68A0…8Fe9`, the treasury Safe `0xb262…c71B` and the live pool: the deployed values; a 0%-discount SPARE-only charge pays the pot 95% with no reserve; nothing to burn at burner 0; 2% reverts; after a split change a charge and a `burnEpoch` go through at 4%. |
 
 Fork suites are opt-in and skip cleanly without `FORK_TESTS=1` or when the RPC is unreachable
 (`FORK_RPC_URL`, default the `robinhood` alias; `FORK_BLOCK` pins a block). Nothing is broadcast.
@@ -196,8 +196,8 @@ Fork suites are opt-in and skip cleanly without `FORK_TESTS=1` or when the RPC i
 - **Thin pool.** About 5.8 ETH on the ETH side. Impact is about size / ETH side; the N12 cap (1% of the side) keeps a
   burn near 1% impact. The side can shrink quickly if liquidity is moved (the LP NFT is in the Pons launch locker; what
   the locker allows was not reviewed here).
-- **Hook fees.** 2.90% of every swap's output, fixed for this pool, more than the 2% slippage defaults (see above).
-  A round trip costs about 5.7%. The 1.90% creator tax goes to the team wallet, so every Sparecycle burn or sale also
+- **Hook fees.** 2.90% of every swap's output, fixed for this pool; the 4% slippage (owner, 26–27 Nov 2026) leaves
+  about 1.1% for impact and movement. A round trip costs about 5.7%. The 1.90% creator tax goes to the team wallet, so every Sparecycle burn or sale also
   pays the project's own creator tax.
 - **Sandwiching and price movement.** The floor is only as good as the posted epoch price (scheduler-supplied, no
   on-chain oracle), and the raised slippage is room an attacker can take. Robinhood Chain has a sequencer and no public

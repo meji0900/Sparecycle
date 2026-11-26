@@ -57,14 +57,14 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
         assertEq(address(pay.swapAdapter()), address(adapter));
         assertTrue(pay.spareHasBurn());
         (uint16 t, uint16 b, uint16 h) = pay.currentSplit();
-        assertEq(t, 200, "N1 treasury");
-        assertEq(b, 150, "N1 burner");
-        assertEq(h, 150, "N1 holder pool");
+        assertEq(t, 350, "N1 treasury (owner, 26-27 Nov 2026)");
+        assertEq(b, 0, "N1 burner: burn postponed (owner, 26-27 Nov 2026)");
+        assertEq(h, 150, "N1 holder pool (owner, 26-27 Nov 2026)");
         assertEq(uint256(t) + b + h, 500);
         assertEq(pay.SPLIT_CHANGE_DELAY_EPOCHS(), 4);
-        assertEq(pay.SPARE_DISCOUNT_BPS(), 1_000, "N2");
+        assertEq(pay.SPARE_DISCOUNT_BPS(), 0, "N2: no discount (owner, 26-27 Nov 2026)");
         assertEq(pay.maxPriceDeviationBps(), 2_000, "N13");
-        assertEq(pay.maxSwapSlippageBps(), 200, "N12");
+        assertEq(pay.maxSwapSlippageBps(), 400, "N12: 4% (owner, 26-27 Nov 2026)");
         assertEq(pay.spareCapEthPerEpoch(), CAP);
         assertEq(pay.referenceSparePrice(), 0);
     }
@@ -263,7 +263,9 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
 
     // ================================================================ ETH charges and the split
 
-    function test_Charge_SplitsFeeThreeWays() public {
+    /// @notice The deployed split (owner, 26-27 Nov 2026): treasury 350 / burner 0 / holder pool 150. The burner gets
+    ///         nothing and no zero-value transfer is attempted; the events still carry the full breakdown.
+    function test_Charge_DefaultSplit_BurnerGetsNothing() public {
         _deposit(alice, 2 ether);
         uint64 id = _open();
         bytes32 lh = keccak256("v2-jobs-root");
@@ -271,15 +273,36 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
         vm.expectEmit(address(pay));
         emit SparecycleJobPaymentsV2.Charged(id, lh, 1 ether, 0.95 ether, 0.05 ether);
         vm.expectEmit(address(pay));
-        emit SparecycleJobPaymentsV2.Distributed(id, lh, 0.95 ether, 0.02 ether, 0.015 ether, 0.015 ether, 0);
+        emit SparecycleJobPaymentsV2.Distributed(id, lh, 0.95 ether, 0.035 ether, 0, 0.015 ether, 0);
         vm.prank(sched);
         pay.charge(id, cs, as_, lh);
 
         assertEq(ethR.getEpoch(id).pot, 0.95 ether, "95% to the node pot");
-        assertEq(treasury.balance, 0.02 ether, "N1 treasury 200 bps");
-        assertEq(address(burner).balance, 0.015 ether, "N1 burner 150 bps");
+        assertEq(treasury.balance, 0.035 ether, "N1 treasury 350 bps");
+        assertEq(address(burner).balance, 0, "N1 burner 0 bps: nothing sent");
         assertEq(address(pool).balance, 0.015 ether, "N1 holder pool 150 bps");
         assertEq(pay.balanceOf(alice), 1 ether);
+        _assertV2Accounting();
+    }
+
+    /// @notice After the Safe gives the burner a share (at least 4 epochs later) the 5% splits three ways.
+    function test_Charge_SplitsFeeThreeWaysAfterSafeChange() public {
+        _setSplit(200, 150, 150);
+        _deposit(alice, 2 ether);
+        uint64 id = _open();
+        bytes32 lh = keccak256("v2-jobs-root");
+        (address[] memory cs, uint256[] memory as_) = _one(alice, 1 ether);
+        vm.expectEmit(address(pay));
+        emit SparecycleJobPaymentsV2.SplitApplied(200, 150, 150, id);
+        vm.expectEmit(address(pay));
+        emit SparecycleJobPaymentsV2.Charged(id, lh, 1 ether, 0.95 ether, 0.05 ether);
+        vm.expectEmit(address(pay));
+        emit SparecycleJobPaymentsV2.Distributed(id, lh, 0.95 ether, 0.02 ether, 0.015 ether, 0.015 ether, 0);
+        vm.prank(sched);
+        pay.charge(id, cs, as_, lh);
+        assertEq(treasury.balance, 0.02 ether);
+        assertEq(address(burner).balance, 0.015 ether);
+        assertEq(address(pool).balance, 0.015 ether);
         _assertV2Accounting();
     }
 
@@ -417,10 +440,10 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
         _deposit(alice, 10 ether);
         for (uint256 i; i < 4; ++i) {
             (uint16 t,,) = pay.currentSplit();
-            assertEq(t, 200, "old split before the delay");
+            assertEq(t, 350, "old split before the delay");
             uint256 tb = treasury.balance;
             _charge(alice, 1 ether);
-            assertEq(treasury.balance - tb, 0.02 ether, "old split charged");
+            assertEq(treasury.balance - tb, 0.035 ether, "old split charged");
             _closeEmpty(ethR);
         }
         assertEq(_open(), start + 4);
@@ -461,7 +484,7 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
         _closeEmpty(ethR);
         _closeEmpty(ethR);
         (uint16 t,,) = pay.currentSplit();
-        assertEq(t, 200, "still the default at epoch 6");
+        assertEq(t, 350, "still the default at epoch 6");
     }
 
     function testFuzz_Split_NeverBeforeFourEpochs(uint8 closesBefore, uint8 closesAfter) public {
@@ -477,7 +500,7 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
             _closeEmpty(ethR);
         }
         (uint16 t,,) = pay.currentSplit();
-        if (_open() < proposedAt + 4) assertEq(t, 200, "unchanged before 4 epochs");
+        if (_open() < proposedAt + 4) assertEq(t, 350, "unchanged before 4 epochs");
         else assertEq(t, 500, "applies from proposal epoch + 4");
     }
 
@@ -714,7 +737,8 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
     // ================================================================ SPARE-paid charges (brief 5)
 
     /// @notice Brief 5: a SPARE-paid agreed job gives the node pot at least the ETH an ETH-paid job of the same size
-    ///         gives (here exactly 95%), the discount coming out of the treasury share.
+    ///         gives (here exactly 95%). At the deployed values (0% discount, burner part 0) nothing is burned and the
+    ///         sale itself pays the pot; the sale's surplus goes to the treasury.
     function test_Spare_PotGetsWhatAnEthJobGives() public {
         _deposit(alice, 10 ether);
         _spareDeposit(bob, 1_000_000 ether);
@@ -728,20 +752,77 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
         assertEq(ethJobPot, 0.95 ether);
 
         uint256 owed = pay.spareOwed(id, 1 ether);
-        assertEq(owed, 9_000 ether, "1 ETH at 0.0001 ETH/SPARE with 10% off = 9,000 SPARE");
+        assertEq(owed, 10_000 ether, "1 ETH at 0.0001 ETH/SPARE, no discount = 10,000 SPARE");
         uint256 supply0 = spareTok.totalSupply();
         uint256 t0 = treasury.balance;
         uint256 p1 = ethR.getEpoch(id).pot;
+        uint256 r0 = pay.discountReserve();
         _chargeSpare(alice, 5 ether, bob, 1 ether);
         uint256 potIn = ethR.getEpoch(id).pot - p1;
 
         assertEq(potIn, 4.75 ether + ethJobPot, "ETH leg 95% + SPARE leg exactly an ETH job's pot share");
-        assertEq(pay.spareBalanceOf(bob), 1_000_000 ether - 9_000 ether);
-        uint256 burned = 9_000 ether * 150 / BPS; // N2b: the burner part of the split, on the discounted value
-        assertEq(supply0 - spareTok.totalSupply(), burned, "SPARE burned directly");
-        // sale: 8,865 SPARE -> 0.8865 ETH; shortfall 0.0635 ETH from the ETH leg's treasury part (0.1 ETH)
-        assertEq(treasury.balance - t0, 0.1 ether - 0.0635 ether);
+        assertEq(pay.spareBalanceOf(bob), 1_000_000 ether - 10_000 ether);
+        assertEq(spareTok.totalSupply(), supply0, "burner part 0: no SPARE burned");
+        // sale: 10,000 SPARE -> 1 ETH at the posted price; 0.95 to the pot, the 0.05 surplus to the treasury,
+        // next to the ETH leg's 350 bps (0.175 ETH)
+        assertEq(treasury.balance - t0, 0.175 ether + 0.05 ether);
+        assertEq(address(burner).balance, 0, "nothing to the burner");
+        assertEq(pay.discountReserve(), r0, "no subsidy");
         assertEq(spareTok.allowance(address(pay), address(adapter)), 0, "no allowance left");
+        _assertV2Accounting();
+    }
+
+    /// @notice Owner decision (26-27 Nov 2026): at 0% discount the Pons hook's 2.90% cut plus the measured impact
+    ///         (3.07% in all for a 0.01 ETH sale, docs/uniswap-v4-adapter.md) fits the 4% slippage, and a SPARE-only
+    ///         charge pays the pot its full 95% with no ETH leg, an empty discount reserve and no shortfall.
+    function test_Spare_ZeroDiscountHookCutNeedsNoSubsidy() public {
+        _spareDeposit(bob, 1_000_000 ether);
+        _anchorAndPost(PRICE);
+        adapter.setShortBps(307); // the pool gives 3.07% less than the posted price: hook cut + impact
+        uint64 id = _open();
+        assertEq(pay.discountReserve(), 0);
+        (SparecycleJobPaymentsV2.SpareStatus st,, uint256 floor, uint256 req, uint256 cover) =
+            pay.previewSpareLeg(id, 0, 1 ether, 0.96 ether);
+        assertEq(uint256(st), uint256(SparecycleJobPaymentsV2.SpareStatus.Ok), "no cover needed");
+        assertEq(floor, 0.96 ether, "sale value minus 4%");
+        assertEq(req, 0.95 ether);
+        assertEq(cover, 0, "no ETH leg, no reserve");
+        vm.expectEmit(address(pay));
+        emit SparecycleJobPaymentsV2.SpareCharged(
+            id, keccak256("spare-list"), 1 ether, 10_000 ether, 0, 10_000 ether, 0.9693 ether, 0.95 ether, 0
+        );
+        vm.expectEmit(address(pay));
+        emit SparecycleJobPaymentsV2.Distributed(id, keccak256("spare-list"), 0.95 ether, 0.0193 ether, 0, 0, 0);
+        _chargeSpare(alice, 0, bob, 1 ether);
+        assertEq(ethR.getEpoch(id).pot, 0.95 ether, "the full 95%");
+        assertEq(treasury.balance, 0.0193 ether, "what the sale gave above the pot share");
+        assertEq(address(burner).balance, 0);
+        assertEq(address(pool).balance, 0, "no ETH leg: no holder part");
+        _assertV2Accounting();
+    }
+
+    /// @notice Fuzz of the same decision: at 0% discount and burner part 0, a sale that fills anywhere between the
+    ///         posted price and the 4% floor always covers the pot without any cover (SPARE-only, empty reserve).
+    function testFuzz_Spare_ZeroDiscountFloorCoversThePot(uint96 valueSeed, uint96 priceSeed, uint16 shortSeed) public {
+        uint256 value = bound(uint256(valueSeed), 1e9, 50 ether);
+        uint256 price = bound(uint256(priceSeed), 1e9, 1e20);
+        uint256 short = bound(uint256(shortSeed), 0, 400);
+        vm.prank(treasury);
+        pay.setReferenceSparePrice(price);
+        _post(price);
+        adapter.setPrice(price);
+        adapter.setShortBps(short);
+        vm.deal(address(adapter), 1_000 ether);
+        uint256 owed = pay.spareOwed(_open(), value);
+        _spareDeposit(bob, owed);
+        uint64 id = _open();
+        uint256 floor = _floor(value);
+        (SparecycleJobPaymentsV2.SpareStatus st,,,,) = pay.previewSpareLeg(id, 0, value, floor);
+        assertEq(uint256(st), uint256(SparecycleJobPaymentsV2.SpareStatus.Ok));
+        _chargeSpare(alice, 0, bob, value);
+        assertEq(ethR.getEpoch(id).pot, value - (value * 500) / BPS, "exactly an ETH job's pot share");
+        assertEq(pay.discountReserve(), 0);
+        assertEq(pay.spareBalanceOf(bob), 0);
         _assertV2Accounting();
     }
 
@@ -756,7 +837,7 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
         _chargeSpare(alice, 5 ether, bob, 1 ether);
         assertEq(ethR.getEpoch(id).pot - p1, 4.75 ether + 0.95 ether, "pot unchanged by the move");
 
-        adapter.setPrice(PRICE * 97 / 100); // 3% down: below the 2% slippage floor -> the adapter cannot fill
+        adapter.setPrice(PRICE * 95 / 100); // 5% down: below the 4% slippage floor -> the adapter cannot fill
         (address[] memory cs, uint256[] memory as_) = _one(alice, 5 ether);
         (address[] memory ss, uint256[] memory sa) = _one(bob, 1 ether);
         uint256 floor = _floor(1 ether);
@@ -770,42 +851,52 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
         _anchorAndPost(PRICE);
         adapter.setPrice(PRICE * 12 / 10);
         uint64 id = _open();
-        // sale value at the posted price is 0.8865 ETH; the adapter pays 1.0638 ETH; the pot needs 0.95
-        _chargeSpareMin(alice, 0, bob, 1 ether, 0.95 ether);
+        // sale value at the posted price is 1 ETH; the adapter pays 1.2 ETH; the pot needs 0.95
+        _chargeSpare(alice, 0, bob, 1 ether);
         assertEq(ethR.getEpoch(id).pot, 0.95 ether);
-        assertEq(treasury.balance, 1.0638 ether - 0.95 ether, "surplus to the treasury");
+        assertEq(treasury.balance, 1.2 ether - 0.95 ether, "surplus to the treasury");
         assertEq(address(burner).balance, 0, "no ETH leg, no ETH burner part");
         _assertV2Accounting();
     }
 
+    /// @notice The cover order, kept for a later split with a burner part (the deployed burner part is 0): with
+    ///         100 / 300 / 100, 3% of the SPARE is burned, 97% sold; a fill exactly at the 4% floor (0.9312 ETH)
+    ///         leaves 0.0188 ETH to cover: 0.01 from the treasury part, 0.005 from the reserve, 0.0038 from the
+    ///         burner part.
     function test_Spare_ShortfallOrder_TreasuryThenReserveThenBurner() public {
+        _setSplit(100, 300, 100);
         _deposit(alice, 10 ether);
         _spareDeposit(bob, 1_000_000 ether);
         _anchorAndPost(PRICE);
+        adapter.setShortBps(400); // fills exactly at the floor
         vm.prank(funder); // anyone may fund the reserve
-        pay.fundDiscountReserve{value: 0.03 ether}();
+        pay.fundDiscountReserve{value: 0.005 ether}();
         uint64 id = _open();
-        // ETH leg 1 ETH: treasury 0.02, burner 0.015, holder 0.015. Shortfall 0.0635:
-        // 0.02 from the treasury part, 0.03 from the reserve, 0.0135 from the burner part.
         vm.expectEmit(address(pay));
         emit SparecycleJobPaymentsV2.Distributed(
-            id, keccak256("spare-list"), 0.95 ether + 0.95 ether, 0, 0.0015 ether, 0.015 ether, 0.03 ether
+            id, keccak256("spare-list"), 0.95 ether + 0.95 ether, 0, 0.0262 ether, 0.01 ether, 0.005 ether
         );
-        _chargeSpareMin(alice, 1 ether, bob, 1 ether, 0.8865 ether);
+        _chargeSpareMin(alice, 1 ether, bob, 1 ether, 0.9312 ether);
         assertEq(treasury.balance, 0);
         assertEq(pay.discountReserve(), 0);
-        assertEq(address(burner).balance, 0.0015 ether);
-        assertEq(address(pool).balance, 0.015 ether, "the holder part is never used for the discount");
+        assertEq(address(burner).balance, 0.0262 ether);
+        assertEq(address(pool).balance, 0.01 ether, "the holder part is never used for the cover");
         assertEq(ethR.getEpoch(id).pot, 1.9 ether);
         _assertV2Accounting();
     }
 
+    /// @notice If the Safe ever loosens the slippage past the pot margin (10% here), a SPARE-only leg whose floor is
+    ///         below the pot share needs cover; without it the leg reverts (the jobs wait), never underpays.
     function test_Spare_NotCoveredIsDeferredNotUnderpaid() public {
         _spareDeposit(bob, 1_000_000 ether);
         _anchorAndPost(PRICE);
+        vm.prank(treasury);
+        pay.setMaxSwapSlippageBps(1_000);
+        adapter.setShortBps(1_000);
         uint64 id = _open();
         (SparecycleJobPaymentsV2.SpareStatus st,, uint256 floor, uint256 req, uint256 cover) =
             pay.previewSpareLeg(id, 0, 1 ether, _floor(1 ether));
+        assertEq(floor, 0.9 ether);
         assertEq(uint256(st), uint256(SparecycleJobPaymentsV2.SpareStatus.ShortfallNotCovered));
         assertEq(req, 0.95 ether);
         assertEq(cover, 0);
@@ -824,7 +915,7 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
         pay.fundDiscountReserve{value: 0.1 ether}();
         _chargeSpare(alice, 0, bob, 1 ether);
         assertEq(ethR.getEpoch(id).pot, 0.95 ether);
-        assertEq(pay.discountReserve(), 0.1 ether - 0.0635 ether);
+        assertEq(pay.discountReserve(), 0.1 ether - 0.05 ether);
         _assertV2Accounting();
     }
 
@@ -833,7 +924,7 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
         _spareDeposit(bob, 1_000_000 ether);
         _anchorAndPost(PRICE);
         uint256 floor = _floor(1 ether);
-        assertEq(floor, 0.8865 ether * 98 / 100, "sale value minus 2% (N12)");
+        assertEq(floor, 1 ether * 96 / 100, "sale value minus 4% (N12, owner, 26-27 Nov 2026)");
         (address[] memory cs, uint256[] memory as_) = _one(alice, 5 ether);
         (address[] memory ss, uint256[] memory sa) = _one(bob, 1 ether);
         vm.prank(sched);
@@ -879,14 +970,14 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
 
     function test_Spare_CustomerChecks() public {
         _deposit(alice, 10 ether);
-        _spareDeposit(bob, 1_000 ether); // far too little for a 1 ETH job (9,000 SPARE)
+        _spareDeposit(bob, 1_000 ether); // far too little for a 1 ETH job (10,000 SPARE)
         _anchorAndPost(PRICE);
         (address[] memory cs, uint256[] memory as_) = _one(alice, 5 ether);
         (address[] memory ss, uint256[] memory sa) = _one(bob, 1 ether);
         vm.prank(sched);
         vm.expectRevert(
             abi.encodeWithSelector(
-                SparecycleJobPaymentsV2.InsufficientSpareBalance.selector, bob, 1_000 ether, 9_000 ether
+                SparecycleJobPaymentsV2.InsufficientSpareBalance.selector, bob, 1_000 ether, 10_000 ether
             )
         );
         pay.chargeWithSpare(0, cs, as_, ss, sa, 1 ether, bytes32(0));
@@ -898,18 +989,18 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
         vm.prank(sched);
         vm.expectRevert(
             abi.encodeWithSelector(
-                SparecycleJobPaymentsV2.SpareSpendLimitExceeded.selector, bob, 5_000 ether, 9_000 ether
+                SparecycleJobPaymentsV2.SpareSpendLimitExceeded.selector, bob, 5_000 ether, 10_000 ether
             )
         );
         pay.chargeWithSpare(0, cs, as_, ss, sa, floor, bytes32(0));
 
         vm.startPrank(bob);
         pay.setSpareSpendLimit(0);
-        pay.setSpendLimit(0.5 ether); // ETH-value limit counts the discounted value: 0.9 ETH
+        pay.setSpendLimit(0.5 ether); // ETH-value limit counts the value paid: 1 ETH (no discount)
         vm.stopPrank();
         vm.prank(sched);
         vm.expectRevert(
-            abi.encodeWithSelector(SparecycleJobPaymentsV2.SpendLimitExceeded.selector, bob, 0.5 ether, 0.9 ether)
+            abi.encodeWithSelector(SparecycleJobPaymentsV2.SpendLimitExceeded.selector, bob, 0.5 ether, 1 ether)
         );
         pay.chargeWithSpare(0, cs, as_, ss, sa, floor, bytes32(0));
     }
@@ -920,6 +1011,8 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
         vm.deal(address(ad), 100 ether);
         (, SparecycleJobPaymentsV2 p2,) = _deploySystem(address(tok), address(ad), false);
         assertFalse(p2.spareHasBurn());
+        _setSplitOn(p2, 200, 150, 150); // the deployed burner part is 0: nothing would be burned
+        uint64 e = _open();
         tok.mint(bob, 1_000_000 ether);
         vm.startPrank(bob);
         tok.approve(address(p2), type(uint256).max);
@@ -930,13 +1023,13 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
         vm.prank(treasury);
         p2.setReferenceSparePrice(PRICE);
         vm.prank(sched);
-        p2.postSparePrice(0, PRICE);
+        p2.postSparePrice(e, PRICE);
         uint256 supply = tok.totalSupply();
         (address[] memory cs, uint256[] memory as_) = _one(alice, 5 ether);
         (address[] memory ss, uint256[] memory sa) = _one(bob, 1 ether);
         vm.prank(sched);
-        p2.chargeWithSpare(0, cs, as_, ss, sa, 0.8865 ether, bytes32(0));
-        assertEq(tok.balanceOf(SpareBurn.DEAD), 135 ether, "sent to 0x...dEaD");
+        p2.chargeWithSpare(e, cs, as_, ss, sa, 0.985 ether, bytes32(0)); // 9,850 SPARE sold, 150 burned
+        assertEq(tok.balanceOf(SpareBurn.DEAD), 150 ether, "sent to 0x...dEaD");
         assertEq(tok.totalSupply(), supply, "supply unchanged in dead mode");
     }
 
@@ -958,8 +1051,8 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
         p2.postSparePrice(0, PRICE);
         (address[] memory cs, uint256[] memory as_) = _one(alice, 5 ether);
         (address[] memory ss, uint256[] memory sa) = _one(bob, 1 ether);
-        // the adapter receives 1% less SPARE than V2 sends and pays for what it received
-        uint256 minOut = 0.8865 ether * 99 / 100;
+        // the adapter receives 1% less SPARE than V2 sends; V2 still debits exactly what it sent
+        uint256 minOut = 0.96 ether;
         vm.prank(sched);
         p2.chargeWithSpare(0, cs, as_, ss, sa, minOut, bytes32(0));
         assertEq(fot.balanceOf(address(p2)), p2.totalSpareBalance(), "V2 lost exactly what it debited");
@@ -971,6 +1064,8 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
         MockSwapAdapter ad = new MockSwapAdapter(IERC20(address(fake)), PRICE);
         vm.deal(address(ad), 100 ether);
         (, SparecycleJobPaymentsV2 p2,) = _deploySystem(address(fake), address(ad), true);
+        _setSplitOn(p2, 200, 150, 150); // the deployed burner part is 0: there would be no burn to check
+        uint64 e = _open();
         fake.mint(bob, 1_000_000 ether);
         vm.startPrank(bob);
         fake.approve(address(p2), type(uint256).max);
@@ -981,12 +1076,12 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
         vm.prank(treasury);
         p2.setReferenceSparePrice(PRICE);
         vm.prank(sched);
-        p2.postSparePrice(0, PRICE);
+        p2.postSparePrice(e, PRICE);
         (address[] memory cs, uint256[] memory as_) = _one(alice, 5 ether);
         (address[] memory ss, uint256[] memory sa) = _one(bob, 1 ether);
         vm.prank(sched);
-        vm.expectRevert(abi.encodeWithSelector(SpareBurn.BurnMismatch.selector, 135 ether, 0));
-        p2.chargeWithSpare(0, cs, as_, ss, sa, 0.8865 ether, bytes32(0));
+        vm.expectRevert(abi.encodeWithSelector(SpareBurn.BurnMismatch.selector, 150 ether, 0));
+        p2.chargeWithSpare(e, cs, as_, ss, sa, 0.985 ether, bytes32(0));
     }
 
     // ================================================================ adapter misbehaviour and reentrancy
@@ -1006,7 +1101,7 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
         (address[] memory ss, uint256[] memory sa) = _one(bob, 1 ether);
         vm.prank(sched);
         vm.expectRevert(
-            abi.encodeWithSelector(SparecycleJobPaymentsV2.SwapOutputTooLow.selector, 0.8865 ether * 95 / 100, floor)
+            abi.encodeWithSelector(SparecycleJobPaymentsV2.SwapOutputTooLow.selector, 0.95 ether, floor)
         );
         pay.chargeWithSpare(0, cs, as_, ss, sa, floor, bytes32(0));
     }
@@ -1019,7 +1114,7 @@ contract SparecycleJobPaymentsV2Test is V2Fixture {
         (address[] memory ss, uint256[] memory sa) = _one(bob, 1 ether);
         vm.prank(sched);
         vm.expectRevert(
-            abi.encodeWithSelector(SparecycleJobPaymentsV2.SwapSpentWrongAmount.selector, 8_865 ether, 8_865 ether - 1)
+            abi.encodeWithSelector(SparecycleJobPaymentsV2.SwapSpentWrongAmount.selector, 10_000 ether, 10_000 ether - 1)
         );
         pay.chargeWithSpare(0, cs, as_, ss, sa, floor, bytes32(0));
     }

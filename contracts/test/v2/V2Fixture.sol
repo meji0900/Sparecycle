@@ -84,6 +84,24 @@ abstract contract V2Fixture is RewardsFixture {
         pay.charge(id, cs, as_, keccak256("list"));
     }
 
+    /// @dev The treasury Safe moves `p` to the split (t, b, h) and the SPLIT_CHANGE_DELAY_EPOCHS epochs it needs close
+    ///      (empty). The deployed default has a burner part of 0 (burn postponed, decided by the owner on 26-27 Nov
+    ///      2026); tests of the burner path use this to give the burner a share first. Moves the open epoch on.
+    function _setSplitOn(SparecycleJobPaymentsV2 p, uint16 t, uint16 b, uint16 h) internal {
+        vm.prank(treasury);
+        p.proposeSplit(t, b, h);
+        uint64 n = p.SPLIT_CHANGE_DELAY_EPOCHS();
+        for (uint64 i; i < n; ++i) {
+            _closeEmpty(ethR);
+        }
+        (uint16 t2, uint16 b2, uint16 h2) = p.currentSplit();
+        require(t2 == t && b2 == b && h2 == h, "split applied");
+    }
+
+    function _setSplit(uint16 t, uint16 b, uint16 h) internal {
+        _setSplitOn(pay, t, b, h);
+    }
+
     // ---------------------------------------------------------------- SPARE helpers
 
     function _spareDeposit(address c, uint256 amount) internal {

@@ -123,8 +123,8 @@ contract V2ForkTest is Test {
         uint256 safeBefore = TREASURY_SAFE.balance;
         _chargeOne(id, 0.01 ether, keccak256("fork-v2"));
         assertEq(r.getEpoch(id).pot - potBefore, 0.0095 ether, "95% into the live open pot");
-        assertEq(TREASURY_SAFE.balance - safeBefore, 0.0002 ether, "200 bps to the Safe");
-        assertEq(address(burner).balance, 0.00015 ether);
+        assertEq(TREASURY_SAFE.balance - safeBefore, 0.00035 ether, "350 bps to the Safe (owner, 26-27 Nov 2026)");
+        assertEq(address(burner).balance, 0, "burner part 0: burn postponed");
         assertEq(address(pool).balance, 0.00015 ether);
 
         // close the live epoch in the simulation (empty root) so a holder root can be posted for it

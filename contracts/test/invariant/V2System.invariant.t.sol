@@ -54,6 +54,7 @@ contract V2SystemInvariantTest is Test {
             vm.deal(actors[i], ACTOR_ETH);
         }
         vm.deal(address(adapter), ADAPTER_ETH);
+        adapter.setShortBps(290); // every fill 2.90% below the pool price, like the Pons hook's cut
         initialTotal = 3 * ACTOR_ETH + ADAPTER_ETH;
 
         bytes4[] memory sel = new bytes4[](20);
@@ -149,6 +150,12 @@ contract V2SystemInvariantTest is Test {
         }
     }
 
+    /// @notice Owner decision (26-27 Nov 2026): with burner part 0 and 0% discount, a SPARE sale that passes the 4%
+    ///         floor always gives the pot its full share by itself (no treasury, reserve or burner cover).
+    function invariant_ZeroBurnerSpareNeedsNoCover() public view {
+        assertEq(h.ghostSubsidizedAtZeroBurner(), 0, "a zero-burner SPARE charge needed cover");
+    }
+
     function invariant_NoUnexpected() public view {
         assertEq(h.ghostUnexpected(), 0, string.concat("a guarded action reverted: ", vm.toString(h.lastUnexpected())));
     }
@@ -156,6 +163,7 @@ contract V2SystemInvariantTest is Test {
     /// @dev A long pseudo-random walk over the same handler actions: the deep paths are reached (not only
     ///      early returns) and every invariant holds at the end.
     function test_HandlerCoverage_RandomWalk() public {
+        h.proposeSplit(200, 150); // a later Safe change gives the burner a share, so the burn path runs too
         for (uint256 i; i < 600; ++i) {
             uint256 s = uint256(keccak256(abi.encode(i)));
             uint256 a = s >> 8;
@@ -189,15 +197,51 @@ contract V2SystemInvariantTest is Test {
         assertGt(h.ghostClaims(), 0, "claims ran");
         assertGt(burner.totalSpareBurned(), 0, "SPARE bought and burned");
         assertGt(h.ghostCredited(), 0, "credits paid out through claims");
+        assertGt(h.ghostSpareChargesAtZeroBurner(), 0, "SPARE charges ran at the deployed burner part 0");
         invariant_EthOnlyToAllowedPlaces();
         invariant_CreditsNeverWithdrawn();
         invariant_PotNeverUnderpaid();
         invariant_SpareAndPool();
+        invariant_ZeroBurnerSpareNeedsNoCover();
         invariant_NoUnexpected();
     }
 
-    /// @dev Shows that the handler really exercises the SPARE, burn, claim and deferral paths.
+    /// @dev The deployed values (burner part 0, 0% discount, 4% slippage): charges, SPARE sales and claims run, the
+    ///      burner receives nothing, so no burn runs and no SPARE is burned.
+    function test_HandlerSmoke_DeployedSplitNoBurn() public {
+        for (uint256 i; i < 3; ++i) {
+            h.deposit(i, 10 ether);
+            h.depositSpare(i, 40_000 ether);
+        }
+        h.postPrice(10_000);
+        h.chargeEth(0, 3 ether);
+        h.chargeSpare(1, 0.5 ether, 0, 2 ether);
+        h.closeEpoch(0);
+        h.burn(0);
+        h.postHolderRoot(1, 2);
+        h.claim(0, 0);
+        h.postPrice(10_000);
+        h.chargeSpare(2, 1 ether, 1, 0);
+        assertGt(h.ghostSpareChargesAtZeroBurner(), 1, "SPARE charges at burner part 0");
+        assertEq(address(burner).balance, 0, "the burner got nothing");
+        assertEq(h.ghostBurns(), 0, "nothing to burn");
+        assertEq(h.ghostV2SpareBurned(), 0, "no SPARE burned in charges");
+        assertGt(h.ghostClaims(), 0, "a claim ran");
+        invariant_EthOnlyToAllowedPlaces();
+        invariant_CreditsNeverWithdrawn();
+        invariant_PotNeverUnderpaid();
+        invariant_SpareAndPool();
+        invariant_ZeroBurnerSpareNeedsNoCover();
+        invariant_NoUnexpected();
+    }
+
+    /// @dev Shows that the handler really exercises the SPARE, burn, claim and deferral paths (after the Safe gives
+    ///      the burner a share: the deployed burner part is 0).
     function test_HandlerSmoke() public {
+        h.proposeSplit(200, 150);
+        for (uint256 i; i < 4; ++i) {
+            h.closeEpoch(0);
+        }
         for (uint256 i; i < 3; ++i) {
             h.deposit(i, 10 ether);
             h.depositSpare(i, 40_000 ether);

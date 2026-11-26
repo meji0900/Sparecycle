@@ -2,7 +2,9 @@
 
 > **AUDIT REQUIRED BEFORE MAINNET. NOT DEPLOYED.** These contracts are written and tested only. Nothing has been
 > deployed, signed or broadcast. Items 4–6 of the next-update brief also need the legal review in brief §9 before
-> they go live. Every number marked N-id below is **"Default, not yet confirmed by Fabio"**.
+> they go live. **N1 (split), N2 (SPARE discount) and the N12 slippage of both contracts were decided by the owner on
+> 26–27 Nov 2026** (see "Owner decisions"). Every other number marked N-id below is still **"Default, not yet
+> confirmed by Fabio"**.
 
 Source: `contracts/src/`. Spec: next-update brief §4 (phase 2b), §5, §6.1–6.5 (credit mode only), §8 (X2 note) and
 stage 3 of §11. The live V1 contracts (`SparecycleJobPayments`, `SparecycleRewards`) are unchanged.
@@ -28,9 +30,12 @@ New in V2:
   This unblocks x402 option X2 (see "X2" below).
 - **`creditFor(customer)`**: payable, callable only by the immutable holder pool. It adds **spend-only credits**
   (N20). Credits pay for jobs and are never withdrawable. `charge` spends credits first, then deposits (N21).
-- **The 5% split**: treasury / burner / holder pool in bps of the charge, always summing to 500. Default 200/150/150
-  (N1). Only the treasury Safe can `proposeSplit`. It applies from `currentEpoch + 4` (N1 delay). A new proposal
-  replaces a pending one and restarts the delay. `cancelSplit` works until the split applies.
+- **The 5% split**: treasury / burner / holder pool in bps of the charge, always summing to 500. Deployed as
+  **350 / 0 / 150** (N1, decided by the owner on 26–27 Nov 2026: the burn is postponed). Only the treasury Safe can
+  `proposeSplit`. It applies from `currentEpoch + 4` (N1 delay). A new proposal replaces a pending one and restarts
+  the delay. `cancelSplit` works until the split applies. With burner 0 every path still works: no ETH is sent to
+  the burner (zero amounts are never transferred), no SPARE is burned in a charge (`SpareBurn` skips 0), and
+  `Distributed` / `SpareCharged` report `toBurner = 0` / `spareBurned = 0`.
 - **SPARE balance and SPARE-paid jobs** (brief §5):
   - `depositSpare` credits the measured balance increase, so fee-on-transfer tokens are not over-credited.
   - `postSparePrice(epochId, price)`: the scheduler posts the price once per open epoch. Price is in wei per 10^18
@@ -41,10 +46,13 @@ New in V2:
       for that epoch**. ETH charges are not affected.
     - The Safe re-anchors the reference with `setReferenceSparePrice` after a real move.
   - `chargeWithSpare(epochId, ethCustomers, ethAmounts, spareCustomers, spareEthAmounts, minEthOut, listHash)`:
-    - SPARE jobs keep their ETH price. Each customer pays `ethAmount × (1 − 10%) / price` SPARE (N2, rounded up).
-    - The burner part of the split (N2b: `burnerBps / 10 000` of the SPARE received) is burned at once.
+    - SPARE jobs keep their ETH price. Each customer pays `ethAmount × (1 − SPARE_DISCOUNT_BPS) / price` SPARE,
+      rounded up. **N2 = 0%** (decided by the owner on 26–27 Nov 2026): a SPARE-paid job costs its ETH price in SPARE
+      at the epoch price.
+    - The burner part of the split (N2b: `burnerBps / 10 000` of the SPARE received) is burned at once. With the
+      deployed split that is 0: all of the SPARE is sold.
     - The rest is sold to ETH through the swap adapter. `minEthOut` must be at least the sale value at the epoch
-      price minus `maxSwapSlippageBps` (N12, 2%).
+      price minus `maxSwapSlippageBps` (N12, **4%**, decided by the owner on 26–27 Nov 2026).
     - The node pot then gets **exactly what an ETH-paid charge of the same size gives** (95%). A surplus goes to
       the treasury.
     - A shortfall is covered in this order: this charge's ETH treasury part, then the discount reserve, then this
@@ -55,7 +63,8 @@ New in V2:
     - Per-epoch cap on SPARE-paid volume (N13, `spareCapEthPerEpoch`, a `[SPARE_PAY_CAP_ETH]` constructor parameter).
       The default in the dry-run script is 0, which means off.
 - **Discount reserve** (`fundDiscountReserve` by anyone, `withdrawDiscountReserve` to the treasury Safe only). This
-  is ETH set aside to cover SPARE-sale shortfalls. See "Decisions" for why it exists.
+  is ETH set aside to cover SPARE-sale shortfalls. At the deployed values it is never needed (see "Owner decisions");
+  it stays for a later discount or burner share.
 
 ETH leaves V2 only to the reward contract, the treasury Safe, the burner, the holder pool, or a customer's own
 withdrawal. Credits leave only inside a charge. The swap adapter is only ever given SPARE.
@@ -70,7 +79,7 @@ Usage burn, phase 2b (brief §4).
     from a live read). It burns the SPARE in the same transaction and emits `Burned(epochId, ethIn, spareBurned)`.
   - Whatever is over the cap stays and emits `CarriedOver(epochId, amount, Cap)`.
   - `minOut` must be at least the value at the epoch's accepted SPARE price (from V2) minus `maxSlippageBps` (N12,
-    2%). The SPARE received is measured, not trusted.
+    **4%**, decided by the owner on 26–27 Nov 2026). The SPARE received is measured, not trusted.
   - If the epoch has no accepted price, nothing is bought and it emits `CarriedOver(…, NoPrice)`. So every handled
     epoch has a transaction hash.
   - A skipped epoch cannot be burned later. Its ETH simply carries over into the next (capped) burn, so buys are
@@ -80,6 +89,9 @@ Usage burn, phase 2b (brief §4).
 - No ETH exit except `requestRescue` → `executeRescue` by the Safe, to the Safe only. It needs 30 days (a design
   value, see the defaults table) **and** no successful burn since the request, which is the case where the pool is
   gone.
+- **Burn postponed**: with V2's deployed burner part of 0 the Burner is deployed but receives nothing until the Safe
+  changes the split (≥ 4 epochs later). With no balance `burnEpoch` reverts `NothingToBurn` without using the epoch
+  up; the scheduler simply does not call it.
 
 ### `SparecycleHolderPool.sol`
 
@@ -115,19 +127,40 @@ Holder share, credit mode (brief §6). Modelled on `SparecycleRewards`.
     SPARE/ETH PoolKey were verified on-chain and are in `src/lib/addresses.ts` (`UNISWAP_V4_DEFAULTS`).
   - Addresses and their evidence, the pool's hook, measured price impact, fork tests and risks:
     `docs/uniswap-v4-adapter.md`.
-  - **Before deploying V2 and the Burner with it:** the pool's Pons hook takes 2.90% of every swap's output, more than
-    the 2% default of `maxSwapSlippageBps` (V2) and `maxSlippageBps` (Burner). With the defaults every SPARE sale and
-    every burn reverts at its floor; the Safe must raise both (a fork test passes at 500 bps) or the posted price
-    must already be net of the hook.
+  - The pool's Pons hook takes 2.90% of every swap's output. The deployed 4% slippage of `maxSwapSlippageBps` (V2)
+    and `maxSlippageBps` (Burner) leaves room for it plus impact (about 0.17% for 0.01 ETH): the fork tests pass at
+    the defaults. The earlier 2% default would have made every SPARE sale and every burn revert at its floor
+    (`test_Fork_TwoPercentWouldNotFitTheHookCut`).
 
-## Defaults (all "Default, not yet confirmed by Fabio")
+## Owner decisions (26–27 Nov 2026)
+
+1. **SPARE-paid jobs at 0% discount** (`SPARE_DISCOUNT_BPS = 0`). The Pons hook takes 2.90% of each swap's output
+   (`docs/uniswap-v4-adapter.md`), so a SPARE job's sale returns about 97% of its ETH price (2.90% hook + about 0.17%
+   impact for 0.01 ETH on the fork). With 0% discount and burner part 0 the sale floor alone (96% of the value at the
+   posted price) is above the pot's 95%: the pot gets its full share **without the discount reserve or any other
+   subsidy**, and the surplus (about 1.9%) goes to the treasury. Who bears the hook cut: the protocol's 5%. The
+   customer pays the job's ETH price in SPARE at the epoch price, the pot gets 95%, and of the fee only the sale's
+   surplus is left (to the treasury; the holder pool gets nothing from a SPARE job). Checked by `test_Spare_ZeroDiscountHookCutNeedsNoSubsidy`, `testFuzz_Spare_ZeroDiscountFloorCoversThePot`,
+   the invariant `ZeroBurnerSpareNeedsNoCover` and the fork test `test_Fork_ZeroDiscountSpareChargeNeedsNoSubsidy`.
+   The reserve mechanism stays for a later discount or burner share.
+2. **Burn postponed**: initial split **treasury 350 / burner 0 / holder pool 150** bps. The Burner is still
+   deployed (V2 checks it at construction) but receives nothing until the Safe changes the split (≥ 4-epoch delay).
+3. **Slippage 400 bps** for V2 (`DEFAULT_MAX_SWAP_SLIPPAGE_BPS`) and the Burner (`DEFAULT_MAX_SLIPPAGE_BPS`), so the
+   2.90% hook cut plus impact fits. Both stay Safe-settable (≤ 10%).
+
+If the Safe later gives the burner a share, the SPARE leg burns `burnerBps` of the SPARE and sells the rest, and the
+sale floor (e.g. 98.5% × 96% = 94.56% at burner 150) can sit just below the pot's 95%: the gap is then covered by
+the charge's ETH treasury part, the reserve, or the ETH burner part, in that order (a real fill at about 97% of the
+sold value still covers the pot on its own: `test_Fork_AfterSplitChange_SpareChargeAndBurnAtDefaults`).
+
+## Defaults
 
 | ID | Value | Where |
 | --- | --- | --- |
-| N1 | Split of the 5%: treasury 200 / burner 150 / holder pool 150 bps; Safe-only change, ≥ 4-epoch delay | `DEFAULT_TREASURY_BPS`, `DEFAULT_BURNER_BPS`, `DEFAULT_HOLDER_POOL_BPS`, `SPLIT_CHANGE_DELAY_EPOCHS` (V2) |
-| N2 | SPARE discount 10% | `SPARE_DISCOUNT_BPS` (V2, constant) |
-| N2b | SPARE burned = burner part of the current split on the discounted value | `_spareLeg` (V2), no separate number |
-| N12 | Burn cap: 1% of the pool's quote-side liquidity at epoch close; slippage 2%; rest carried over | `maxEthPerBurn` (Burner constructor param, `[PLACEHOLDER]`, Safe-settable), `DEFAULT_MAX_SLIPPAGE_BPS` (Burner), `DEFAULT_MAX_SWAP_SLIPPAGE_BPS` (V2, reused for the SPARE sale) |
+| N1 | Split of the 5%: **treasury 350 / burner 0 / holder pool 150 bps** (owner, 26–27 Nov 2026); Safe-only change, ≥ 4-epoch delay | `DEFAULT_TREASURY_BPS`, `DEFAULT_BURNER_BPS`, `DEFAULT_HOLDER_POOL_BPS`, `SPLIT_CHANGE_DELAY_EPOCHS` (V2) |
+| N2 | SPARE discount **0%** (owner, 26–27 Nov 2026) | `SPARE_DISCOUNT_BPS` (V2, constant) |
+| N2b | SPARE burned = burner part of the current split on the discounted value (0 at the deployed split) | `_spareLeg` (V2), no separate number |
+| N12 | Burn cap: 1% of the pool's quote-side liquidity at epoch close; slippage **4%** for the burn buy and the SPARE sale (owner, 26–27 Nov 2026); rest carried over | `maxEthPerBurn` (Burner constructor param, `[PLACEHOLDER]`, Safe-settable), `DEFAULT_MAX_SLIPPAGE_BPS` (Burner), `DEFAULT_MAX_SWAP_SLIPPAGE_BPS` (V2, reused for the SPARE sale) |
 | N13 | SPARE-paid volume cap per epoch `[SPARE_PAY_CAP_ETH]`; pause on > 20% deviation | `spareCapEthPerEpoch` (V2 constructor param, Safe-settable), `DEFAULT_MAX_PRICE_DEVIATION_BPS` (V2) |
 | N16 | SPARE only (`ADDR.spareToken`), CYCLE excluded | `spare` constructor param of V2 and Burner |
 | N18 | Mode of holders who never chose: credits | `DEFAULT_MODE` (HolderPool) |
@@ -142,14 +175,11 @@ of these contracts.
 
 ## Decisions made here (not spelled out in the brief)
 
-1. **Discount math.** With N2 = 10% and a 5% fee, a SPARE-paid job brings in at most 90% of its ETH price, but the
-   node pot must get 95%. Every SPARE-paid job therefore needs a subsidy of at least 5% of its price, plus sale
-   slippage (about 6.4% at the defaults with no slippage).
-   - Within one charge the subsidy comes from the ETH leg's treasury and burner parts (3.5% of the ETH leg at the
-     default split). So a charge can carry SPARE jobs worth up to about half its ETH jobs.
-   - A SPARE-only epoch needs the **discount reserve**, which the Safe funds (treasury money) and can take back.
-   - The brief's rationale for N2 ("small enough to be covered from treasury/burn shares") does not hold on its own.
-     Fabio should confirm N2, or accept the reserve.
+1. **Discount math.** With the brief's first N2 of 10% and a 5% fee, a SPARE-paid job brought in at most 90% of its
+   ETH price (about 86% after the hook), but the node pot must get 95%, so every SPARE job needed a subsidy from the
+   ETH leg's treasury and burner parts or the Safe-funded **discount reserve**. The owner settled this on 26–27 Nov
+   2026 with N2 = 0% (see "Owner decisions"): no subsidy is needed at the deployed values. The reserve and the cover
+   order remain for a later discount or burner share.
 2. **Deferral is a revert.** A SPARE leg that is paused, over the cap, below the slippage floor or not coverable
    reverts the whole `chargeWithSpare`, so the `listHash` never commits to jobs that were not charged. The scheduler
    uses `previewSpareLeg` and ETH-only `charge` keeps working.
@@ -191,22 +221,26 @@ and A14 are still open (`docs/x402-decision.md`).
 
 ## Tests
 
-Run with `npm run contracts:test` (or `node contracts/tools/forge.mjs test`). 102 new tests; the whole suite is 216
-passed, 4 skipped (fork suites are opt-in).
+Run with `npm run contracts:test` (or `node contracts/tools/forge.mjs test --no-match-path "test/fork/*"`). After
+the owner decisions of 26–27 Nov 2026 the non-fork suite is 351 passed (fork suites are opt-in).
 
 | File | What it covers |
 | --- | --- |
-| `test/v2/SparecycleJobPaymentsV2.t.sol` (58) | Wiring and defaults. V1 event topics. Deposits / `depositFor` / receive. `creditFor` only from the pool. Credits first and never withdrawable (incl. fuzz). Three-way split and its conservation (fuzz). Split: Safe-only, sums to 500, ≥ 4 epochs (fuzz), cancel/re-propose. Two-step withdraw for ETH and SPARE. Price posting, band edges, deviation pauses SPARE but not ETH, Safe re-anchor. Pot gets exactly an ETH job's share (incl. moved pool price), surplus to treasury, shortfall order, deferral when not covered, reserve, min-out floor, per-epoch cap, customer limits, burn-to-dead, fee-on-transfer SPARE, fake `burn()` caught. Malicious adapter (short output, short pull, reentrant deposit / charge / withdraw, third-party ETH mid-swap). Missing holder pool refused. |
+| `test/v2/SparecycleJobPaymentsV2.t.sol` (61) | Wiring and the deployed values (350 / 0 / 150, 0% discount, 4%). Burner part 0: nothing sent, events report 0. SPARE at 0% discount with a 3.07% fill below the posted price (hook + impact) pays the pot in full with no ETH leg and no reserve (unit + fuzz over value, price and fill). Three-way split after a Safe change. V1 event topics. Deposits / `depositFor` / receive. `creditFor` only from the pool. Credits first and never withdrawable (incl. fuzz). Three-way split and its conservation (fuzz). Split: Safe-only, sums to 500, ≥ 4 epochs (fuzz), cancel/re-propose. Two-step withdraw for ETH and SPARE. Price posting, band edges, deviation pauses SPARE but not ETH, Safe re-anchor. Pot gets exactly an ETH job's share (incl. moved pool price), surplus to treasury, shortfall order, deferral when not covered, reserve, min-out floor, per-epoch cap, customer limits, burn-to-dead, fee-on-transfer SPARE, fake `burn()` caught. Malicious adapter (short output, short pull, reentrant deposit / charge / withdraw, third-party ETH mid-swap). Missing holder pool refused. |
 | `test/v2/SparecycleHolderPool.t.sol` (20) | Leaf format. Root rules (scheduler, closed epochs, increasing, available). Credit claim raises credit by exactly the amount, credits pay for a job and cannot be withdrawn. Double claim. Invalid proofs. Mode 2 → `NvdaModeNotAvailable`, unknown modes. `setMode` applies from N+1 only (two-mode harness + fuzz). Rollover after K = 8, never to treasury, reused by the next root. Over-allocated tree capped. Reentrant `creditFor` blocked. |
-| `test/v2/SparecycleBurner.t.sol` (20) | Burn from charges. Scheduler only. Last-closed-epoch and once-per-epoch rules. Cap and carry-over. No-price carry-over. Min-out floor and Safe slippage. Pool moved beyond slippage. Short output. Fee-on-transfer output. Adapter refund. Dead-address mode. Reentrancy. Settings bounds. Rescue (delay, blocked by a later burn, Safe only, to the Safe only). Fuzz: ETH leaves only into buys, never over the cap. |
-| `test/invariant/V2System.invariant.t.sol` (5 invariants, 256 × 64, plus 2 tests) | A closed set of addresses holds all the ETH, so any wei sent elsewhere fails. Exact balance of the pot, treasury, burner, pool, adapter and V2 from allowed flows only. Credits never withdrawn: each customer wallet is exact, withdrawn ≤ deposited. V2 buckets equal the per-customer sums. Pot == the ETH-equivalent share (never underpaid). SPARE supply drops only by V2's burns. Pool covers open roots. No unexpected reverts. A 600-step random walk checks that the SPARE, burn, claim and deferral paths are really reached. |
+| `test/v2/SparecycleBurner.t.sol` (22) | Deployed split: the burner gets nothing from ETH or SPARE charges, `burnEpoch` reverts `NothingToBurn` without using the epoch up. 4% default fits a 3.07% short buy. Burn from charges (after a Safe split change). Scheduler only. Last-closed-epoch and once-per-epoch rules. Cap and carry-over. No-price carry-over. Min-out floor and Safe slippage. Pool moved beyond slippage. Short output. Fee-on-transfer output. Adapter refund. Dead-address mode. Reentrancy. Settings bounds. Rescue (delay, blocked by a later burn, Safe only, to the Safe only). Fuzz: ETH leaves only into buys, never over the cap. |
+| `test/invariant/V2System.invariant.t.sol` (6 invariants, 256 × 64, plus 3 tests) | Every fill is 2.90% below the pool price (the hook). New: with burner part 0 a SPARE sale never needs cover. A smoke test at the deployed split (no burn ever runs). A closed set of addresses holds all the ETH, so any wei sent elsewhere fails. Exact balance of the pot, treasury, burner, pool, adapter and V2 from allowed flows only. Credits never withdrawn: each customer wallet is exact, withdrawn ≤ deposited. V2 buckets equal the per-customer sums. Pot == the ETH-equivalent share (never underpaid). SPARE supply drops only by V2's burns. Pool covers open roots. No unexpected reverts. A 600-step random walk checks that the SPARE, burn, claim and deferral paths are really reached. |
 | `test/v2/DryRunDeployV2.t.sol` (1) | The dry-run deploy script wires all three. |
 | `test/fork/V2Fork.t.sol` (2, opt-in) | Live chain, simulated locally. SPARE's `burn(uint256)` really lowers total supply. A V2 charge lands 95% in the live open pot with the split. A holder credit claim then pays for a job. Passed on 26 Nov 2026 against `https://rpc.mainnet.chain.robinhood.com` (around block 123,605,400). The `sparecycle.tech/api/rpc` relay refuses `eth_getStorageAt`, so the test skips there. |
 
-Run the fork suite with:
+| `test/adapters/UniswapV4SpareAdapterWiring.t.sol` (2) | The real adapter over a mock PoolManager with a 290 bps output fee: at the 4% defaults a SPARE-only charge sells all of its SPARE and pays the pot 95% with no reserve, a burn buy passes; a 2% setting reverts at the adapter. |
+| `test/fork/V4AdapterWiringFork.t.sol` (4, opt-in) | Real adapter, live pool, live reward contract and Safe: the deployed values; a SPARE-only charge at 0% discount and burner 0 pays the live pot exactly 95% with no reserve (sale output 0.0096942 ETH for 0.01 ETH, scheduler minimum 0.00961, floor 0.0096); `NothingToBurn` after it; 2% would revert; after a Safe split change to 200 / 150 / 150 a charge burns 1.5% of the SPARE and `burnEpoch` buys and burns at the 4% default. Passed on 27 Nov 2026 around block 123,684,900. |
+
+Run the fork suites with:
 
 ```
-FORK_TESTS=1 FORK_RPC_URL=<rpc> node contracts/tools/forge.mjs test --match-path test/fork/V2Fork.t.sol -vv
+FORK_TESTS=1 FORK_RPC_URL=https://rpc.mainnet.chain.robinhood.com node contracts/tools/forge.mjs test --match-path test/fork/V2Fork.t.sol -vv
+FORK_TESTS=1 node contracts/tools/forge.mjs test --match-path "test/fork/*V4*" -vv
 ```
 
 Mutation check (done by hand while writing): letting the SPARE leg underpay the pot, or spending deposits before
@@ -240,11 +274,13 @@ come from `src/lib/addresses.ts`. The adapter and the burn cap stay `[PLACEHOLDE
   Safe keys are with one person today (F2).
 - **Thin SPARE pool.** Burns and SPARE sales can be sandwiched up to the slippage floor. The floor is only as good
   as the posted epoch price, which is scheduler-supplied with no on-chain oracle.
-- **Discount economics** (decision 1). SPARE payments need a subsidy and stop without one.
+- **Discount economics** (decision 1). At 0% discount and burner part 0 the sale pays the pot by itself. A later
+  discount or burner share would need cover again, and SPARE legs that cannot be covered are deferred.
 - **Credits locked forever** if unused (decision 8).
 - **Deploy order** must not be interrupted (predicted addresses). The constructors revert if it is.
 - **The Uniswap v4 adapter** is the riskiest part and has had internal review only. The pool's Pons hook takes
-  2.90% of every swap's output, above both 2% slippage defaults (`docs/uniswap-v4-adapter.md`).
+  2.90% of every swap's output; the 4% slippage leaves about 1.1% for impact and movement since the posted price
+  (`docs/uniswap-v4-adapter.md`). The room is also room a sandwich can take.
 - **SPARE `burn()`** was verified on a fork. A token upgrade (if any) could change it, and `SpareBurn` would then
   revert rather than mis-burn.
 - **Not reviewed**: forced ETH (selfdestruct) into V2 is unaccounted and stuck; it cannot be stolen.
