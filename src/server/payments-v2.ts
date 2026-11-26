@@ -547,6 +547,22 @@ export async function keyPaidJob(owner: Address, price: bigint): Promise<PaidJob
   return { payer: owner, priceWei: price, signature: null, contract: "v1", asset: "eth", fits: v1Fits(owner, price, acct.balance, acct.withdrawAmount) };
 }
 
+// ---- Sending ------------------------------------------------------------------------------------------------------
+
+type Sender = (account: PrivateKeyAccount, request: unknown) => Promise<Hex>;
+const defaultSend: Sender = (account, request) => {
+  const wallet = createWalletClient({ account, chain: targetChain, transport: http(targetChain.rpcUrls.default.http[0]) });
+  return sendAsScheduler(() => wallet.writeContract(request as Parameters<typeof wallet.writeContract>[0]));
+};
+let sender: Sender = defaultSend;
+/** One broadcast from the scheduler key of a simulated request (in this process' send queue). */
+const sendFromScheduler = (account: PrivateKeyAccount, request: unknown) => sender(account, request);
+
+/** Tests only: replaces the broadcast (`send` gets the request simulateContract returned); null restores it. */
+export function setPaymentsV2TestSeams(s: { send?: Sender | null }) {
+  sender = s.send ?? defaultSend;
+}
+
 // ---- The SPARE price of an epoch -----------------------------------------------------------------------------------
 
 export type PriceOutcome = { price: bigint | null; blocked: WaitReason | null; note: string };
@@ -607,8 +623,7 @@ export async function ensureSparePrice(epochId: number, address: Address, accoun
   }
   recordPrice(epochId, { price, reference: ref, sqrt: pool.sqrtPriceX96, block: pool.block, status: "sending" });
   const { request } = await publicClient.simulateContract({ account, ...c, functionName: "postSparePrice", args: [BigInt(epochId), price] });
-  const wallet = createWalletClient({ account, chain: targetChain, transport: http(targetChain.rpcUrls.default.http[0]) });
-  const hash = await sendAsScheduler(() => wallet.writeContract(request));
+  const hash = await sendFromScheduler(account, request);
   recordPrice(epochId, { status: "sending", tx: hash });
   const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 180_000 });
   if (receipt.status !== "success") {
@@ -751,11 +766,12 @@ export async function chargeOpenEpochV2(epochId: number): Promise<string> {
   }
 
   applyUnpaid(plan.unpaid);
-  const unpaidNote = plan.unpaid.length ? `; ${plan.unpaid.length} agreed job(s) unpaid` : "";
-  const waitNote = plan.waits.length ? `; ${plan.waits.length} SPARE job(s) wait (${[...new Set(plan.waits.map((w) => w.reason))].join(", ")})` : "";
+  // Read at return time: a SPARE leg the simulation refuses changes the plan below.
+  const unpaidNote = () => (plan.unpaid.length ? `; ${plan.unpaid.length} agreed job(s) unpaid` : "");
+  const waitNote = () => (plan.waits.length ? `; ${plan.waits.length} SPARE job(s) wait (${[...new Set(plan.waits.map((w) => w.reason))].join(", ")})` : "");
   if (!plan.eth.length && !plan.spare.length) {
     applyWaits(plan.waits);
-    return `V2: no chargeable jobs${unpaidNote}${waitNote}; ${price.note}`;
+    return `V2: no chargeable jobs${unpaidNote()}${waitNote()}; ${price.note}`;
   }
 
   // Build, simulate (SPARE leg first; if the sale would not fill, the SPARE jobs wait and ETH goes alone), then send.
@@ -792,13 +808,13 @@ export async function chargeOpenEpochV2(epochId: number): Promise<string> {
       applyUnpaid(plan.unpaid);
       if (!plan.eth.length) {
         applyWaits(plan.waits);
-        return `V2: SPARE leg refused (${describeChainError(err)}), no ETH jobs${unpaidNote}${waitNote}`;
+        return `V2: SPARE leg refused (${describeChainError(err)}), no ETH jobs${unpaidNote()}${waitNote()}`;
       }
       b = build();
       ({ request } = await publicClient.simulateContract({ account, ...c, ...b.args } as Parameters<typeof publicClient.simulateContract>[0]));
     }
   } catch (err) {
-    return `V2 charge not sent: ${describeChainError(err)}${unpaidNote}`;
+    return `V2 charge not sent: ${describeChainError(err)}${unpaidNote()}`;
   }
 
   const ethTotal = sum(b.eth.amounts);
@@ -824,8 +840,7 @@ export async function chargeOpenEpochV2(epochId: number): Promise<string> {
     storeLeaves(ledger, epochId, b.built.leaves);
   });
   try {
-    const wallet = createWalletClient({ account, chain: targetChain, transport: http(targetChain.rpcUrls.default.http[0]) });
-    const hash = await sendAsScheduler(() => wallet.writeContract(request));
+    const hash = await sendFromScheduler(account, request);
     db.prepare("UPDATE v2_charges SET tx = ? WHERE epoch_id = ?").run(hash, epochId);
     const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 180_000 });
     if (receipt.status !== "success") throw new Error(`V2 charge transaction ${hash} reverted`);
@@ -833,14 +848,14 @@ export async function chargeOpenEpochV2(epochId: number): Promise<string> {
     applyWaits(plan.waits);
     return (
       `V2: charged ${plan.eth.length} ETH job(s) (${ethTotal} wei) and ${plan.spare.length} SPARE job(s) (${spareEth} wei, ${spareWei} SPARE units)` +
-      ` from ${new Set(b.list.map((x) => x.payer)).size} customers, jobs root over ${b.built.leaves.length} jobs (tx ${hash})${unpaidNote}${waitNote}; ${price.note}`
+      ` from ${new Set(b.list.map((x) => x.payer)).size} customers, jobs root over ${b.built.leaves.length} jobs (tx ${hash})${unpaidNote()}${waitNote()}; ${price.note}`
     );
   } catch (err) {
     const msg = describeChainError(err);
     const row = db.prepare("SELECT tx FROM v2_charges WHERE epoch_id = ?").get(epochId) as { tx: Hex | null };
     if (row.tx) db.prepare("UPDATE v2_charges SET error = ? WHERE epoch_id = ?").run(msg, epochId);
     else db.prepare("UPDATE v2_charges SET status = 'failed', error = ? WHERE epoch_id = ?").run(msg, epochId);
-    return `V2 charge failed: ${msg}${unpaidNote}`;
+    return `V2 charge failed: ${msg}${unpaidNote()}`;
   }
 }
 
