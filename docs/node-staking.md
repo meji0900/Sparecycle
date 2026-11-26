@@ -370,6 +370,22 @@ The scheduler key is the only key that can propose. If it is lost, leaked or rep
 - **Stuck SPARE.** SPARE sent without `stake()` can never be recovered (no SPARE rescue, by design).
 - **No cap on total stake.** Nothing limits how much SPARE one owner or everyone together can stake.
 - **Cooldown restart.** Every `requestUnstake` restarts the cooldown for the whole bucket.
+- **Grace also follows an executed slash (accepted trade-off).** An owner whose cooldown finished while a proposal was
+  open can leave with the rest of the stake during the grace window after the Safe executes it, before the next set of
+  faults can be proposed: an owner is slashed at most once per exit. Accepted for the launch (staking is voluntary and
+  the minimum is 0); the alternative, grace only after a cancel or an expiry, needs a new contract.
+- **For Safe signers: a cancel opens an exit window.** Cancelling a proposal (even one cancelled only to re-propose it
+  with a corrected amount or bundle) starts the grace period, so an owner whose cooldown has finished may leave in
+  between. Cancel only to clear the owner.
+
+## Internal review and mainnet checks (26 Nov 2026)
+
+- Independent internal review (not an external audit) of `SparecycleNodeStake.sol`: no critical or high findings;
+  one medium (the scheduler alone could keep an exit frozen by re-proposing) fixed by the grace period, confirmed
+  closed on re-review; the trade-off above accepted.
+- Fork round trip on Robinhood Chain mainnet state (`FORK_TESTS=1`, `test/fork/NodeStakeFork.t.sol`): 3/3 pass —
+  the config as launched, stake → requestUnstake → unstake returns everything, and an executed slash burns real SPARE
+  (total supply falls by the slashed amount).
 
 ## Tests
 
