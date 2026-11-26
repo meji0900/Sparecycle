@@ -535,7 +535,11 @@ test("three mismatching rounds end disagreed and the job is not charged", async 
   const epoch = currentEpochIdLocal();
   await chargeOpenEpoch(epoch);
   assert.equal(job(j.id).charge_status, "released");
-  assert.ok(!chargesJson(epoch).jobs.some((x) => x.jobId === j.id));
+  // Not in any charge: a v1 list does not name it, and a v2 jobs tree holds it only as released (never charged).
+  const ch = chargesJson(epoch);
+  assert.ok(!("jobs" in ch && ch.jobs?.some((x) => x.jobId === j.id)));
+  const leaf = getDb().prepare("SELECT charge_status FROM charge_leaves WHERE job_id = ?").get(j.id) as { charge_status: string } | undefined;
+  assert.ok(!leaf || leaf.charge_status === "released", JSON.stringify(leaf));
   // A fourth pair online changes nothing: the job is settled.
   const extra = await nodes(2);
   allOnline();

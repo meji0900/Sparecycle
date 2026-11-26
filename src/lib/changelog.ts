@@ -34,6 +34,30 @@ export const KIND_LABEL: Record<ChangelogKind, string> = {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    id: "job-receipts",
+    title: "Job receipts you can check in your browser",
+    date: "2026-11-26",
+    kind: "scheduler",
+    summary:
+      "A paid job's receipt is ready as soon as its two results are compared, with both nodes' signatures. Once the epoch's charge is on-chain, your browser checks the receipt against the jobs root in the payments contract's Charged event, read from the chain's public RPC, without trusting the Sparecycle server. Jobs that were not charged get a receipt too. A random salt in each receipt keeps the public list from linking a wallet to a job. An epoch with no charge has nothing on-chain to check against, and the receipt says so.",
+    evidence: [
+      { label: "Docs: Job receipts", url: `${LIVE_SITE}/docs/billing#receipts` },
+      { label: "API description (receipt route)", url: `${LIVE_SITE}/api/v1/openapi.json` },
+    ],
+  },
+  {
+    id: "recheck-new-pair",
+    title: "A mismatched paid job is checked again on a new pair",
+    date: "2026-11-26",
+    kind: "scheduler",
+    summary:
+      "When the two results of a paid job do not match, the job now runs again on two other nodes, with other owner wallets and other GPUs, up to three pairs in all, before it is left uncharged. Only the final pair's verdict counts and only that pair is paid. A new pair is tried only when one is registered; free trial jobs keep a single pair.",
+    evidence: [
+      { label: "Docs: When you are charged", url: `${LIVE_SITE}/docs/billing#charges` },
+      { label: "Re-check tests", url: repoFile("src/server/recheck.test.ts") },
+    ],
+  },
+  {
     id: "gpu-counts-home",
     title: "The home page shows GPUs working, ready and on standby",
     date: "2026-11-26",

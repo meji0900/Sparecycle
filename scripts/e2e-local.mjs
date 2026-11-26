@@ -1090,11 +1090,25 @@ async function main() {
     );
     const cProofs = await Promise.all([c1, c2].map((c) => api("GET", `/epochs/${E}/proof?account=${c.owner.address}`)));
     check("J2's round-0 owners are not in the payout root (404 not-in-root)", cProofs.every((r) => r.status === 404 && r.data.error === "not-in-root"));
+    // Receipts and re-checks together: J2's receipt holds only round 1's pair and verifies against the v2 jobs root.
     const chargesE = (await api("GET", `/epochs/${E}/charges`)).data;
-    check(`epoch ${E} charge list: J2 charged, J1 not`, chargesE.status === "done" && chargesE.jobs.some((x) => x.jobId === j2.id) && !chargesE.jobs.some((x) => x.jobId === j1.id), JSON.stringify(chargesE.jobs));
+    const rcJ2 = (await api("GET", `/jobs/${j2.id}/receipt`, undefined, { authorization: `Bearer ${j2.readSecret}` })).data;
+    const vJ2 = await verifyReceipt(rcJ2, verifyOpts);
+    const honestLower = honest.map((h) => h.toLowerCase());
+    check(
+      `epoch ${E} charge is a v2 jobs root; J2's receipt is sealed, charged, verifies, and names only round 1's pair`,
+      chargesE.status === "done" && chargesE.hashRule === "v2-jobs-merkle" && rcJ2.state === "sealed" && rcJ2.chargeStatus === "charged" &&
+        vJ2.outcome === "verified" && rcJ2.nodes?.length === 2 && rcJ2.nodes.every((n) => honestLower.includes(n.node.toLowerCase())),
+      JSON.stringify({ hashRule: chargesE.hashRule, state: rcJ2.state, outcome: vJ2.outcome, nodes: rcJ2.nodes?.map((n) => n.node) }),
+    );
     let j1Charged = false;
     for (let e = 0; e <= E; e++) if ((await api("GET", `/epochs/${e}/charges`)).data.jobs?.some((x) => x.jobId === j1.id)) j1Charged = true;
-    check("J1 (three mismatching rounds) is in no epoch's charge list", !j1Charged);
+    const j1Leaves = q("SELECT charge_status FROM charge_leaves WHERE job_id = ?", j1.id);
+    check(
+      "J1 (three mismatching rounds) is never charged: in no v1 list, no charged leaf, invoice released",
+      !j1Charged && j1Leaves.every((l) => l.charge_status !== "charged") && (await invoice(j1)).chargeStatus === "released",
+      JSON.stringify(j1Leaves),
+    );
     const inv2 = await invoice(j2);
     check(`J2 invoice: matched on round 1, charged in epoch ${E}`, inv2.verdict === "agreed" && inv2.round === 1 && inv2.chargeStatus === "charged" && inv2.chargedEpoch === E, JSON.stringify({ verdict: inv2.verdict, chargeStatus: inv2.chargeStatus, chargedEpoch: inv2.chargedEpoch }));
     const balAfter = await balanceOf(customer.address);

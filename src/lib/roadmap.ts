@@ -19,20 +19,6 @@ export const ROADMAP_STATUSES: { id: RoadmapStatus; label: string; note: string 
 
 export const ROADMAP: RoadmapItem[] = [
   {
-    id: "browser-verified-receipts",
-    title: "Receipts you can verify in your browser",
-    status: "in-progress",
-    summary:
-      "A receipt for every paid job, matched or not charged, that your browser checks against what the payments contract recorded on-chain, without trusting the Sparecycle server.",
-  },
-  {
-    id: "recheck-on-new-pair",
-    title: "Re-check a mismatched job on a new node pair",
-    status: "in-progress",
-    summary:
-      "When the two results of a paid job do not match, run it again on a different pair of nodes, with other owners and other GPUs, before leaving it uncharged.",
-  },
-  {
     id: "independent-signer",
     title: "An independent signer on the treasury Safe",
     status: "planned",
