@@ -329,6 +329,10 @@ const FAQ: [string, string][] = [
   ],
   ["Is this a yield product?", "No. Nodes are paid for checked work that customers paid for. There is no fixed return, no APY, and nothing is paid for holding the token."],
   ["Do I need the token?", "No. Not to run a node and not to pay for a job."],
+  [
+    "Can node owners stake SPARE?",
+    "Yes, if they want to; nobody has to. Staking is optional collateral and pays nothing, and the minimum per node is 0. Part of a stake can be burned only after repeated faults proven against two other owners' results, an appeal window and a decision by the treasury Safe, at most 10% per proposal. Leaving takes a request and a 16-epoch wait. The stake contract has had an internal review only, no external audit.",
+  ],
   ["Do you top up the pot?", "No. The team does not refill it. Test jobs the team pays for itself are labelled team-funded."],
   ["Is the scheduler decentralized?", "Not yet. One scheduler hands out jobs, compares results and publishes each period's payouts. That is a trust assumption, disclosed on the status page; settled payouts cannot be changed afterwards."],
   ["Is Pons audited?", `As of ${config.factsCheckedOn}, official docs said reviews were in progress and that v2 should be treated as unaudited until reports are published.`],

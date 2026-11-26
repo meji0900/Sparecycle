@@ -12,6 +12,7 @@ import { chainSnapshot } from "@/lib/onchain";
 import { PONS, PONS_DOCS_URL, PONS_LABELS, USDG_ADDRESS } from "@/lib/pons";
 import { FUNDING } from "@/lib/funding-copy";
 import { HeyBuilderCard } from "@/components/dapp/hey-builder-card";
+import { StakingNumbers } from "@/components/dapp/staking-numbers";
 import { serverEnv } from "@/server/env";
 import { tokenCopy } from "@/lib/token-copy";
 import { tokenCopyState } from "@/server/token-copy-state";
@@ -276,6 +277,21 @@ export default async function TokenPage() {
       </section>
 
       <HeyBuilderCard />
+
+      <section aria-labelledby="node-staking" className="mt-14 scroll-mt-24">
+        <SectionTitle
+          id="node-staking"
+          title="Node staking (optional)"
+          description={
+            <>
+              Node owners can lock SPARE in SparecycleNodeStake as collateral. It is voluntary and pays nothing; with a minimum of 0
+              per node, running a node needs no token. A slash, only after repeated proven faults and an appeal window, is decided by
+              the treasury Safe, takes at most 10% per proposal and is burned.
+            </>
+          }
+        />
+        <StakingNumbers cta />
+      </section>
 
       <section aria-labelledby="plainly" className="mt-14">
         <SectionTitle id="plainly" title="Stated plainly" />

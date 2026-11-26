@@ -43,6 +43,31 @@ What each key can do:
 
 Say this plainly on the node page and in the docs when staking ships.
 
+## Staking from the site
+
+The site says all of the above where staking appears: voluntary, minimum 0 (so running a node needs no token), pays
+nothing, a slash only after repeated proven faults against two other owners' results, an appeal window, decided by the
+treasury Safe, at most 10% per proposal and burned, a grace window between proposals, a cooldown that a new request
+restarts, not trustless, internal review only.
+
+- **`/nodes/stake`** (`src/components/dapp/stake-panel.tsx`): the connected owner wallet's SPARE, active stake,
+  cooldown bucket (with the epoch it waits for, when it is expected and the stall-fallback latest time, mirroring
+  `_windowOver`), the latest proposal against it and the minimum per node, all read from the chain through the site's
+  RPC fallback (direct RPC, then the `/api/rpc` read relay). Actions: approve the exact amount and `stake`,
+  `requestUnstake` behind a confirm that explains the cooldown restart, `cancelUnstake`, `unstake` once `canUnstake`,
+  and `appeal` with an evidence hash (collapsed, advanced). Every call is simulated first, so a call the contract would
+  refuse is named before the wallet opens; each transaction shows pending, confirmed or failed with its Blockscout link.
+  A proposal links its public evidence bundle when `GET /api/v1/slashing` serves it (`TOKEN_SLASHING=on`), else shows
+  its `evidenceHash`.
+- **`GET /api/v1/staking`** (`src/server/staking.ts`, OpenAPI tag Staking): total staked, total slashed, the minimum per
+  node, the proposal count, the fixed rules, and how many owner wallets stake. The owner count has no view: owners come
+  from `Staked` events (scanned from the deploy block 123,623,184, then only new blocks) and each one's `getAccount()`.
+  Everything is read at one block and cached for 30 seconds. A failed read is a `503 chain-read-failed`, never a zero;
+  a failed event scan alone gives `owners: null` with `ownersError`. `TOKEN_NODE_STAKE_ADDRESS` and
+  `TOKEN_NODE_STAKE_START_BLOCK` point it at another deployment (testnet, the local end-to-end test).
+- The node page (`/nodes#staking`), the token page and `/docs/run-a-node#staking` show the public figures or the rules;
+  the claim page links to the panel.
+
 ## Rules
 
 ### Stake and the minimum

@@ -6,6 +6,7 @@ import {
   BaseError,
   ContractFunctionRevertedError,
   createWalletClient,
+  getAbiItem,
   getAddress,
   http,
   keccak256,
@@ -241,6 +242,23 @@ export type HolderRootInfo = {
   rolledOver: boolean;
 };
 export type SlashedEvent = { owner: Address; amount: bigint; proposalId: bigint; evidenceHash: Hex; block: bigint; txHash: Hex };
+/** SparecycleNodeStake's public totals and its fixed rules (immutables and code constants). */
+export type NodeStakeTotals = {
+  totalStaked: bigint;
+  totalSlashed: bigint;
+  minStakePerNode: bigint;
+  proposalCount: bigint;
+  token: Address;
+  rules: {
+    epochLength: bigint;
+    cooldownEpochs: bigint;
+    appealWindowEpochs: bigint;
+    decisionWindowEpochs: bigint;
+    slashBps: number;
+    proposalGraceEpochs: bigint;
+    stallFactor: bigint;
+  };
+};
 export type BurnedEvent = { epochId: bigint; ethIn: bigint; spareBurned: bigint; block: bigint; txHash: Hex };
 /** What a burn transaction shows on-chain: who it was sent to, the treasury Safe's execution in it, the v4 swap's ETH leg. */
 export type BurnTxContext = {
@@ -300,6 +318,55 @@ export const tokenChain = {
   async minStakePerNode(): Promise<bigint> {
     const address = live(TOKEN_CONTRACTS.nodeStake, "SparecycleNodeStake");
     return publicClient.readContract({ address, abi: nodeStakeAbi, functionName: "minStakePerNode" });
+  },
+
+  /** The public totals and the fixed rules of the stake contract at `address`, all read at `block` (GET /api/v1/staking). */
+  async nodeStakeTotals(address: Address, block: bigint): Promise<NodeStakeTotals> {
+    const at = { address, abi: nodeStakeAbi, blockNumber: block } as const;
+    const [totalStaked, totalSlashed, minStakePerNode, proposalCount, token] = await Promise.all([
+      publicClient.readContract({ ...at, functionName: "totalStaked" }),
+      publicClient.readContract({ ...at, functionName: "totalSlashed" }),
+      publicClient.readContract({ ...at, functionName: "minStakePerNode" }),
+      publicClient.readContract({ ...at, functionName: "proposalCount" }),
+      publicClient.readContract({ ...at, functionName: "token" }),
+    ]);
+    const [epochLength, cooldownEpochs, appealWindowEpochs, decisionWindowEpochs, slashBps, proposalGraceEpochs, stallFactor] = await Promise.all([
+      publicClient.readContract({ ...at, functionName: "epochLength" }),
+      publicClient.readContract({ ...at, functionName: "cooldownEpochs" }),
+      publicClient.readContract({ ...at, functionName: "appealWindowEpochs" }),
+      publicClient.readContract({ ...at, functionName: "decisionWindowEpochs" }),
+      publicClient.readContract({ ...at, functionName: "slashBps" }),
+      publicClient.readContract({ ...at, functionName: "PROPOSAL_GRACE_EPOCHS" }),
+      publicClient.readContract({ ...at, functionName: "STALL_FACTOR" }),
+    ]);
+    return {
+      totalStaked,
+      totalSlashed,
+      minStakePerNode,
+      proposalCount,
+      token: getAddress(token),
+      rules: { epochLength, cooldownEpochs, appealWindowEpochs, decisionWindowEpochs, slashBps: Number(slashBps), proposalGraceEpochs, stallFactor },
+    };
+  },
+
+  /** Every owner wallet with a Staked event of the stake contract at `address` in [fromBlock, toBlock], once each. */
+  async nodeStakeStakers(address: Address, fromBlock: bigint, toBlock: bigint): Promise<Address[]> {
+    const event = getAbiItem({ abi: nodeStakeAbi, name: "Staked" });
+    const logs = await logsInChunks(fromBlock, toBlock, (from, to) => publicClient.getLogs({ address, event, fromBlock: from, toBlock: to }));
+    return [...new Set(logs.map((l) => getAddress(l.args.owner!)))];
+  },
+
+  /** getAccount(owner) of each owner at `block`: active stake and the cooldown bucket. Read 50 at a time. */
+  async nodeStakeAccounts(address: Address, owners: Address[], block: bigint): Promise<{ owner: Address; staked: bigint; unstaking: bigint }[]> {
+    const out: { owner: Address; staked: bigint; unstaking: bigint }[] = [];
+    for (let i = 0; i < owners.length; i += 50) {
+      const part = owners.slice(i, i + 50);
+      const accounts = await Promise.all(
+        part.map((owner) => publicClient.readContract({ address, abi: nodeStakeAbi, functionName: "getAccount", args: [owner], blockNumber: block })),
+      );
+      accounts.forEach((a, j) => out.push({ owner: part[j], staked: a.staked, unstaking: a.unstaking }));
+    }
+    return out;
   },
 
   /** The Charged event in a charge transaction of the job payments contract (null = no such log in it). */

@@ -1,6 +1,7 @@
 // The on-chain interfaces the scheduler's token features (docs/token-features.md) are written against, in one place so
 // they can be aligned with the real contracts when those are audited and deployed. The contracts are written elsewhere
-// (brief stage 3); NOTHING HERE IS DEPLOYED (src/lib/addresses.ts: TOKEN_CONTRACTS are null).
+// (brief stage 3). Only SparecycleNodeStake is deployed (ADDR.nodeStake, 26 Nov 2026); the others are not
+// (src/lib/addresses.ts: their TOKEN_CONTRACTS entries are null).
 //
 // ALIGNED 26 Nov 2026 with the contracts in contracts/src (SparecycleNodeStake, SparecycleHolderPool, SparecycleBurner):
 // event signatures and indexed fields below match their Solidity source; src/lib/token-contracts.test.ts checks them
@@ -41,6 +42,11 @@
 //   Safe 1.5.0 (the treasury Safe): nonce(), the EIP-712 SafeTx hash, event ExecutionSuccess(bytes32 txHash, uint256 payment).
 import { parseAbi } from "viem";
 
+// SparecycleNodeStake (live: ADDR.nodeStake). The first six entries are the scheduler's and are read by index in
+// src/server/chain-io.ts (nodeStakeAbi[3] = Slashed, [4] = SlashProposed): append, never reorder. The rest is what the
+// node owner's staking panel (src/components/dapp/stake-panel.tsx) and GET /api/v1/staking (src/server/staking.ts) use,
+// taken from the compiled ABI; src/lib/token-contracts.test.ts checks every function (with its outputs and
+// mutability), event and error against contracts/out.
 export const nodeStakeAbi = parseAbi([
   "function stakedOf(address owner) view returns (uint256)",
   "function minStakePerNode() view returns (uint256)",
@@ -48,6 +54,64 @@ export const nodeStakeAbi = parseAbi([
   "event Slashed(address indexed owner, uint256 amount, uint256 indexed proposalId, bytes32 evidenceHash)",
   "event SlashProposed(uint256 indexed proposalId, address indexed owner, uint256 amount, bytes32 evidenceHash, uint64 epoch)",
   "function meetsMinimum(address owner, uint256 activeNodes) view returns (bool)",
+  // ---- owner actions
+  "function stake(uint256 amount) returns (uint256 received)",
+  "function requestUnstake(uint256 amount)",
+  "function cancelUnstake()",
+  "function unstake() returns (uint256 amount)",
+  "function appeal(uint256 proposalId, bytes32 evidenceHash)",
+  // ---- reads
+  "struct Account { uint256 staked; uint256 unstaking; uint64 requestEpoch; uint64 requestedAt; uint256 lastProposal; }",
+  "struct Proposal { address owner; uint8 status; uint64 proposedEpoch; uint64 proposedAt; uint64 closedEpoch; uint64 closedAt; uint256 amount; bytes32 evidenceHash; bytes32 appealHash; }",
+  "function getAccount(address owner) view returns (Account)",
+  "function unstakingOf(address owner) view returns (uint256 amount, uint64 requestEpoch, uint64 requestedAt)",
+  "function slashableOf(address owner) view returns (uint256)",
+  "function canUnstake(address owner) view returns (bool)",
+  "function openProposalOf(address owner) view returns (uint256)",
+  "function getProposal(uint256 proposalId) view returns (Proposal)",
+  "function proposalStatus(uint256 proposalId) view returns (uint8)",
+  "function canAppeal(uint256 proposalId) view returns (bool)",
+  "function totalStaked() view returns (uint256)",
+  "function totalSlashed() view returns (uint256)",
+  "function proposalCount() view returns (uint256)",
+  "function token() view returns (address)",
+  "function rewards() view returns (address)",
+  "function safe() view returns (address)",
+  "function epochLength() view returns (uint64)",
+  "function cooldownEpochs() view returns (uint64)",
+  "function appealWindowEpochs() view returns (uint64)",
+  "function decisionWindowEpochs() view returns (uint64)",
+  "function slashBps() view returns (uint16)",
+  "function PROPOSAL_GRACE_EPOCHS() view returns (uint64)",
+  "function STALL_FACTOR() view returns (uint256)",
+  // ---- events of the owner actions
+  "event Staked(address indexed owner, uint256 amount, uint256 staked)",
+  "event UnstakeRequested(address indexed owner, uint256 amount, uint256 unstaking, uint64 epoch)",
+  "event UnstakeCancelled(address indexed owner, uint256 amount, uint256 staked)",
+  "event Unstaked(address indexed owner, uint256 amount)",
+  "event SlashAppealed(uint256 indexed proposalId, address indexed owner, bytes32 evidenceHash)",
+  // ---- errors an owner can hit, so a refused call is named in the UI instead of shown as raw data
+  "error ZeroAmount()",
+  "error ZeroEvidence()",
+  "error NotProposalOwner()",
+  "error InsufficientStake(uint256 staked, uint256 amount)",
+  "error NothingToUnstake()",
+  "error CooldownNotOver()",
+  "error StakeFrozen(uint256 proposalId)",
+  "error NotOpen(uint256 proposalId)",
+  "error AppealWindowOver(uint256 proposalId)",
+  "error UnexpectedBalanceChange()",
+  "error ReentrancyGuardReentrantCall()",
+  "error SafeERC20FailedOperation(address token)",
+]);
+
+/**
+ * The OpenZeppelin v5 ERC-20 errors a `stake()` can bubble up from the token's transferFrom (allowance or balance too
+ * low). Only used to name a refused call; if SPARE's errors differ, the call is still refused, just without the name.
+ */
+export const erc20ErrorsAbi = parseAbi([
+  "error ERC20InsufficientAllowance(address spender, uint256 allowance, uint256 needed)",
+  "error ERC20InsufficientBalance(address sender, uint256 balance, uint256 needed)",
 ]);
 
 export const holderPoolAbi = parseAbi([
@@ -100,6 +164,10 @@ export const spareTokenAbi = parseAbi([
   "function balanceOf(address) view returns (uint256)",
   "function transfer(address to, uint256 amount) returns (bool)",
   "function burn(uint256 amount)",
+  // Standard ERC-20 approve flow of the staking panel (exact-amount approvals only).
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "function decimals() view returns (uint8)",
 ]);
 
 /** Uniswap v4 StateView (periphery lens over the PoolManager's storage). */

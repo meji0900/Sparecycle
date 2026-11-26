@@ -5,6 +5,7 @@
 // src/lib/openapi.test.ts checks that every route under src/app/api/v1 is described.
 import { agentApiComponents, agentApiPaths } from "./openapi-agent";
 import { coreApi } from "./openapi-core";
+import { stakingApi } from "./openapi-staking";
 
 type Obj = Record<string, unknown>;
 
@@ -122,7 +123,7 @@ const agentApi: OpenApiModule = {
   components: agentApiComponents as unknown as OpenApiModule["components"],
 };
 
-export const OPENAPI_MODULES: OpenApiModule[] = [coreApi, agentApi];
+export const OPENAPI_MODULES: OpenApiModule[] = [coreApi, stakingApi, agentApi];
 
 export function openApiDocument(modules: OpenApiModule[] = OPENAPI_MODULES): OpenApiDocument {
   return mergeOpenApi(

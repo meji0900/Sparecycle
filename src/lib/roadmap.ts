@@ -37,7 +37,7 @@ export const ROADMAP: RoadmapItem[] = [
     title: "Node staking with partial slashing",
     status: "in-progress",
     summary:
-      "The staking contract is live with a minimum stake of zero. Next: staking from the node page, and the scheduler reading stakes and proposing slashes. A part of a stake is burned only after repeated faults proven against two other owners' results, with an appeal window, and never for a single mismatch. The scheduler proposes, the treasury Safe decides; it is not trustless.",
+      "The staking contract and staking from the site are live, with a minimum stake of zero. Next: the scheduler reading stakes and proposing slashes. A part of a stake is burned only after repeated faults proven against two other owners' results, with an appeal window, and never for a single mismatch. The scheduler proposes, the treasury Safe decides; it is not trustless.",
   },
 ];
 
