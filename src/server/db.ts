@@ -220,7 +220,7 @@ const MIGRATIONS: string[] = [
     note      TEXT
   );
   `,
-  // billing-invoice (feature brief #4; renumber freely when merging with other additive migrations): the sha256 of
+  // v6 (billing invoice, feature brief #4): the sha256 of
   // the agreed output that is kept for the submitter, stored at the verdict for the payer's private invoice
   // (GET /api/v1/jobs/:id/invoice). Older agreed jobs: filled from the result whose output was kept (the first one
   // received, ties by task id, exactly as submitResult picks it). Additive only.
@@ -229,6 +229,14 @@ const MIGRATIONS: string[] = [
   UPDATE jobs SET output_hash = (
     SELECT r.output_hash FROM results r WHERE r.job_id = jobs.id ORDER BY r.received_at, r.task_id LIMIT 1
   ) WHERE status = 'agreed' AND output IS NOT NULL;
+  `,
+  // v7 (idle guard): the state a node reports about its own machine (node client 0.4.0+, POST /nodes/heartbeat):
+  // active | paused-busy | paused-hot | paused-hours. NULL = nothing reported since the last registration (older
+  // clients), treated as active. Separate from the scheduler's verdicts (gpu_status, challenge_state). state_since
+  // (unix seconds) is never in a public response. Additive only.
+  `
+  ALTER TABLE nodes ADD COLUMN state TEXT;
+  ALTER TABLE nodes ADD COLUMN state_since INTEGER;
   `,
 ];
 

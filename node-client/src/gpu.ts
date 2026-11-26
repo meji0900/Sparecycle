@@ -2,11 +2,13 @@
 //
 // Device probe per backend and the "be a good guest" checks. CUDA: name / UUID / VRAM from nvidia-smi, pause while
 // another program uses > 500 MB of VRAM or the GPU is at 83 °C or hotter. Vulkan / CPU: no reliable cross-vendor
-// VRAM or temperature reading, so the busy/hot pause is off (the --hours window still applies).
+// VRAM or temperature reading, so the busy/hot pause is off (the --hours window still applies). The pause is reported
+// to the scheduler as a state code only (idle-guard.ts); the readings never leave the machine.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpus, hostname, totalmem } from "node:os";
 import { promisify } from "node:util";
+import type { GpuPause } from "#idle-guard";
 import type { Backend, DeviceInfo } from "#protocol";
 
 const run = promisify(execFile);
@@ -119,21 +121,49 @@ export async function probeDevice(backend: Backend): Promise<Gpu> {
   };
 }
 
-/** Reason to pause, or null. Without nvidia-smi it never blocks. CUDA backend only. */
-export async function gpuBusyOrHot(ownPids: Set<number>): Promise<string | null> {
+/** Pause at this GPU temperature or hotter (°C). Fixed: no owner flag in this version (D10, default, not yet confirmed). */
+export const HOT_CELSIUS = 83;
+/** Pause while another program uses more than this much VRAM (MB). Fixed, like HOT_CELSIUS (D10). */
+export const BUSY_VRAM_MB = 500;
+
+/** `nvidia-smi --query-gpu=temperature.gpu` output -> too hot? (first GPU; an unreadable value never pauses) */
+export function hotFromSmi(stdout: string): boolean {
+  const temp = Number(stdout.trim().split("\n")[0]);
+  return Number.isFinite(temp) && temp >= HOT_CELSIUS;
+}
+
+/** `nvidia-smi --query-compute-apps=pid,used_memory` output -> does a process that isn't ours use > BUSY_VRAM_MB? */
+export function busyFromSmi(stdout: string, ownPids: Set<number>): boolean {
+  return stdout
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => l.split(",").map((s) => s.trim()))
+    .some(([pid, mem]) => !ownPids.has(Number(pid)) && Number(mem) > BUSY_VRAM_MB);
+}
+
+/**
+ * SPARECYCLE_SIMULATE_PAUSE=busy|hot (local testing only): the GPU check reports that reason without reading the GPU,
+ * on any backend, so the paused states can be tried end to end (e.g. with --dev-runner).
+ */
+export function simulatedPause(): GpuPause | null {
+  const v = process.env.SPARECYCLE_SIMULATE_PAUSE;
+  return v === "busy" ? "paused-busy" : v === "hot" ? "paused-hot" : null;
+}
+
+/**
+ * Reason to pause as a code (paused-hot | paused-busy), or null. CUDA backend only; without nvidia-smi it never
+ * blocks. The readings (temperature, other processes and their VRAM) stay on this machine: only the code is reported.
+ */
+export async function gpuBusyOrHot(ownPids: Set<number>): Promise<GpuPause | null> {
+  const simulated = simulatedPause();
+  if (simulated) return simulated;
   if (process.env.SPARECYCLE_NO_BUSY_CHECK === "1") return null;
   try {
     const t = await run("nvidia-smi", ["--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"]);
-    const temp = Number(t.stdout.trim().split("\n")[0]);
-    if (temp >= 83) return `GPU at ${temp} °C`;
+    if (hotFromSmi(t.stdout)) return "paused-hot";
     const p = await run("nvidia-smi", ["--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"]);
-    const others = p.stdout
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((l) => l.split(",").map((s) => s.trim()))
-      .filter(([pid, mem]) => !ownPids.has(Number(pid)) && Number(mem) > 500);
-    if (others.length) return `another program is using ${others[0][1]} MB of VRAM`;
+    if (busyFromSmi(p.stdout, ownPids)) return "paused-busy";
   } catch {
     /* no nvidia-smi: don't block */
   }

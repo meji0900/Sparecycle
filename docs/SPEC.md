@@ -50,12 +50,13 @@ Public reads
 - `GET /api/v1/jobs/:id` → job detail for the submitter (status, timestamps, `output` url when agreed).
 - `GET /api/v1/jobs/:id/invoice` (session of the paying wallet, or `Authorization: Bearer <readSecret>`; `Cache-Control: private, no-store`) → paid / team job: `{ version: 1, jobId, model, kind, status, verdict: "agreed"|"disagreed"|"expired"|"rejected"|null, createdAt, settledAt, generatedAt, payment: "paid"|"team", invoice: true, payer, priceWei, chargedWei|null, protocolCutBps: 500, protocolCutWei, protocolCutNote, toPotWei, toPotNote, chargeStatus: "pending"|"charged"|"released"|"unpaid", reason|null, epochId|null, epochStatus|null, chargedEpoch|null, outputHash|null, links: { chargeTx: { hash, url }|null, epochRootTx: { hash, url }|null } }`; free job: `{ …, payment: "free", invoice: false, note: "free trial, no charge" }`. 400 bad id, 401 no credentials (empty body), 403 other wallet or secret, 404 unknown job. `protocolCutWei = priceWei × 500 / 10000` is a rounded per-job share: the contract takes 5% of each epoch's charged batch.
 - `GET /api/v1/jobs/:id/output` → PNG or text of an agreed job.
-- `GET /api/v1/nodes` → `{ nodes: [{ owner, nodeKey, gpu, vramMb, caps, online, lastSeen, agreedJobs, epochAgreedJobs }] }` (registered nodes only).
+- `GET /api/v1/nodes` → `{ nodes: [{ owner, nodeKey, gpu, vramMb, caps, online, state, lastSeen, agreedJobs, epochAgreedJobs }] }` (registered nodes only). `state` ∈ `active | paused-busy | paused-hot | paused-hours | offline` (Idle Guard; no pause start time is published).
 - `POST /api/v1/jobs` → body `{ kind: "image", params: { model: "sd15", prompt, negative?, width, height, steps, guidance?, seed? } }` or `{ kind: "text", params: { model: "qwen2.5-1.5b", prompt, system?, maxTokens } }` → `{ id, status: "queued", priceWei|null, readSecret }`; 429 when over `JOB_RATE_LIMIT` per IP per hour. A paid job (`{ request, payment }`) also answers `available` (wei still spendable on new jobs, this job's price held) and `lowBalance` (`available` < 5 × this job's price; `LOW_CREDIT_JOBS` in `src/lib/job-payment.ts`).
 
 Node endpoints (EIP-191 signed headers `x-sc-from`, `x-sc-ts`, `x-sc-sig` over `sparecycle|METHOD|PATH|TS|sha256(body)`, 60 s window)
 - `POST /api/v1/nodes/register` `{ gpu, gpuUuid, vramMb, caps, owner, ownerSig }` (owner signs `Sparecycle: link node <nodeKey> to wallet <owner>`; the owner wallet is the Merkle leaf account)
 - `POST /api/v1/nodes/poll` → 204 or `{ taskId, jobId, epoch, spec }` (each job is assigned to two distinct nodes with distinct owners and GPUs)
+- `POST /api/v1/nodes/heartbeat` `{ state: "active"|"paused-busy"|"paused-hot"|"paused-hours", since? }` → `{ ok, state, since }` (node client 0.4.0+; on every state change and at least every 60 s while paused; counts as a sign of life; a paused node gets no lease)
 - `POST /api/v1/tasks/:taskId/result` `{ outputHash, gpuMs, epoch, signature, png?|text? }`
 
 Operator

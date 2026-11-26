@@ -1,9 +1,11 @@
 "use client";
 
 import Link from "next/link";
+import { IdleGuardNote, NODE_STATE_TONE } from "@/components/dapp/node-state";
 import { StatusTag, type Tone } from "@/components/ui/status";
 import { config } from "@/lib/config";
 import { EM_DASH, formatInt } from "@/lib/format";
+import { NODE_STATE_LABEL, shownNodeState, type PublicNodeState } from "@/lib/node-state";
 import { useLiveJson } from "@/lib/use-live";
 
 type Status = {
@@ -17,6 +19,8 @@ type Node = {
   vramMb: number;
   backend?: "cuda" | "vulkan" | "cpu";
   online: boolean;
+  /** Idle Guard state; absent on older schedulers (then online = active). */
+  state?: PublicNodeState;
   epochAgreedJobs: number;
   dev?: boolean;
   project?: boolean;
@@ -27,13 +31,16 @@ type Node = {
 const gpuName = (g: string) => g.replace(/^(NVIDIA|AMD|Intel\(R\))\s+/i, "").replace(/^(GeForce|Radeon)\s+/i, "").trim() || g;
 
 function nodeState(n: Node, pool: Status["gpuPool"]): { tone: Tone; label: string } {
-  if (n.online) return { tone: "live", label: "Online" };
-  if (n.project && pool?.configured) {
+  if (!n.online && n.project && pool?.configured) {
     if (pool.state === "starting") return { tone: "neutral", label: "Starting" };
     return { tone: "neutral", label: "Standby" };
   }
-  return { tone: "off", label: "Offline" };
+  const s = shownNodeState(n);
+  return { tone: NODE_STATE_TONE[s], label: NODE_STATE_LABEL[s] };
 }
+
+/** List order: active, then paused (online but resting), then everything else; project GPUs first within each. */
+const rank = (n: Node) => (n.online ? (shownNodeState(n) === "active" ? 0 : 1) : 2);
 
 function Stat({ label, value, note }: { label: string; value: number | null; note?: string }) {
   return (
@@ -57,7 +64,7 @@ export function NetworkNow() {
   const s = status.data;
   const pool = s?.gpuPool;
   const nodes = (nodesRes.data?.nodes ?? []).filter((n) => !n.dev);
-  const ordered = [...nodes].sort((a, b) => Number(b.online) - Number(a.online) || Number(!!b.project) - Number(!!a.project));
+  const ordered = [...nodes].sort((a, b) => rank(a) - rank(b) || Number(!!b.project) - Number(!!a.project));
   const online = nodes.filter((n) => n.online).length;
   const standby = nodes.filter((n) => !n.online && n.project && pool?.configured).length;
   const reachable = !!s;
@@ -115,6 +122,7 @@ export function NetworkNow() {
                       </span>
                       <span className={n.project ? "text-text" : "text-muted"}>{n.project ? (n.paidTest ? "Sparecycle GPU, paid test node" : "Sparecycle GPU") : "Community"}</span>
                     </div>
+                    <IdleGuardNote backend={n.backend} className="basis-full" />
                   </li>
                 );
               })}
@@ -129,7 +137,7 @@ export function NetworkNow() {
           )}
           <p className="border-t border-line px-5 py-3.5 text-xs leading-relaxed text-faint">
             Sparecycle GPUs are run by the project so jobs don&apos;t wait while the network grows. They are not paid from the
-            pot; community GPUs are. A GPU marked paid test node is the team&apos;s own, paid on purpose to test the payout path in the open. A GPU counts as online when it asked for work in the last two minutes.
+            pot; community GPUs are. A GPU marked paid test node is the team&apos;s own, paid on purpose to test the payout path in the open. A GPU counts as online when it asked for work or sent a heartbeat in the last two minutes. A paused GPU says why (its owner is using it, it is too hot, or it is outside its chosen hours) and takes no jobs until it resumes; when the pause began is not shown.
           </p>
         </div>
       </div>

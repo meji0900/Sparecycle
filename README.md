@@ -190,7 +190,7 @@ trader ──buy/sell CYCLE──▶ Pons bonding curve (standard fee + optional
 ### Node program (`node-client/`)
 - Backends `cuda` (image + text), `vulkan` (AMD/Intel GPU/iGPU, text), `cpu` (text).
 - Windows (`install.ps1`) and Linux (`install.sh`) installers, checksummed downloads.
-- Pauses automatically when the GPU is used by another program (> 500 MB VRAM) or reaches ≥ 83 °C (cuda).
+- Pauses automatically when the GPU is used by another program (> 500 MB VRAM) or reaches ≥ 83 °C (cuda); from 0.4.0 the node list shows why a node is paused.
 - Working hours (`--hours`), job type selection (`--no-image`, `--no-text`), gasless wallet linking.
 - `bench` command for cross-GPU match tests.
 
@@ -228,7 +228,7 @@ Everything under `/api/v1`, JSON, errors always `{ "error": "<code>", "message":
 | Public | `GET openapi.json` (this API as OpenAPI 3.1), `GET health`, `GET status`, `GET epochs`, `GET epochs/:id/tree`, `GET epochs/:id/proof?account=0x…`, `GET epochs/:id/charges`, `GET jobs?limit=`, `POST jobs`, `GET jobs/:id`, `GET nodes`, `GET payments/account?address=0x…` |
 | Job owner | `GET jobs/:id/result`: the output of an agreed job, for `Authorization: Bearer <read secret>` (returned once by `POST jobs`) or a wallet session of the payer; `401` anonymous, `403` wrong secret or wallet; `Cache-Control: private, no-store`. The old `GET jobs/:id/output` returns `410` while `OUTPUT_AUTH=enforce`. `GET jobs/:id/invoice`: the private invoice of a paid or team job (price, rounded 5% protocol cut, verdict, charge status, output hash, epochs, charge and root transactions), same credentials, always enforced; a free job gets a "free trial, no charge" stub |
 | Wallet sign-in | `GET auth/nonce`, `POST auth/verify` (EIP-4361 Sign-In with Ethereum message, sets an http-only 12-hour session cookie), `POST auth/logout`. No transaction, no gas |
-| Node (signed) | `POST nodes/register`, `POST nodes/poll`, `POST tasks/:taskId/result`, `POST challenges/:id/result` — headers `x-sc-from`, `x-sc-ts`, `x-sc-sig` = EIP-191 over `sparecycle\|METHOD\|PATH\|TS\|sha256(body)` |
+| Node (signed) | `POST nodes/register`, `POST nodes/poll`, `POST nodes/heartbeat` (`{ state, since }`, 0.4.0+), `POST tasks/:taskId/result`, `POST challenges/:id/result` — headers `x-sc-from`, `x-sc-ts`, `x-sc-sig` = EIP-191 over `sparecycle\|METHOD\|PATH\|TS\|sha256(body)` |
 | Operator | `POST epochs/close`; `GET`/`POST admin/challenges` (a node's challenge state; re-issue, temporary allow, revoke, each written to an audit log; never touches jobs or results). Bearer `SCHEDULER_ADMIN_TOKEN`; no token configured → 503 |
 | Site | `GET /api/chain` (network, Pons, reward contract and token snapshot; 15-second cache), `GET /api/health`, `/api/rpc` (read-only JSON-RPC relay used by the browser as a fallback transport), `POST /api/support` (the support form: forwarded to `SUPPORT_WEBHOOK_URL`, never stored, rate limited per IP; `503` until the URL is set) |
 
@@ -334,7 +334,9 @@ node src/agent.ts start --network https://sparecycle.tech --owner 0xYOUR_WALLET 
 | `--key-file <path>` | another node key file (default `~/.sparecycle-node/key.json`) |
 | `--dev-runner` | local tests only |
 
-Other commands: `init` (create a node key), `bench --backend … --repeat 2` (cross-GPU match test). `Ctrl+C` finishes the running job, then stops. Nodes must run node client **0.2.0 or newer** (0.3.0 adds device info and GPU challenges; inference settings are unchanged), because the `-ub 1` setting affects text output.
+Other commands: `init` (create a node key), `bench --backend … --repeat 2` (cross-GPU match test). `Ctrl+C` finishes the running job, then stops. Nodes must run node client **0.2.0 or newer** (0.3.0 adds device info and GPU challenges, 0.4.0 the Idle Guard heartbeat; inference settings are unchanged), because the `-ub 1` setting affects text output.
+
+**Idle Guard (0.4.0).** The node list shows each node as `active`, `paused: owner is using the GPU` (another program uses > 500 MB of VRAM), `paused: GPU too hot` (≥ 83 °C), `paused: outside chosen hours` (`--hours`) or `offline` (no poll or heartbeat for 120 s). The node sends a signed `POST nodes/heartbeat` with `{ state, since }` on every change and at least every 60 s while paused; it sends no temperature, VRAM figure, process name or PID. `GET nodes` shows the state but not when a pause began. A paused node gets no job. The busy and heat checks are NVIDIA-only; Vulkan and CPU nodes pause on `--hours` only. Older clients show active or offline, as before. The 60 s interval and the fixed thresholds are defaults, not yet confirmed.
 
 **Nodes without an NVIDIA GPU**: `--backend vulkan` (AMD/Intel, including iGPUs) or `--backend cpu` runs text jobs only. On a Ryzen 7 5700U: Vulkan ~27 tok/s (alone), ~13 tok/s per node when two nodes share the iGPU, CPU ~33 tok/s. Vulkan and CPU outputs differ (median similarity 0.65), which is why the scheduler only pairs the same backend.
 
@@ -396,7 +398,7 @@ npm run typecheck && npm run lint
 npm run contracts:test          # Foundry tests (unit, fuzz 512 runs, invariant 256×64)
 FORK_TESTS=1 npm run contracts:test -- --match-path 'test/fork/*'   # Robinhood mainnet fork (read-only)
 npm run contracts:abi-check     # Solidity ABI == src/contracts/sparecycleRewards.ts
-npm test                        # unit tests: allowlist, challenge, billing and invoice, support form, changelog/roadmap/address data, OpenAPI
+npm test                        # unit tests: allowlist, challenge, billing and invoice, Idle Guard, support form, changelog/roadmap/address data, OpenAPI
 node scripts/check-docs-touch.mjs --base main   # same-day docs check (CI runs it on pull requests)
 npm run check:bench             # re-derives the committed bench verdicts and challenge references with the current code
 npm run e2e:local               # anvil + scheduler + 2 dev-runner nodes, incl. private outputs and a challenge round

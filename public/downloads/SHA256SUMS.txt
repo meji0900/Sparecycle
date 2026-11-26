@@ -1,2 +1,2 @@
-826871babef5a628c771a844ed5e4b06c50ad6e6fb8d301ce1a7afd8d48ed671  sparecycle-node-windows.zip
-67402f42fc270f9b166928823f56d2227e41219d9c225076841c1a09b99388f3  sparecycle-node-linux.tar.gz
+d9597d0bc66abd0b7fc2d417e8b7ad996466eb0bd54bfeaa2036afbaf6e630ea  sparecycle-node-windows.zip
+9d4f9417b02b715403eefeaaf65fe68eb3326655456c9473b684828e7afe5675  sparecycle-node-linux.tar.gz

@@ -6,19 +6,18 @@ import { Hex } from "@/components/ui/address";
 import { Button } from "@/components/ui/button";
 import { Notice, StatusTag } from "@/components/ui/status";
 import { config, payoutAssetLabel } from "@/lib/config";
-import { apiUrl, type ApiEpoch, type EpochsResponse, type JobsResponse, type NodesResponse, type StatusResponse } from "@/lib/dapp/api";
+import { apiUrl, type ApiEpoch, type EpochsResponse, type JobsResponse, type StatusResponse } from "@/lib/dapp/api";
 import { formatPayout, payoutUnit } from "@/lib/dapp/payout";
 import { useNow } from "@/lib/dapp/use-api";
 import { durationLabel } from "@/lib/dapp/duration";
-import { formatInt, formatTime, relativeTime } from "@/lib/format";
+import { formatInt, formatTime } from "@/lib/format";
 import { useLiveJson, type ChainApi } from "@/lib/use-live";
 import { PageHeader } from "./app-shell";
 import { LiveCount, RootHash } from "./live-values";
+import { RegisteredNodesTable } from "./node-list";
 import { RecentJobs } from "./recent-jobs";
 import { Countdown, FlapWord, OdometerNumber } from "./motion-bits";
 import { Dash, Fact, Facts, Panel, SectionTitle, TableBox, TableMessage, td, th } from "./ui";
-
-const CAP_LABEL: Record<string, string> = { "image:sd15": "SD 1.5", "text:qwen2.5-1.5b": "Qwen2.5-1.5B" };
 
 function Amount({ value, unit }: { value: string | bigint | null; unit: ReturnType<typeof payoutUnit> }) {
   const f = formatPayout(value, unit);
@@ -40,7 +39,6 @@ export function StatusView() {
   const status = useLiveJson<StatusResponse>(apiUrl("/status"), 15_000);
   const epochs = useLiveJson<EpochsResponse>(apiUrl("/epochs"), 30_000);
   const jobs = useLiveJson<JobsResponse>(apiUrl("/jobs?limit=20"), 15_000);
-  const nodes = useLiveJson<NodesResponse>(apiUrl("/nodes"), 30_000);
   const now = useNow(15_000);
 
   const unit = payoutUnit(chain.data);
@@ -76,7 +74,6 @@ export function StatusView() {
   const settledRows = (epochs.data?.epochs ?? []).filter((e) => e.status !== "open");
   const jobList = jobs.data?.jobs ?? [];
   const eligibleCount = jobList.filter((j) => j.eligible || j.paid).length;
-  const nodeList = nodes.data?.nodes ?? [];
 
   const contractWhy = !config.rewardContract ? "Reward contract not set" : rewards && !rewards.ok ? "Contract read failed" : chain.loading ? "Reading" : "Unavailable";
 
@@ -397,76 +394,14 @@ export function StatusView() {
         <SectionTitle
           id="nodes"
           title="Registered nodes"
-          description="Nodes that registered with the scheduler, by owner wallet. A node counts as online when it polled for work in the last two minutes."
+          description="Nodes that registered with the scheduler, by owner wallet. A node counts as online when it polled for work or sent a heartbeat in the last two minutes. A paused node says why (node client 0.4.0 and later) and takes no jobs until it resumes; when the pause began is not shown."
           aside={
             <Link href="/nodes" className="link text-sm">
               Run a node
             </Link>
           }
         />
-        <Panel>
-          <TableBox label="Registered nodes" minWidth={820}>
-            <thead>
-              <tr>
-                <th className={th}>Owner</th>
-                <th className={th}>GPU</th>
-                <th className={th}>VRAM</th>
-                <th className={th}>Models</th>
-                <th className={th}>Status</th>
-                <th className={`${th} text-right`}>Agreed jobs</th>
-                <th className={`${th} text-right`}>This epoch</th>
-              </tr>
-            </thead>
-            <tbody>
-              {nodes.data ? (
-                nodeList.length ? (
-                  nodeList.map((n) => (
-                    <tr key={n.nodeKey}>
-                      <td className={td}>
-                        <Hex value={n.owner} />
-                      </td>
-                      <td className={`${td} text-text`}>
-                        {n.gpu}
-                        {n.backend && n.backend !== "cuda" ? (
-                          <span className="num ml-2 rounded-s border border-line px-1.5 py-0.5 text-[11px] text-muted">{n.backend}</span>
-                        ) : null}
-                        {n.dev ? (
-                          <StatusTag tone="off" className="ml-2">
-                            Test runner, unpaid
-                          </StatusTag>
-                        ) : null}
-                        {n.project ? (
-                          <StatusTag tone="neutral" className="ml-2">
-                            {n.paidTest ? "Run by Sparecycle, paid test node" : "Run by Sparecycle, unpaid"}
-                          </StatusTag>
-                        ) : null}
-                      </td>
-                      <td className={`${td} num whitespace-nowrap text-muted`}>{(n.vramMb / 1024).toFixed(1)} GB</td>
-                      <td className={`${td} whitespace-nowrap text-muted`}>{n.caps.map((c) => CAP_LABEL[c] ?? c).join(", ") || "—"}</td>
-                      <td className={td}>
-                        {n.online ? (
-                          <StatusTag tone="live">Online</StatusTag>
-                        ) : (
-                          <StatusTag tone="off">
-                            Offline{now !== null && n.lastSeen ? `, seen ${relativeTime(n.lastSeen * 1000, now)}` : ""}
-                          </StatusTag>
-                        )}
-                      </td>
-                      <td className={`${td} num text-right text-text`}>{formatInt(n.agreedJobs)}</td>
-                      <td className={`${td} num text-right text-muted`}>{formatInt(n.epochAgreedJobs)}</td>
-                    </tr>
-                  ))
-                ) : (
-                  <TableMessage colSpan={7}>
-                    No nodes registered yet. The <Link href="/nodes" className="link">install guide</Link> shows how to add one.
-                  </TableMessage>
-                )
-              ) : (
-                <TableMessage colSpan={7}>{nodes.loading ? "Loading nodes…" : "Scheduler API not reachable. No rows are shown rather than invented ones."}</TableMessage>
-              )}
-            </tbody>
-          </TableBox>
-        </Panel>
+        <RegisteredNodesTable />
       </section>
 
       {/* Settled epochs */}

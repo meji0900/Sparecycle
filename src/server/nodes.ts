@@ -10,9 +10,13 @@
 //   - a lease expires after POLICY.taskLeaseSeconds and the task goes back to the queue;
 //   - only nodes that pass the GPU gate get job tasks, and the peer check counts only such peers: the allowlist
 //     (GPU_ALLOWLIST_MODE, src/server/gpu-allowlist.ts) and the periodic challenge (CHALLENGE_MODE,
-//     src/server/challenge.ts). A due challenge is handed out before any new job task.
+//     src/server/challenge.ts). A due challenge is handed out before any new job task;
+//   - Idle Guard: a node that reported a pause (POST /nodes/heartbeat, node client 0.4.0+) gets nothing at all (no job,
+//     no challenge, no held lease back) and is not counted as the compatible peer. This is the owner's machine state,
+//     kept apart from the GPU gate above. A node that never reported (older client) counts as active.
 import { getAddress, isAddress, verifyMessage, type Address, type Hex } from "viem";
 import { publicClient, targetChain } from "@/lib/chain";
+import { isNodeState, NODE_STATES, type NodeState, type PublicNodeState } from "@/lib/node-state";
 import {
   BACKENDS,
   CAPABILITY_TAGS,
@@ -23,6 +27,7 @@ import {
   MODELS,
   MODEL_IDS,
   modelRunsOn,
+  REQUEST_WINDOW_SECONDS,
   type Backend,
   type ChallengeAssignment,
   type JobSpec,
@@ -57,6 +62,10 @@ export type NodeRow = {
   challenge_due_at: number | null;
   cooldown_until: number | null;
   allow_until: number | null;
+  /** Idle Guard state reported by the node (NULL = nothing reported since registering: active). */
+  state: NodeState | null;
+  /** When the reported state began (unix seconds, as the node said, never later than receipt). Never public. */
+  state_since: number | null;
 };
 
 type Obj = Record<string, unknown>;
@@ -152,7 +161,9 @@ export async function registerNode(nodeKey: Address, body: unknown) {
       .prepare("SELECT 1 AS x FROM nodes WHERE gpu_uuid = ? AND node_key != ? AND challenge_state = 'suspended' LIMIT 1")
       .get(gpuUuid, nodeKey);
     const initialState: ChallengeState | null = suspendedTwin ? "suspended" : challenge ? "pending-challenge" : null;
-    // Re-registering never clears a challenge state (a cooldown or suspension sticks to the node key).
+    // Re-registering never clears a challenge state (a cooldown or suspension sticks to the node key). It does clear the
+    // Idle Guard state: a (re)start is a new session, and an older client that never sends a heartbeat must not inherit
+    // a pause left behind by a newer one on the same key.
     db.prepare(
       `INSERT INTO nodes (node_key, owner, owner_sig, gpu, gpu_uuid, vram_mb, caps, dev, backend, version, registered_at, last_seen,
          family, gpu_status, device_info, challenge_cap, challenge_state, challenge_due_at)
@@ -161,7 +172,7 @@ export async function registerNode(nodeKey: Address, body: unknown) {
          gpu_uuid = excluded.gpu_uuid, vram_mb = excluded.vram_mb, caps = excluded.caps, dev = excluded.dev,
          backend = excluded.backend, version = excluded.version, last_seen = excluded.last_seen,
          family = excluded.family, gpu_status = excluded.gpu_status, device_info = excluded.device_info,
-         challenge_cap = excluded.challenge_cap,
+         challenge_cap = excluded.challenge_cap, state = NULL, state_since = NULL,
          challenge_due_at = CASE WHEN nodes.challenge_state IS NULL THEN excluded.challenge_due_at ELSE nodes.challenge_due_at END,
          challenge_state = COALESCE(nodes.challenge_state, excluded.challenge_state)`,
     ).run(
@@ -209,6 +220,46 @@ function getNode(nodeKey: Address): NodeRow {
   return row;
 }
 
+// ---- Idle Guard --------------------------------------------------------------------------------------
+/** SQL: the node (table alias `n`) has not reported a pause. NULL (never reported, older client) counts as active. */
+const activeSql = (n: string) => `COALESCE(${n}.state, 'active') = 'active'`;
+
+/** Has this node reported a pause? Read fresh, so a heartbeat that just arrived counts. */
+export function nodePaused(nodeKey: Address): boolean {
+  const row = getDb().prepare("SELECT state FROM nodes WHERE node_key = ?").get(nodeKey) as { state: string | null } | undefined;
+  return (row?.state ?? "active") !== "active";
+}
+
+/**
+ * POST /api/v1/nodes/heartbeat — body `{ state, since }`: the node's own state and when it began (unix seconds,
+ * optional, default now). Counts as a sign of life like a poll (the node stays online while paused). Only the state
+ * code is accepted and stored; no temperature, process or PID is asked for. Answers the stored `{ ok, state, since }`
+ * to the node itself; `since` never appears in the public list (D9).
+ */
+export function recordHeartbeat(nodeKey: Address, body: unknown): { ok: true; state: NodeState; since: number } {
+  const node = getNode(nodeKey);
+  if (node.dev && !serverEnv.allowDevRunner()) {
+    throw new ApiError(403, "dev-runner-not-accepted", "this scheduler does not accept dev-runner nodes");
+  }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new ApiError(400, "invalid-heartbeat", "expected a JSON object");
+  }
+  const b = body as Obj;
+  if (!isNodeState(b.state)) {
+    throw new ApiError(400, "invalid-heartbeat", `state must be one of ${NODE_STATES.join(", ")}`, { field: "state" });
+  }
+  const now = nowSec();
+  let since = now;
+  if (b.since !== undefined) {
+    if (typeof b.since !== "number" || !Number.isInteger(b.since) || b.since < 0 || b.since > now + REQUEST_WINDOW_SECONDS) {
+      throw new ApiError(400, "invalid-heartbeat", "since must be unix seconds, not in the future", { field: "since" });
+    }
+    since = Math.min(b.since, now);
+  }
+  getDb().prepare("UPDATE nodes SET state = ?, state_since = ?, last_seen = ? WHERE node_key = ?").run(b.state, since, now, nodeKey);
+  return { ok: true, state: b.state, since };
+}
+
 export type Assignment = { taskId: string; jobId: string; epoch: number; spec: JobSpec; chainId: number; leaseExpiresAt: number };
 
 /** SQL CASE giving each model's VRAM need (for the peer check). Built from MODELS, no user input. */
@@ -240,10 +291,11 @@ function heldLease(node: NodeRow): Assignment | null {
   };
 }
 
-/** One job assignment attempt (synchronous, in a transaction). Only for nodes that pass the GPU gate. */
+/** One job assignment attempt (synchronous, in a transaction). Only for nodes that pass the GPU gate and are not paused. */
 export function tryLease(node: NodeRow, epochId: number): Assignment | null {
   return tx((db) => {
     const now = nowSec();
+    if (nodePaused(node.node_key)) return null;
     if (!jobEligible(node.node_key, now)) return null;
     const caps = JSON.parse(node.caps) as string[];
     const backend: Backend = isBackend(node.backend) ? node.backend : "cuda";
@@ -283,6 +335,7 @@ export function tryLease(node: NodeRow, epochId: number): Assignment | null {
                        WHERE p.backend = $backend AND p.dev = $dev AND (p.dev = 0 OR $allowDev = 1)
                          AND p.node_key != $node AND p.owner != $owner AND p.gpu_uuid != $gpu
                          AND p.last_seen >= $online
+                         AND ${activeSql("p")}
                          AND ${eligibleSql("p")}
                          AND p.caps LIKE '%"' || j.kind || ':' || j.model || '"%'
                          AND p.vram_mb >= ${VRAM_CASE})
@@ -333,7 +386,8 @@ export async function pollForTask(nodeKey: Address, signal?: AbortSignal): Promi
   const epoch = await ensureEpoch();
   const deadline = Date.now() + POLICY.pollWaitMs;
   for (;;) {
-    const a = heldLease(node) ?? nextChallenge(node.node_key) ?? tryLease(node, epoch.id);
+    // A paused node gets nothing (a 0.4.0+ client does not poll while paused; this covers a stray poll).
+    const a = nodePaused(nodeKey) ? null : (heldLease(node) ?? nextChallenge(node.node_key) ?? tryLease(node, epoch.id));
     if (a) return a;
     if (Date.now() >= deadline || signal?.aborted) break;
     await new Promise((r) => setTimeout(r, 400));
@@ -357,29 +411,44 @@ export function listNodes(epochId: number | null) {
   const project = serverEnv.projectOwners();
   const paidTest = serverEnv.paidTestOwners();
   return {
-    nodes: rows.map((r) => ({
-      owner: r.owner,
-      nodeKey: r.node_key,
-      gpu: r.gpu,
-      vramMb: r.vram_mb,
-      caps: JSON.parse(r.caps) as string[],
-      backend: r.backend,
-      online: r.last_seen >= now - POLICY.onlineWindowSeconds || r.live_leases > 0,
-      lastSeen: r.last_seen,
-      agreedJobs: r.agreed_jobs,
-      epochAgreedJobs: r.epoch_agreed,
-      dev: r.dev === 1,
-      /** GPU allowlist family and status (null = registered before the allowlist and not polled since). */
-      gpuFamily: r.family,
-      gpuStatus: r.gpu_status,
-      /** Periodic challenge state (null = the node does not take challenges). */
-      challengeState: r.challenge_state,
-      /** Run by the project (bootstrap GPU pool): never paid. */
-      project: project.has(r.owner.toLowerCase()),
-      /** A project node that is paid, for the team's openly labelled payout test. */
-      paidTest: paidTest.has(r.owner.toLowerCase()),
-    })),
+    nodes: rows.map((r) => {
+      const online = r.last_seen >= now - POLICY.onlineWindowSeconds || r.live_leases > 0;
+      return {
+        owner: r.owner,
+        nodeKey: r.node_key,
+        gpu: r.gpu,
+        vramMb: r.vram_mb,
+        caps: JSON.parse(r.caps) as string[],
+        backend: r.backend,
+        /** Polled or sent a heartbeat within POLICY.onlineWindowSeconds, or holds a live lease. */
+        online,
+        /**
+         * Idle Guard: the node's own state while online, else "offline". Only the reason is public, never when a pause
+         * began: state_since stays private (D9).
+         */
+        state: publicNodeState(r.state, online),
+        lastSeen: r.last_seen,
+        agreedJobs: r.agreed_jobs,
+        epochAgreedJobs: r.epoch_agreed,
+        dev: r.dev === 1,
+        /** GPU allowlist family and status (null = registered before the allowlist and not polled since). */
+        gpuFamily: r.family,
+        gpuStatus: r.gpu_status,
+        /** Periodic challenge state (null = the node does not take challenges). */
+        challengeState: r.challenge_state,
+        /** Run by the project (bootstrap GPU pool): never paid. */
+        project: project.has(r.owner.toLowerCase()),
+        /** A project node that is paid, for the team's openly labelled payout test. */
+        paidTest: paidTest.has(r.owner.toLowerCase()),
+      };
+    }),
   };
+}
+
+/** The public Idle Guard state: what the node reported (NULL = active) while it is online, otherwise "offline". */
+export function publicNodeState(state: string | null, online: boolean): PublicNodeState {
+  if (!online) return "offline";
+  return isNodeState(state) ? state : "active";
 }
 
 export function nodeCounts() {
