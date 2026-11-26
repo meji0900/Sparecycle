@@ -13,6 +13,8 @@
 //   node scripts/mainnet.mjs deploy              deploy SparecycleRewards (owner = the wallet)
 //   node scripts/mainnet.mjs fund <scheduler|sweep> [eth]   send gas money from the wallet (default 0.0003 ETH)
 //   node scripts/mainnet.mjs deploy-payments     deploy SparecycleJobPayments (paid jobs) with the treasury Safe
+//   node scripts/mainnet.mjs deploy-stake [--dry-run]   deploy SparecycleNodeStake (SPARE staking, slashes judged by
+//                                                the treasury Safe; minimum stake 0). Internal review only, no audit.
 //   node scripts/mainnet.mjs transfer-owner <safe>  step 1 of moving the reward contract owner to a Safe
 //                                                (the Safe then executes acceptOwnership(); docs/ops/multisig-runbook.md)
 //   node scripts/mainnet.mjs launch              launch the token on Pons with the reward contract as fee recipient
@@ -47,7 +49,7 @@ const EXPLORER = "https://robinhoodchain.blockscout.com";
 const PONS = { factory: "0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e", feeEscrow: "0xd3AFEB2a57f70eF218Aa82451c51B2fb0416Ac9e" };
 const USDG = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168";
 // Env the forge scripts read; cleared before each run so nothing stale from the shell leaks in.
-const SCRIPT_ENV = ["TREASURY", 
+const SCRIPT_ENV = ["TREASURY", "SPARE_TOKEN", "SPARE_HAS_BURN", "MIN_STAKE_PER_NODE",
   "ADMIN", "SCHEDULER", "EPOCH_LENGTH", "PAYOUT_TOKEN", "FEE_ESCROW", "DEPLOY_MOCK_ESCROW", "REWARD_CONTRACT",
   "TOKEN_NAME", "TOKEN_SYMBOL", "TOKEN_LOGO", "TOKEN_DESCRIPTION", "TOKEN_TWITTER", "TOKEN_TELEGRAM", "TOKEN_DISCORD",
   "TOKEN_WEBSITE", "TOKEN_FARCASTER", "CREATOR_TAX_BPS", "PAIR_ASSET", "LAUNCH_CONFIG_ID", "LAUNCH_SALT",
@@ -195,6 +197,19 @@ function deployedPayments() {
   if (!existsSync(DEPLOYMENTS)) return null;
   const a = JSON.parse(readFileSync(DEPLOYMENTS, "utf8"))[String(CHAIN_ID)]?.SparecycleJobPayments;
   return a ? getAddress(a) : null;
+}
+
+function deployedStake() {
+  if (!existsSync(DEPLOYMENTS)) return null;
+  const a = JSON.parse(readFileSync(DEPLOYMENTS, "utf8"))[String(CHAIN_ID)]?.SparecycleNodeStake;
+  return a ? getAddress(a) : null;
+}
+
+/** SPARE from the site's single address source (src/lib/addresses.ts, ADDR.spareToken). */
+function spareToken() {
+  const m = /spareToken:\s*"(0x[0-9a-fA-F]{40})"/.exec(readFileSync(join(ROOT, "src", "lib", "addresses.ts"), "utf8"));
+  if (!m) fail("No spareToken in src/lib/addresses.ts.");
+  return getAddress(m[1]);
 }
 
 function launched() {
@@ -453,6 +468,78 @@ async function deployPayments(again) {
   console.log("Next: node scripts/mainnet.mjs verify payments, then node scripts/mainnet.mjs env (Railway variables).");
 }
 
+const stakeAbi = parseAbi([
+  "function token() view returns (address)",
+  "function rewards() view returns (address)",
+  "function safe() view returns (address)",
+  "function burnWithBurnFunction() view returns (bool)",
+  "function minStakePerNode() view returns (uint256)",
+  "function slashBps() view returns (uint16)",
+]);
+
+/**
+ * Deploys SparecycleNodeStake next to the live reward contract: SPARE (from src/lib/addresses.ts) is staked per owner
+ * wallet, the reward contract's scheduler proposes slashes, the treasury Safe judges them. Minimum stake 0, so no node
+ * needs a stake until the Safe raises it. Internal review only, not externally audited. --dry-run simulates only and
+ * needs no keystore.
+ */
+async function deployStake(again, dryRun) {
+  const c = config();
+  const reward = deployedReward();
+  if (!reward) fail("No reward contract deployed.");
+  const safe = c.treasury?.safe;
+  if (!safe || !isAddress(safe)) fail('Set "treasury": { "safe": "0x…" } in contracts/mainnet.json (the Safe multisig).');
+  if (deployedStake() && !again) fail(`Already deployed: ${deployedStake()}. (--again deploys another one)`);
+  const spare = spareToken();
+  if (!dryRun) {
+    needTerminal();
+    needKeystore(c);
+  }
+  const r = await rpc();
+  const pc = await client();
+  const [safeCode, threshold, spareCode, scheduler] = await Promise.all([
+    pc.getCode({ address: safe }),
+    pc.readContract({ address: safe, abi: safeAbi, functionName: "getThreshold" }).catch(() => null),
+    pc.getCode({ address: spare }),
+    pc.readContract({ address: reward, abi: rewardAbi, functionName: "scheduler" }),
+  ]);
+  if (!safeCode || safeCode === "0x" || threshold === null) fail(`${safe} is not a Safe on Robinhood Chain.`);
+  if (threshold < 2n) fail("The treasury Safe needs a threshold of at least 2.");
+  if (!spareCode || spareCode === "0x") fail(`SPARE ${spare} has no code on Robinhood Chain.`);
+  // burn(uint256) = 0x42966c68 in SPARE's runtime code (a fork test burned SPARE and saw totalSupply fall).
+  const hasBurn = spareCode.toLowerCase().includes("42966c68");
+  console.log(`SPARE ${spare}: burn(uint256) ${hasBurn ? "found: slashed SPARE is burned" : "not found: slashed SPARE goes to 0x…dEaD"}`);
+  console.log(`Reward contract ${reward} (scheduler ${scheduler}); treasury Safe ${safe}, threshold ${threshold}`);
+  const env = { SPARE_TOKEN: spare, REWARD_CONTRACT: reward, TREASURY: safe, SPARE_HAS_BURN: String(hasBurn), MIN_STAKE_PER_NODE: "0" };
+  const args = ["script", "script/DeployNodeStake.s.sol:DeployNodeStake", "--rpc-url", r.url, "--sender", c.wallet];
+  console.log(`Simulating the NodeStake deploy from ${c.wallet} (nothing sent yet)\n`);
+  if ((await run("forge", args, env)) !== 0) fail("Simulation failed. Nothing was sent.");
+  if (dryRun) {
+    console.log("\nDry run only: nothing was sent.");
+    return;
+  }
+  const ok = await confirm(
+    "STAKE",
+    `Deploy SparecycleNodeStake: SPARE ${spare}, rewards ${reward}, treasury Safe ${safe}. Minimum stake 0; a slash is at most 10% of a stake per proposal and is burned; appeal window 4 epochs; unstake cooldown 16 epochs. Internal review only, not externally audited.`,
+  );
+  if (!ok) fail("Stopped. Nothing was sent.");
+  if ((await run("forge", [...args, "--account", c.keystore, "--broadcast"], env)) !== 0) fail("Broadcast failed (see above).");
+  const runFile = join(CONTRACTS, "broadcast", "DeployNodeStake.s.sol", String(CHAIN_ID), "run-latest.json");
+  const out = JSON.parse(readFileSync(runFile, "utf8"));
+  const receipt = out.receipts?.find((x) => x.status === "0x1" || x.status === 1);
+  const address = receipt?.contractAddress ? getAddress(receipt.contractAddress) : null;
+  if (!address) fail("Sent, but no successful receipt with a contract address in the broadcast output; check Blockscout.");
+  const all = existsSync(DEPLOYMENTS) ? JSON.parse(readFileSync(DEPLOYMENTS, "utf8")) : {};
+  all[String(CHAIN_ID)] = { ...(all[String(CHAIN_ID)] ?? {}), SparecycleNodeStake: address };
+  writeFileSync(DEPLOYMENTS, JSON.stringify(all, null, 2) + "\n");
+  const read = (functionName) => pc.readContract({ address, abi: stakeAbi, functionName });
+  const [tk, rw, sf, burn, min, bps] = await Promise.all(["token", "rewards", "safe", "burnWithBurnFunction", "minStakePerNode", "slashBps"].map(read));
+  const good = tk === spare && rw === reward && sf === getAddress(safe) && burn === hasBurn && min === 0n && bps === 1000;
+  console.log(`\nSparecycleNodeStake ${address}\n${EXPLORER}/address/${address}\ntx ${receipt.transactionHash}`);
+  console.log(`read back: token ${tk}, rewards ${rw}, safe ${sf}, burn ${burn}, min stake ${min}, slash cap ${bps} bps  ${good ? "OK" : "MISMATCH"}`);
+  console.log("Next: node scripts/mainnet.mjs verify stake, then set TOKEN_NODE_STAKE_ADDRESS on Railway.");
+}
+
 /**
  * Step 1 of 2 of moving the reward contract's owner to a Safe: transferOwnership(safe) from the wallet. The Safe must
  * then execute acceptOwnership() (data 0x79ba5097); until it does, the wallet stays owner. See docs/ops/multisig-runbook.md.
@@ -568,6 +655,7 @@ async function launch(again) {
  */
 async function verify(which) {
   if (which === "payments") return verifyPayments();
+  if (which === "stake") return verifyStake();
   const reward = deployedReward();
   if (!reward) fail("Nothing deployed yet.");
   const runFile = join(CONTRACTS, "broadcast", "Deploy.s.sol", String(CHAIN_ID), "run-latest.json");
@@ -591,6 +679,24 @@ async function verifyPayments() {
   const args = encodeAbiParameters(parseAbiParameters("address, address"), [tx.arguments[0], tx.arguments[1]]);
   process.exitCode = await run("forge", [
     "verify-contract", address, "src/SparecycleJobPayments.sol:SparecycleJobPayments",
+    "--chain", String(CHAIN_ID), "--verifier", "sourcify", "--constructor-args", args, "--watch",
+  ]);
+}
+
+async function verifyStake() {
+  const address = deployedStake();
+  if (!address) fail("SparecycleNodeStake is not deployed yet.");
+  const runFile = join(CONTRACTS, "broadcast", "DeployNodeStake.s.sol", String(CHAIN_ID), "run-latest.json");
+  const tx = JSON.parse(readFileSync(runFile, "utf8")).transactions?.find((t) => t.contractName === "SparecycleNodeStake");
+  if (!tx?.arguments) fail(`No constructor arguments in ${runFile}.`);
+  const [token, rewards, safe, burn, minStake, cfg] = tx.arguments;
+  const nums = String(cfg).replace(/[()\s]/g, "").split(",").map((x) => BigInt(x));
+  const args = encodeAbiParameters(
+    parseAbiParameters("address, address, address, bool, uint256, (uint16, uint64, uint64, uint64, uint64, uint64)"),
+    [token, rewards, safe, String(burn) === "true", BigInt(minStake), [Number(nums[0]), nums[1], nums[2], nums[3], nums[4], nums[5]]],
+  );
+  process.exitCode = await run("forge", [
+    "verify-contract", address, "src/SparecycleNodeStake.sol:SparecycleNodeStake",
     "--chain", String(CHAIN_ID), "--verifier", "sourcify", "--constructor-args", args, "--watch",
   ]);
 }
@@ -621,6 +727,7 @@ function env() {
     `NEXT_PUBLIC_JOB_PAYMENTS_ADDRESS=${deployedPayments() ?? ""}`,
     `NEXT_PUBLIC_JOB_PRICE_WEI_PER_UNIT=${c.jobPriceWeiPerUnit ?? ""}`,
     `NEXT_PUBLIC_TREASURY_ADDRESS=${c.treasury?.safe ?? ""}`,
+    `TOKEN_NODE_STAKE_ADDRESS=${deployedStake() ?? ""}`,
     "NEXT_PUBLIC_EXPLORER_URL=https://robinhoodchain.blockscout.com",
   ];
   console.log(lines.join("\n"));
@@ -651,11 +758,12 @@ try {
     case "launch": await launch(flag("--again")); break;
     case "verify": await verify(positional[0]); break;
     case "deploy-payments": await deployPayments(flag("--again")); break;
+    case "deploy-stake": await deployStake(flag("--again"), flag("--dry-run")); break;
     case "transfer-owner": await transferOwner(positional[0]); break;
     case "env": env(); break;
     case "secret": secret(positional[0]); break;
     default:
-      console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 20).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+      console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 25).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
       process.exitCode = cmd ? 1 : 0;
   }
 } finally {
