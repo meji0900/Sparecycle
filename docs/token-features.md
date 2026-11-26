@@ -221,7 +221,8 @@ process: prepare the closed epochs' roots in order, then post every `ready` root
   epoch as compute credits, one transaction per epoch (the pool has no batch claim). The browser recomputes the leaf,
   verifies the proof and simulates the claim before the wallet asks to sign; pending / confirmed / failed with the
   Blockscout link, then the V2 credit balance. Mode credits only; no other mode is shown. Any address can be looked up
-  read only. "Who is eligible" shows the minimum, the method, the exclusions (under Rules) and "last computed at".
+  read only (also as a link: `/token/holders?address=0x…`). "Who is eligible" shows the minimum, the method, the
+  exclusions (under Rules) and "last computed at".
 
 ### Fault attribution and slash proposals (`src/server/slashing.ts`, `TOKEN_SLASHING`)
 

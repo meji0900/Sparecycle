@@ -5,6 +5,7 @@
 // epoch (SparecycleHolderPool has no batch claim), mode 1 only, proof checked in this browser first. Any address can be
 // looked up read-only (addresses and amounts are public on-chain anyway). Credits pay for Sparecycle jobs and cannot be
 // withdrawn or transferred; unclaimed shares roll back into the pool after the claim window.
+import { useSearchParams } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { BaseError, getAddress, isAddress, UserRejectedRequestError, zeroAddress, type Address, type Hex } from "viem";
 import { useConfig, useReadContract } from "wagmi";
@@ -82,9 +83,11 @@ export function HolderClaims({
   const wagmiConfig = useConfig();
   const { address, chainId, isConnected, mounted } = useWallet();
   const wrongNetwork = isConnected && chainId !== targetChain.id;
-  const [typed, setTyped] = useState("");
+  // ?address=0x… opens the panel on that address, read only (a shareable link to check an address).
+  const linked = useSearchParams().get("address");
+  const [typed, setTyped] = useState(linked && isAddress(linked, { strict: false }) ? linked : "");
   const [typedError, setTypedError] = useState<string | null>(null);
-  const [viewed, setViewed] = useState<Address | null>(null);
+  const [viewed, setViewed] = useState<Address | null>(linked && isAddress(linked, { strict: false }) ? getAddress(linked) : null);
   const target = viewed ?? address ?? null;
   const own = !!address && !!target && target.toLowerCase() === address.toLowerCase();
 
