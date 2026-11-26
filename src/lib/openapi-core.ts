@@ -1,0 +1,657 @@
+// OpenAPI module: the scheduler endpoints that exist today (README "API" table, docs/SPEC.md and the route files
+// under src/app/api/v1). Limits come from src/lib/protocol.ts so the description cannot drift from validation.
+import type { OpenApiModule } from "./openapi";
+import { JOB_PAYMENT_WINDOW_SECONDS } from "./job-payment";
+import { JOB_STATUSES, LIMITS } from "./protocol";
+import { POLICY } from "@/server/env";
+
+type Obj = Record<string, unknown>;
+
+const ref = (name: string) => ({ $ref: `#/components/schemas/${name}` });
+const json = (schema: Obj, description: string) => ({ description, content: { "application/json": { schema } } });
+const error = (description: string) => ({ description, content: { "application/json": { schema: ref("Error") } } });
+const nullable = (schema: Obj) => ({ oneOf: [schema, { type: "null" }] });
+const jobIdParam = { $ref: "#/components/parameters/JobId" };
+const epochIdParam = { $ref: "#/components/parameters/EpochId" };
+const sessionHours = POLICY.sessionSeconds / 3600;
+
+const I = LIMITS.image;
+const T = LIMITS.text;
+
+export const coreApi: OpenApiModule = {
+  name: "core",
+  tags: [
+    { name: "Jobs", description: "Submit a job, follow its status, read its result." },
+    { name: "Epochs", description: "Six-hour payout periods: payout trees, Merkle proofs and charge lists." },
+    { name: "Network", description: "Scheduler status, nodes and health." },
+    { name: "Payments", description: "Prepaid balances in the SparecycleJobPayments contract." },
+    { name: "Sign-in", description: "Gasless wallet sign-in (EIP-4361) to read results of jobs the wallet paid for." },
+    { name: "Nodes (signed)", description: "Called by the node client. Every request is signed by the node key." },
+    { name: "Operator", description: "Operator endpoints. Bearer SCHEDULER_ADMIN_TOKEN; 503 when none is configured." },
+    { name: "Meta", description: "This API description." },
+  ],
+  paths: {
+    "/health": {
+      get: {
+        operationId: "getHealth",
+        summary: "Scheduler and database liveness",
+        tags: ["Network"],
+        responses: {
+          "200": json({ type: "object", properties: { ok: { const: true }, db: { const: "ok" } } }, "The scheduler and its database answer."),
+          "503": json({ type: "object", properties: { ok: { const: false }, db: { const: "error" }, error: { type: "string" } } }, "The database could not be opened."),
+        },
+      },
+    },
+    "/status": {
+      get: {
+        operationId: "getStatus",
+        summary: "Open epoch, node and job counters, last settled root, trust model",
+        tags: ["Network"],
+        responses: { "200": json(ref("Status"), "Current status.") },
+      },
+    },
+    "/epochs": {
+      get: {
+        operationId: "listEpochs",
+        summary: "Every epoch the scheduler knows, newest first",
+        tags: ["Epochs"],
+        responses: {
+          "200": json({ type: "object", required: ["epochs"], properties: { epochs: { type: "array", items: ref("Epoch") } } }, "Epochs."),
+        },
+      },
+    },
+    "/epochs/{id}/tree": {
+      parameters: [epochIdParam],
+      get: {
+        operationId: "getEpochTree",
+        summary: "The published payout tree of a closed epoch",
+        tags: ["Epochs"],
+        responses: {
+          "200": json(ref("EpochTree"), "Every leaf of the epoch's Merkle tree (one per owner wallet)."),
+          "400": error("The epoch id is not a non-negative integer."),
+          "404": error("unknown-epoch"),
+          "409": error("epoch-open: the tree is published when the epoch closes."),
+        },
+      },
+    },
+    "/epochs/{id}/proof": {
+      parameters: [epochIdParam],
+      get: {
+        operationId: "getEpochProof",
+        summary: "Amount, leaf and Merkle proof for claim(epochId, amount, proof)",
+        tags: ["Epochs"],
+        parameters: [{ name: "account", in: "query", required: true, schema: ref("Address"), description: "The owner wallet." }],
+        responses: {
+          "200": json(ref("EpochProof"), "The account's payout and its proof."),
+          "400": error("invalid-account or an invalid epoch id."),
+          "404": error("unknown-epoch, or not-in-root when the account has no payout in this epoch."),
+          "409": error("epoch-open"),
+        },
+      },
+    },
+    "/epochs/{id}/charges": {
+      parameters: [epochIdParam],
+      get: {
+        operationId: "getEpochCharges",
+        summary: "The per-job charge list of an epoch",
+        description:
+          "Its hash is the listHash of the Charged event of SparecycleJobPayments for that epoch. status is \"none\" when nothing was charged in the epoch.",
+        tags: ["Epochs", "Payments"],
+        responses: { "200": json(ref("Charges"), "The charge list."), "400": error("The epoch id is not a non-negative integer.") },
+      },
+    },
+    "/jobs": {
+      get: {
+        operationId: "listJobs",
+        summary: "Recent jobs (prompt hashes only, never prompts)",
+        tags: ["Jobs"],
+        parameters: [{ name: "limit", in: "query", required: false, schema: { type: "integer", minimum: 1, maximum: 100, default: 20 } }],
+        responses: {
+          "200": json({ type: "object", required: ["jobs"], properties: { jobs: { type: "array", items: ref("Job") } } }, "Newest first."),
+        },
+      },
+      post: {
+        operationId: "submitJob",
+        summary: "Submit a job: a free trial job, or a paid job from a prepaid balance",
+        description: [
+          "Free trial: send the job request itself. Limited per IP address per hour (JOB_RATE_LIMIT; the x-sc-rate-limit header of the answer gives the limit).",
+          "",
+          "Paid: send { request, payment }. payment.signature is an EIP-191 personal_sign by payment.payer of this message (lines joined by \\n):",
+          "",
+          "    Sparecycle: pay for one job from my balance",
+          "    Chain: <chain id>",
+          "    Payments contract: <payments contract address, lowercase>",
+          "    Job request: <sha256 of JSON.stringify(request), 0x-prefixed lowercase hex>",
+          "    Price: <priceWei> wei",
+          "    Issued: <issued, unix seconds>",
+          "",
+          `The signature is accepted for ${JOB_PAYMENT_WINDOW_SECONDS} seconds after issued. priceWei must equal the job's work units times priceWeiPerUnit (GET /payments/account); otherwise 409 price-changed returns the right price.`,
+          "",
+          "The answer carries the job's readSecret once: keep it to read the result (GET /jobs/{id}/result with Authorization: Bearer <readSecret>). The scheduler stores only its hash.",
+        ].join("\n"),
+        tags: ["Jobs"],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { oneOf: [ref("JobRequest"), ref("PaidJobRequest")] },
+              examples: {
+                freeText: {
+                  summary: "Free trial text job",
+                  value: { kind: "text", params: { model: "qwen2.5-1.5b", prompt: "Name three uses for an idle GPU.", maxTokens: 64 } },
+                },
+                freeImage: {
+                  summary: "Free trial image job",
+                  value: { kind: "image", params: { model: "sd15", prompt: "a lighthouse at dusk, watercolor", width: 512, height: 512, steps: 15 } },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "201": json(ref("SubmitJobResponse"), "Queued. Sent with Cache-Control: private, no-store."),
+          "400": error("invalid-job (with field), invalid-payment or stale-payment."),
+          "401": error("bad-payment-signature"),
+          "402": error("insufficient-balance (with available and priceWei)."),
+          "409": error("price-changed (with priceWei) or payment-used."),
+          "429": error("rate-limited (with retryAfter, unix seconds)."),
+          "503": error("queue-full, or payments-off when paid jobs are not enabled."),
+        },
+      },
+    },
+    "/jobs/{id}": {
+      parameters: [jobIdParam],
+      get: {
+        operationId: "getJob",
+        summary: "A job's status, timestamps and parameters (never the prompt)",
+        description:
+          "output is the result URL when the job is agreed and the caller may read it (the job's read secret, or a session of the wallet that paid). Always Cache-Control: private, no-store.",
+        tags: ["Jobs"],
+        security: [{}, { readSecret: [] }, { walletSession: [] }],
+        responses: { "200": json(ref("JobDetail"), "The job."), "400": error("invalid-job-id"), "404": error("unknown-job") },
+      },
+    },
+    "/jobs/{id}/result": {
+      parameters: [jobIdParam],
+      get: {
+        operationId: "getJobResult",
+        summary: "The result of an agreed job (image/png or text/plain), for its owner only",
+        description:
+          "Send the job's read secret (Authorization: Bearer <readSecret>) or the session cookie of the wallet that paid. Anonymous requests get an empty 401. Rate limited per viewer. Always Cache-Control: private, no-store and Vary: Authorization, Cookie.",
+        tags: ["Jobs"],
+        security: [{ readSecret: [] }, { walletSession: [] }],
+        responses: {
+          "200": {
+            description: "The result.",
+            content: { "image/png": { schema: { type: "string", contentMediaType: "image/png" } }, "text/plain": { schema: { type: "string" } } },
+          },
+          "401": { description: "No credentials were sent (empty body)." },
+          "403": error("These credentials cannot read this job."),
+          "404": error("unknown-job, or no-output when the output was not stored."),
+          "409": error("no-output: the job is not agreed."),
+          "429": error("rate-limited"),
+        },
+      },
+      head: {
+        operationId: "headJobResult",
+        summary: "Same checks as GET, without the body",
+        tags: ["Jobs"],
+        security: [{ readSecret: [] }, { walletSession: [] }],
+        responses: { "200": { description: "Readable." }, "401": { description: "No credentials." }, "403": { description: "Not allowed." } },
+      },
+    },
+    "/jobs/{id}/output": {
+      parameters: [jobIdParam],
+      get: {
+        operationId: "getJobOutputRetired",
+        summary: "Retired: use /jobs/{id}/result",
+        description: "Answers 410 while results are private (OUTPUT_AUTH=enforce, the live setting).",
+        deprecated: true,
+        tags: ["Jobs"],
+        responses: { "410": error("gone: results moved to /jobs/{id}/result.") },
+      },
+      head: {
+        operationId: "headJobOutputRetired",
+        summary: "Retired: use /jobs/{id}/result",
+        deprecated: true,
+        tags: ["Jobs"],
+        responses: { "410": { description: "Gone." } },
+      },
+    },
+    "/nodes": {
+      get: {
+        operationId: "listNodes",
+        summary: "Registered nodes: owner wallet, GPU, backend, online state",
+        tags: ["Network"],
+        responses: {
+          "200": json({ type: "object", required: ["nodes"], properties: { nodes: { type: "array", items: ref("Node") } } }, "Registered nodes."),
+        },
+      },
+    },
+    "/payments/account": {
+      get: {
+        operationId: "getPaymentsAccount",
+        summary: "A customer's balance, held amount, available amount, spend limit and pending withdrawal",
+        tags: ["Payments"],
+        parameters: [{ name: "address", in: "query", required: true, schema: ref("Address") }],
+        responses: { "200": json(ref("Account"), "The account, read from the payments contract."), "400": error("invalid-address") },
+      },
+    },
+    "/auth/nonce": {
+      get: {
+        operationId: "getSignInNonce",
+        summary: "A single-use nonce for an EIP-4361 (Sign-In with Ethereum) message",
+        tags: ["Sign-in"],
+        responses: { "200": json(ref("SignInNonce"), "The nonce and the statement to sign."), "429": error("rate-limited") },
+      },
+    },
+    "/auth/verify": {
+      post: {
+        operationId: "signIn",
+        summary: "Check a signed EIP-4361 message and start a session",
+        description: `Sets the HttpOnly session cookie sc_session (SameSite=Strict, ${sessionHours} hours). No transaction, no gas. The body must be application/json.`,
+        tags: ["Sign-in"],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { type: "object", required: ["message", "signature"], properties: { message: { type: "string" }, signature: { type: "string" } } },
+            },
+          },
+        },
+        responses: {
+          "200": json(
+            { type: "object", required: ["ok", "address", "expiresAt"], properties: { ok: { const: true }, address: ref("Address"), expiresAt: { type: "integer" } } },
+            "Signed in.",
+          ),
+          "400": error("invalid-sign-in"),
+          "401": error("The signature, nonce, domain or chain id did not check out."),
+          "415": error("json-required"),
+        },
+      },
+    },
+    "/auth/logout": {
+      post: {
+        operationId: "signOut",
+        summary: "End the session and clear the cookie",
+        tags: ["Sign-in"],
+        security: [{ walletSession: [] }],
+        responses: { "200": json({ type: "object", properties: { ok: { const: true } } }, "Signed out.") },
+      },
+    },
+    "/nodes/register": {
+      post: {
+        operationId: "registerNode",
+        summary: "Register a node key, its owner wallet and its GPU",
+        description:
+          "The owner signs \"Sparecycle: link node <nodeKey, lowercase> to wallet <owner, lowercase>\" once (node client: link-message).",
+        tags: ["Nodes (signed)"],
+        security: [{ nodeSignature: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["gpu", "gpuUuid", "vramMb", "caps", "owner", "ownerSig"],
+                properties: {
+                  gpu: { type: "string" },
+                  gpuUuid: { type: "string" },
+                  vramMb: { type: "integer" },
+                  caps: { type: "array", items: { type: "string" } },
+                  owner: ref("Address"),
+                  ownerSig: { type: "string" },
+                  backend: { enum: ["cuda", "vulkan", "cpu"] },
+                },
+              },
+            },
+          },
+        },
+        responses: { "200": json({ type: "object" }, "Registered."), "401": error("Bad or replayed node signature."), "403": error("e.g. gpu-not-supported.") },
+      },
+    },
+    "/nodes/poll": {
+      post: {
+        operationId: "pollForTask",
+        summary: "Long poll for a task (or a GPU challenge)",
+        tags: ["Nodes (signed)"],
+        security: [{ nodeSignature: [] }],
+        responses: {
+          "200": json({ type: "object", description: "{ taskId, jobId, epoch, spec, chainId, leaseExpiresAt } or { type: \"challenge\", challengeId, spec }." }, "A task."),
+          "204": { description: "Nothing to do right now." },
+          "401": error("Bad or replayed node signature."),
+        },
+      },
+    },
+    "/tasks/{taskId}/result": {
+      parameters: [{ name: "taskId", in: "path", required: true, schema: { type: "string", pattern: "^0x[0-9a-f]{32}$" } }],
+      post: {
+        operationId: "submitTaskResult",
+        summary: "Submit a task's signed result",
+        tags: ["Nodes (signed)"],
+        security: [{ nodeSignature: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["outputHash", "gpuMs", "epoch", "signature"],
+                properties: {
+                  outputHash: ref("Hash"),
+                  gpuMs: { type: "integer" },
+                  epoch: { type: "integer" },
+                  signature: { type: "string", description: "EIP-712 receipt signed by the node key." },
+                  png: { type: "string", description: "Base64 PNG (image jobs)." },
+                  text: { type: "string", description: "Text output (text jobs)." },
+                },
+              },
+            },
+          },
+        },
+        responses: { "200": json({ type: "object", properties: { ok: { const: true }, jobId: { type: "string" }, status: { type: "string" } } }, "Accepted.") },
+      },
+    },
+    "/challenges/{id}/result": {
+      parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+      post: {
+        operationId: "submitChallengeResult",
+        summary: "Submit the answer to a GPU challenge (unpaid, never a job)",
+        tags: ["Nodes (signed)"],
+        security: [{ nodeSignature: [] }],
+        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
+        responses: { "200": json({ type: "object" }, "Recorded.") },
+      },
+    },
+    "/epochs/close": {
+      post: {
+        operationId: "closeEpoch",
+        summary: "Close the open epoch and post its root (or retry an unposted root)",
+        tags: ["Operator"],
+        security: [{ adminToken: [] }],
+        responses: { "200": json({ type: "object" }, "Closed."), "401": error("unauthorized"), "503": error("admin-not-configured") },
+      },
+    },
+    "/admin/challenges": {
+      get: {
+        operationId: "getChallengeReport",
+        summary: "A node's GPU challenge state, recent challenges and the admin audit log",
+        tags: ["Operator"],
+        security: [{ adminToken: [] }],
+        parameters: [{ name: "nodeKey", in: "query", required: true, schema: ref("Address") }],
+        responses: { "200": json({ type: "object" }, "Report."), "401": error("unauthorized"), "503": error("admin-not-configured") },
+      },
+      post: {
+        operationId: "adminChallengeAction",
+        summary: "Re-issue a challenge, temporarily allow a node, or revoke that (audit-logged)",
+        tags: ["Operator"],
+        security: [{ adminToken: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["nodeKey", "action"],
+                properties: { nodeKey: ref("Address"), action: { enum: ["reissue", "allow", "revoke-allow"] }, hours: { type: "number" }, note: { type: "string" } },
+              },
+            },
+          },
+        },
+        responses: { "200": json({ type: "object" }, "Done."), "401": error("unauthorized"), "503": error("admin-not-configured") },
+      },
+    },
+    "/openapi.json": {
+      get: {
+        operationId: "getOpenApi",
+        summary: "This API description (OpenAPI 3.1)",
+        tags: ["Meta"],
+        responses: { "200": json({ type: "object" }, "The OpenAPI document.") },
+      },
+    },
+  },
+  components: {
+    securitySchemes: {
+      readSecret: {
+        type: "http",
+        scheme: "bearer",
+        description: "The job's read secret, returned once by POST /jobs as readSecret.",
+      },
+      walletSession: {
+        type: "apiKey",
+        in: "cookie",
+        name: "sc_session",
+        description: `Session of a signed-in wallet (POST /auth/verify), HttpOnly, ${sessionHours} hours. Reads results of jobs that wallet paid for.`,
+      },
+      nodeSignature: {
+        type: "apiKey",
+        in: "header",
+        name: "x-sc-sig",
+        description:
+          "Node requests carry x-sc-from (the node key), x-sc-ts (unix seconds) and x-sc-sig: an EIP-191 signature by the node key over sparecycle|METHOD|PATH|TS|sha256(body). 60-second window; each signature is accepted once.",
+      },
+      adminToken: { type: "http", scheme: "bearer", description: "SCHEDULER_ADMIN_TOKEN (operator only)." },
+    },
+    parameters: {
+      JobId: { name: "id", in: "path", required: true, schema: ref("JobId") },
+      EpochId: { name: "id", in: "path", required: true, schema: { type: "integer", minimum: 0 } },
+    },
+    schemas: {
+      Error: {
+        type: "object",
+        required: ["error", "message"],
+        properties: { error: { type: "string", description: "kebab-case code" }, message: { type: "string" } },
+        additionalProperties: true,
+      },
+      Address: { type: "string", pattern: "^0x[0-9a-fA-F]{40}$" },
+      Hash: { type: "string", pattern: "^0x[0-9a-fA-F]{64}$" },
+      JobId: { type: "string", pattern: "^0x[0-9a-f]{64}$" },
+      Wei: { type: "string", pattern: "^[0-9]+$", description: "An amount in wei, as a decimal string." },
+      JobStatus: { enum: [...JOB_STATUSES] },
+      ImageJobRequest: {
+        type: "object",
+        required: ["kind", "params"],
+        properties: {
+          kind: { const: "image" },
+          params: {
+            type: "object",
+            required: ["model", "prompt", "width", "height", "steps"],
+            properties: {
+              model: { const: "sd15" },
+              prompt: { type: "string", minLength: I.prompt.min, maxLength: I.prompt.max },
+              negative: { type: "string", minLength: I.negative.min, maxLength: I.negative.max },
+              width: { type: "integer", minimum: I.side.min, maximum: I.side.max, multipleOf: I.side.step },
+              height: { type: "integer", minimum: I.side.min, maximum: I.side.max, multipleOf: I.side.step },
+              steps: { type: "integer", minimum: I.steps.min, maximum: I.steps.max },
+              guidance: { type: "number", minimum: I.guidance.min, maximum: I.guidance.max, default: I.guidance.default },
+              seed: { oneOf: [{ type: "integer", minimum: I.seed.min, maximum: I.seed.max }, { type: "null" }], description: "Left out: the scheduler picks one, so both nodes render the same image." },
+            },
+          },
+        },
+      },
+      TextJobRequest: {
+        type: "object",
+        required: ["kind", "params"],
+        properties: {
+          kind: { const: "text" },
+          params: {
+            type: "object",
+            required: ["model", "prompt", "maxTokens"],
+            properties: {
+              model: { const: "qwen2.5-1.5b" },
+              prompt: { type: "string", minLength: T.prompt.min, maxLength: T.prompt.max },
+              system: { type: "string", minLength: T.system.min, maxLength: T.system.max },
+              maxTokens: { type: "integer", minimum: T.maxTokens.min, maximum: T.maxTokens.max },
+            },
+          },
+        },
+      },
+      JobRequest: { oneOf: [ref("ImageJobRequest"), ref("TextJobRequest")], discriminator: { propertyName: "kind" } },
+      Payment: {
+        type: "object",
+        required: ["payer", "signature", "issued", "priceWei"],
+        properties: {
+          payer: ref("Address"),
+          signature: { type: "string", pattern: "^0x[0-9a-fA-F]{130}$" },
+          issued: { type: "integer", description: "Unix seconds when signed." },
+          priceWei: ref("Wei"),
+        },
+      },
+      PaidJobRequest: { type: "object", required: ["request", "payment"], properties: { request: ref("JobRequest"), payment: ref("Payment") } },
+      SubmitJobResponse: {
+        type: "object",
+        required: ["id", "status", "readSecret"],
+        properties: {
+          id: ref("JobId"),
+          status: { const: "queued" },
+          priceWei: nullable(ref("Wei")),
+          readSecret: { type: "string", description: "Shown once. Keep it to read the result." },
+        },
+      },
+      Job: {
+        type: "object",
+        required: ["id", "status", "createdAt"],
+        properties: {
+          id: ref("JobId"),
+          model: { type: "string" },
+          kind: { enum: ["image", "text"] },
+          status: ref("JobStatus"),
+          createdAt: { type: "integer" },
+          settledAt: nullable({ type: "integer" }),
+          promptHash: ref("Hash"),
+          workUnits: { type: "integer" },
+          epochId: nullable({ type: "integer" }),
+          eligible: { type: "boolean" },
+          paid: { type: "boolean", description: "Its epoch's root is posted with a non-zero pot." },
+          payment: { enum: ["free", "paid", "team"] },
+        },
+      },
+      JobDetail: {
+        allOf: [
+          ref("Job"),
+          {
+            type: "object",
+            properties: {
+              params: { type: "object", description: "Size, steps, guidance and seed, or maxTokens. Never the prompt." },
+              note: nullable({ type: "string" }),
+              output: nullable({ type: "string", description: "The result URL, when the caller may read it." }),
+              outputAvailable: { type: "boolean" },
+              outputType: nullable({ type: "string" }),
+            },
+          },
+        ],
+      },
+      Status: {
+        type: "object",
+        properties: {
+          ok: { type: "boolean" },
+          epoch: { type: "object", properties: { id: { type: "integer" }, startedAt: { type: "integer" }, endsAt: { type: "integer" }, length: { type: "integer" } } },
+          nodes: { type: "object" },
+          jobs: { type: "object" },
+          lastSettled: nullable({ type: "object" }),
+          rootPosting: { enum: ["configured", "not-configured"] },
+          trust: { const: "centralized-scheduler" },
+          outputAuth: { enum: ["off", "enforce"] },
+        },
+      },
+      Epoch: {
+        type: "object",
+        properties: {
+          id: { type: "integer" },
+          startedAt: { type: "integer" },
+          endedAt: nullable({ type: "integer" }),
+          root: nullable(ref("Hash")),
+          reserved: ref("Wei"),
+          potAtClose: nullable(ref("Wei")),
+          leaves: nullable({ type: "integer" }),
+          postedTx: nullable(ref("Hash")),
+          status: { enum: ["open", "closed-unposted", "posted"] },
+        },
+      },
+      EpochTree: {
+        type: "object",
+        properties: {
+          id: { type: "integer" },
+          root: ref("Hash"),
+          reserved: ref("Wei"),
+          status: { type: "string" },
+          postedTx: nullable(ref("Hash")),
+          leaves: {
+            type: "array",
+            items: { type: "object", properties: { account: ref("Address"), amount: ref("Wei"), leaf: ref("Hash") } },
+          },
+        },
+      },
+      EpochProof: {
+        type: "object",
+        properties: {
+          epochId: { type: "integer" },
+          account: ref("Address"),
+          amount: ref("Wei"),
+          leaf: ref("Hash"),
+          proof: { type: "array", items: ref("Hash") },
+          root: ref("Hash"),
+        },
+      },
+      Charges: {
+        type: "object",
+        properties: {
+          epochId: { type: "integer" },
+          status: { type: "string" },
+          listHash: nullable(ref("Hash")),
+          totalWei: ref("Wei"),
+          tx: nullable(ref("Hash")),
+          jobs: { type: "array", items: { type: "object", properties: { jobId: ref("JobId"), payer: ref("Address"), priceWei: ref("Wei") } } },
+          hashRule: { type: "string" },
+        },
+      },
+      Node: {
+        type: "object",
+        properties: {
+          owner: ref("Address"),
+          nodeKey: ref("Address"),
+          gpu: { type: "string" },
+          vramMb: { type: "integer" },
+          caps: { type: "array", items: { type: "string" } },
+          backend: { enum: ["cuda", "vulkan", "cpu"] },
+          online: { type: "boolean" },
+          lastSeen: { type: "integer" },
+          agreedJobs: { type: "integer" },
+          epochAgreedJobs: { type: "integer" },
+          project: { type: "boolean", description: "Run by the project's own GPU pool: never paid." },
+        },
+      },
+      Account: {
+        type: "object",
+        properties: {
+          address: ref("Address"),
+          contract: nullable(ref("Address")),
+          priceWeiPerUnit: ref("Wei"),
+          balance: ref("Wei"),
+          held: { ...ref("Wei"), description: "Held for this wallet's jobs that have no verdict yet." },
+          available: { ...ref("Wei"), description: "balance minus held minus a pending withdrawal: what new jobs can use." },
+          spendLimitPerEpoch: { ...ref("Wei"), description: "0 = no limit." },
+          withdrawal: nullable({
+            type: "object",
+            properties: {
+              amount: ref("Wei"),
+              epoch: { type: "integer" },
+              requestedAt: { type: "integer" },
+              ready: { type: "boolean", description: "canWithdraw on the contract: withdraw() would succeed now." },
+            },
+          }),
+        },
+      },
+      SignInNonce: {
+        type: "object",
+        properties: {
+          nonce: { type: "string" },
+          expiresAt: { type: "integer" },
+          chainId: { type: "integer" },
+          version: { const: "1" },
+          statement: { type: "string" },
+        },
+      },
+    },
+  },
+};

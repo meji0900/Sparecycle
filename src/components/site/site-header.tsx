@@ -16,6 +16,7 @@ const NAV = [
   { href: "/#faq", label: "FAQ" },
   { href: "/token", label: "Token" },
   { href: "/proof", label: "Proof" },
+  { href: "/docs", label: "Docs" },
 ];
 
 /** Scroll-spy for the landing anchors: the pill nav's dot follows the section being read. */
@@ -80,7 +81,7 @@ export function SiteHeader() {
     >
       <div className="mx-auto flex h-16 max-w-[1200px] items-center justify-between gap-6 px-4 sm:px-6">
         <Wordmark />
-        <div className="hidden md:block">
+        <div className="hidden lg:block">
           <PillNav
             items={NAV}
             activeHref={active}
@@ -102,7 +103,7 @@ export function SiteHeader() {
           />
         </div>
         <div className="flex items-center gap-2">
-          <CaChip className="hidden lg:inline-flex" />
+          <CaChip className="hidden xl:inline-flex" />
           <XLink />
           <ButtonLink href="/playground" size="sm" className="hidden sm:inline-flex">
             Run a job
@@ -110,7 +111,7 @@ export function SiteHeader() {
           <button
             ref={buttonRef}
             type="button"
-            className="inline-grid size-9 place-items-center rounded-m border border-line text-text md:hidden"
+            className="inline-grid size-9 place-items-center rounded-m border border-line text-text lg:hidden"
             aria-expanded={open}
             aria-controls="mobile-nav"
             aria-label={open ? "Close menu" : "Open menu"}
@@ -121,7 +122,7 @@ export function SiteHeader() {
         </div>
       </div>
       {open ? (
-        <div id="mobile-nav" className="fixed inset-x-0 top-16 bottom-0 z-40 border-t border-line bg-coal md:hidden">
+        <div id="mobile-nav" className="fixed inset-x-0 top-16 bottom-0 z-40 border-t border-line bg-coal lg:hidden">
           <nav aria-label="Mobile" className="flex flex-col px-4 py-4">
             {NAV.map((n) => (
               <Link

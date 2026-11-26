@@ -210,6 +210,9 @@ trader ──buy/sell CYCLE──▶ Pons bonding curve (standard fee + optional
 | `/token` | Token & curve addresses, live Pons reads, token facts (no allocation, LP locked by Pons, buyback off, anti-sniper tax, can go to zero), where creator fees go, HEY Research builder card |
 | `/proof` | Mainnet proof: contracts (read live and compared with the records), Sourcify-verified source, all setup transactions with live receipt status, who holds which key, test results (contracts, rehearsal, fork, testnet with all txs, GPUs), how to check it yourself, HEY Research builder card. Record data lives in `src/lib/proof.ts`; the launch tx goes in `LAUNCH_TX` |
 | `/legal/terms`, `/legal/privacy`, `/legal/disclosures` | Terms & Privacy placeholders; full Disclosures |
+| `/docs` | Docs: two copy-paste guides (`/docs/first-job`, `/docs/run-a-node`) and the reference (`/docs/api`, `/docs/contracts`, `/docs/billing`, `/docs/support`). Navigation lives in `src/lib/docs-nav.ts` |
+| `/changelog`, `/changelog.xml` | What is live, newest first, each entry dated (WITA with UTC) and linked to its evidence; RSS feed of the same entries. Source: `src/lib/changelog.ts` |
+| `/roadmap` | What is being worked on, by status (In progress / Planned / Exploring), no dates. Source: `src/lib/roadmap.ts`; the landing roadmap is an excerpt of it |
 
 There is deliberately **no** `/stake`, `/yield`, `/vault`, `/earn`, or points program.
 
@@ -219,12 +222,12 @@ Everything under `/api/v1`, JSON, errors always `{ "error": "<code>", "message":
 
 | Access | Endpoint |
 | --- | --- |
-| Public | `GET health`, `GET status`, `GET epochs`, `GET epochs/:id/tree`, `GET epochs/:id/proof?account=0x…`, `GET epochs/:id/charges`, `GET jobs?limit=`, `POST jobs`, `GET jobs/:id`, `GET nodes`, `GET payments/account?address=0x…` |
+| Public | `GET openapi.json` (this API as OpenAPI 3.1), `GET health`, `GET status`, `GET epochs`, `GET epochs/:id/tree`, `GET epochs/:id/proof?account=0x…`, `GET epochs/:id/charges`, `GET jobs?limit=`, `POST jobs`, `GET jobs/:id`, `GET nodes`, `GET payments/account?address=0x…` |
 | Job owner | `GET jobs/:id/result`: the output of an agreed job, for `Authorization: Bearer <read secret>` (returned once by `POST jobs`) or a wallet session of the payer; `401` anonymous, `403` wrong secret or wallet; `Cache-Control: private, no-store`. The old `GET jobs/:id/output` returns `410` while `OUTPUT_AUTH=enforce` |
 | Wallet sign-in | `GET auth/nonce`, `POST auth/verify` (EIP-4361 Sign-In with Ethereum message, sets an http-only 12-hour session cookie), `POST auth/logout`. No transaction, no gas |
 | Node (signed) | `POST nodes/register`, `POST nodes/poll`, `POST tasks/:taskId/result`, `POST challenges/:id/result` — headers `x-sc-from`, `x-sc-ts`, `x-sc-sig` = EIP-191 over `sparecycle\|METHOD\|PATH\|TS\|sha256(body)` |
 | Operator | `POST epochs/close`; `GET`/`POST admin/challenges` (a node's challenge state; re-issue, temporary allow, revoke, each written to an audit log; never touches jobs or results). Bearer `SCHEDULER_ADMIN_TOKEN`; no token configured → 503 |
-| Site | `GET /api/chain` (network, Pons, reward contract and token snapshot; 15-second cache), `GET /api/health`, `/api/rpc` (read-only JSON-RPC relay used by the browser as a fallback transport) |
+| Site | `GET /api/chain` (network, Pons, reward contract and token snapshot; 15-second cache), `GET /api/health`, `/api/rpc` (read-only JSON-RPC relay used by the browser as a fallback transport), `POST /api/support` (the support form: forwarded to `SUPPORT_WEBHOOK_URL`, never stored, rate limited per IP; `503` until the URL is set) |
 
 `GET status` also includes `nodes.byBackend.{cuda,vulkan,cpu}.{registered,online}`, `gpuPool` (no keys or instance IDs) and `gpuGate` (allowlist and challenge modes). `GET epochs/:id/charges` is the per-job charge list of an epoch (its hash is in the `Charged` event). `GET payments/account` returns a customer's balance in the payments contract, the amount held for unsettled jobs, what is available for new jobs, their spend limit and any pending withdrawal.
 
@@ -390,7 +393,8 @@ npm run typecheck && npm run lint
 npm run contracts:test          # Foundry tests (unit, fuzz 512 runs, invariant 256×64)
 FORK_TESTS=1 npm run contracts:test -- --match-path 'test/fork/*'   # Robinhood mainnet fork (read-only)
 npm run contracts:abi-check     # Solidity ABI == src/contracts/sparecycleRewards.ts
-npm test                        # allowlist and challenge unit tests
+npm test                        # unit tests: allowlist, challenge, support form, changelog/roadmap/address data, OpenAPI
+node scripts/check-docs-touch.mjs --base main   # same-day docs check (CI runs it on pull requests)
 npm run check:bench             # re-derives the committed bench verdicts and challenge references with the current code
 npm run e2e:local               # anvil + scheduler + 2 dev-runner nodes, incl. private outputs and a challenge round
 npm run test:private-outputs    # who can read a job result (401 / 403 / 200 / 410)
@@ -400,6 +404,8 @@ node scripts/e2e-testnet.mjs    # Robinhood testnet 46630
 npm run prelaunch:check         # read-only report before launch
 npm run check:secrets           # also runs automatically in the pre-commit hook (.githooks)
 ```
+
+**Docs the same day.** A pull request that changes `src/app/api/`, `src/server/` or `node-client/src/` must also change `src/app/(site)/docs/`, `docs/` or `src/lib/changelog.ts`, or carry the label `no-docs`; CI checks it. Every route under `src/app/api/v1` must be described in the OpenAPI modules (`src/lib/openapi*.ts`); `npm test` checks that too. Addresses live only in `src/lib/addresses.ts`.
 
 ## Environment
 
@@ -414,6 +420,7 @@ Full list with comments: [.env.example](.env.example). Server variables: [src/se
 | Payments | `NEXT_PUBLIC_JOB_PAYMENTS_ADDRESS`, `NEXT_PUBLIC_JOB_PRICE_WEI_PER_UNIT`, `NEXT_PUBLIC_TREASURY_ADDRESS`, `TEAM_JOB_WALLETS` |
 | Scheduler | `DB_PATH`, `NEXT_PUBLIC_EPOCH_LENGTH`, `NEXT_PUBLIC_CLAIM_WINDOW`, `JOB_RATE_LIMIT`, `SCHEDULER_AUTOCLOSE`, `SCHEDULER_ADMIN_TOKEN`, `SCHEDULER_SIGNER_KEY`, `PAYOUT_CAP_PER_UNIT` |
 | Sweep | `SWEEP_ENABLED`, `SWEEP_SIGNER_KEY`, `SWEEP_POOL_ID`, `SWEEP_AUTORUN_MINUTES`, `ALERT_WEBHOOK_URL` |
+| Support form | `SUPPORT_WEBHOOK_URL` (Discord or Slack incoming webhook; empty = the form on `/docs/support` is shown disabled) |
 | Backups | `DB_BACKUP_HOURS`, `DB_BACKUP_KEEP` |
 | GPU pool | `VAST_API_KEY`, `GPU_POOL_INSTANCE_IDS`, `GPU_POOL_IDLE_MINUTES`, `PROJECT_NODE_OWNERS`, `PAID_TEST_OWNERS` |
 | Links | `NEXT_PUBLIC_TOS_URL`, `NEXT_PUBLIC_TOS_VERSION`, `NEXT_PUBLIC_PRIVACY_POLICY_URL`, `NEXT_PUBLIC_X_URL`, `NEXT_PUBLIC_DOCS_URL`, `NEXT_PUBLIC_TELEGRAM_URL` |
