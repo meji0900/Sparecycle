@@ -39,11 +39,72 @@ export type ApiJob = {
   paid?: boolean;
   /** Who paid: free trial, a customer's balance, or the team's own test job. Absent on older schedulers. */
   payment?: "free" | "paid" | "team";
-  /** Quoted price of a paid or team job, wei (decimal string). */
-  priceWei?: string | null;
-  chargeStatus?: "pending" | "charged" | "released" | "unpaid" | null;
+  // Price and charge status are not in the public job views (D7): the payer reads them from the invoice.
 };
 export type JobsResponse = { jobs: ApiJob[] };
+
+export type ChargeStatus = "pending" | "charged" | "released" | "unpaid";
+export type TxLink = { hash: string; url: string | null };
+
+/** GET /api/v1/jobs/:id/invoice for a paid or team job (wallet session of the payer, or the job's read secret). */
+export type PaidInvoice = {
+  version: 1;
+  jobId: string;
+  model: string;
+  kind: "image" | "text";
+  status: JobStatus;
+  verdict: "agreed" | "disagreed" | "expired" | "rejected" | null;
+  createdAt: number;
+  settledAt: number | null;
+  generatedAt: number;
+  payment: "paid" | "team";
+  invoice: true;
+  payer: string;
+  priceWei: string;
+  /** The price once charged, "0" when not charged, null while it may still be charged. */
+  chargedWei: string | null;
+  protocolCutBps: number;
+  protocolCutWei: string;
+  protocolCutNote: string;
+  toPotWei: string;
+  toPotNote: string;
+  chargeStatus: ChargeStatus;
+  reason: string | null;
+  epochId: number | null;
+  epochStatus: EpochStatus | null;
+  chargedEpoch: number | null;
+  /** sha256 of the output served at /result (0x + 64 hex); null unless agreed. */
+  outputHash: string | null;
+  links: { chargeTx: TxLink | null; epochRootTx: TxLink | null };
+};
+
+/** The same route for a free trial job: no invoice. */
+export type FreeInvoiceStub = {
+  version: 1;
+  jobId: string;
+  model: string;
+  kind: "image" | "text";
+  status: JobStatus;
+  verdict: PaidInvoice["verdict"];
+  createdAt: number;
+  settledAt: number | null;
+  generatedAt: number;
+  payment: "free";
+  invoice: false;
+  note: string;
+};
+
+export type JobInvoice = PaidInvoice | FreeInvoiceStub;
+
+/** POST /api/v1/jobs. `available` and `lowBalance` come with paid jobs only. */
+export type SubmitResponse = {
+  id: string;
+  status: string;
+  priceWei: string | null;
+  readSecret?: string;
+  available?: string;
+  lowBalance?: boolean;
+};
 
 /** GET /api/v1/payments/account?address= — wei amounts as decimal strings. */
 export type PaymentAccount = {

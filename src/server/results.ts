@@ -171,9 +171,22 @@ export async function submitResult(nodeKey: Address, taskId: string, body: unkno
       verdict = "disagreed";
       note = "the two results do not match";
     }
+    // The kept output and its sha256 (the "output fingerprint" on the payer's invoice): equal to the sha256 of the
+    // bytes GET /api/v1/jobs/:id/result serves.
+    const agreed = verdict === "agreed";
     db.prepare(
-      "UPDATE jobs SET status = ?, settled_at = ?, epoch_id = ?, dev = ?, note = ?, output = ?, output_type = ? WHERE id = ?",
-    ).run(verdict, now, epochId, anyDev, note, verdict === "agreed" ? r0.output : null, verdict === "agreed" ? r0.output_type : null, job.id);
+      "UPDATE jobs SET status = ?, settled_at = ?, epoch_id = ?, dev = ?, note = ?, output = ?, output_type = ?, output_hash = ? WHERE id = ?",
+    ).run(
+      verdict,
+      now,
+      epochId,
+      anyDev,
+      note,
+      agreed ? r0.output : null,
+      agreed ? r0.output_type : null,
+      agreed && r0.output ? sha256Hex(r0.output) : null,
+      job.id,
+    );
     if (verdict === "agreed") {
       db.prepare("UPDATE nodes SET agreed_jobs = agreed_jobs + 1 WHERE node_key IN (?, ?)").run(r0.node_key, r1.node_key);
     }

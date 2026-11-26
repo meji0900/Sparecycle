@@ -21,8 +21,9 @@ What is **not** private:
 - **The two GPU nodes of a job see the prompt and produce the output** while they work. Whatever reached their machines
   cannot be recalled.
 - **Payments are public.** The payments contract emits `CustomerCharged` (payer and amount) on-chain, and the
-  per-epoch charge list (`GET /api/v1/epochs/{id}/charges`) links job ids to paying wallets. Public job views keep
-  `payment`, `priceWei` and `chargeStatus`. (Parked decision, disclosed on the Privacy page.)
+  per-epoch charge list (`GET /api/v1/epochs/{id}/charges`) links charged job ids to paying wallets and prices.
+  Public job views keep only `payment` (free / paid / team); a job's price, charge status and output hash are on its
+  private invoice (`GET /api/v1/jobs/{id}/invoice`, same credentials as the output, always enforced).
 - **Outputs made before this change** were served with `Cache-Control: public, max-age=31536000, immutable` to anyone
   with the job id. They may already have been viewed, downloaded, or cached by browsers or proxies. Those copies cannot
   be recalled.

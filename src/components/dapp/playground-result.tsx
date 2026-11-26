@@ -6,11 +6,13 @@ import { Hex } from "@/components/ui/address";
 import { Button, buttonStyles } from "@/components/ui/button";
 import { StatusTag, type Tone } from "@/components/ui/status";
 import { apiDown, type JobDetail, type StatusResponse } from "@/lib/dapp/api";
+import { useJobInvoice } from "@/lib/dapp/invoice";
 import { useJobOutput } from "@/lib/dapp/job-output";
 import { TERMINAL } from "@/lib/dapp/jobs";
-import { chargeNote } from "@/lib/dapp/paid-jobs";
+import { chargeWords } from "@/lib/dapp/paid-jobs";
 import { useApiGet, useNow } from "@/lib/dapp/use-api";
 import { cn } from "@/lib/utils";
+import { JobInvoicePanel } from "./job-invoice";
 import { settledFields, type PlayItem } from "./playground-history";
 import { outputLockText, SignInToView } from "./private-output";
 
@@ -156,6 +158,9 @@ export function PlaygroundResult({
   const img = out.state === "ready" ? out.url : null;
   // Paid and team jobs have a payer wallet that can sign in to read the output on any device; free jobs don't.
   const hasPayer = job ? job.payment === "paid" || job.payment === "team" : !!item?.paid;
+  // The price and what happened to it: the private invoice (read with this browser's key or the wallet session).
+  const invoice = useJobInvoice(item && hasPayer ? item.id : null, item?.secret, { refreshKey: status, poll: true });
+  const inv = invoice.state === "ready" && invoice.invoice.invoice ? invoice.invoice : null;
   const lock = hasOutput ? outputLockText(out.state, hasPayer) : null;
   const seed = typeof job?.params?.seed === "number" ? job.params.seed : (item?.usedSeed ?? item?.seed ?? null);
   const failKind = status === "disagreed" || status === "expired" || status === "rejected" ? status : null;
@@ -253,7 +258,8 @@ export function PlaygroundResult({
     );
   }
 
-  const charge = job && job.payment === "paid" ? chargeNote(job) : null;
+  const charge = inv ? chargeWords(inv).label : null;
+  const payLabel = job?.payment === "team" ? "Team-funded" : paid ? `Paid${charge ? `, ${charge.toLowerCase()}` : ""}` : "Free trial";
 
   return (
     <section aria-labelledby="result-title" className="min-w-0 rounded-l border border-line bg-coal">
@@ -323,7 +329,7 @@ export function PlaygroundResult({
               </div>
               <div>
                 <dt className="sr-only">Payment</dt>
-                <dd>{paid ? `Paid${charge ? `, ${charge.toLowerCase()}` : ""}` : "Free trial"}</dd>
+                <dd>{payLabel}</dd>
               </div>
             </dl>
             <p className="flex flex-wrap items-center gap-x-2">
@@ -332,6 +338,8 @@ export function PlaygroundResult({
             </p>
           </div>
         ) : null}
+
+        {item && !sending && !gone && hasPayer ? <JobInvoicePanel state={invoice} /> : null}
       </div>
     </section>
   );

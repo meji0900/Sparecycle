@@ -1,11 +1,30 @@
 // Where node payouts come from, stated once. Before paid jobs go live (NEXT_PUBLIC_JOB_PAYMENTS_ADDRESS unset) the
-// pot is trading fees only; after, it is trading fees plus customers' job payments (95% of each verified job; 5% goes
-// to the treasury Safe). The team never tops up the pot directly; test jobs it pays for are labelled "team-funded".
+// pot is trading fees only; after, it is trading fees plus customers' job payments (95% of each epoch's charged batch
+// of matched jobs; 5% goes to the treasury Safe). Live today: `feesToTeamWallet` (node pot = 95% of paid jobs; the
+// token's creator fees go to the team wallet). The team never tops up the pot directly; test jobs it pays for are
+// labelled "team-funded".
 import { config } from "./config";
 
 export const paidJobsLive = config.jobPayments !== null;
 /** The official token's creator fees go to a team wallet, not to the node pot. */
 export const feesToTeamWallet = config.creatorFeeWallet !== null;
+
+/**
+ * How paid jobs are billed, in the words every page uses (SparecycleJobPayments + src/server/payments.ts). Exact on
+ * purpose: a job that is not charged is "not charged" (nothing is taken, so nothing is "refunded"); a withdrawal
+ * is started any time and completed after the contract's lock (never "instant").
+ */
+export const BILLING = {
+  chargeRule: "Charged only when two results match; otherwise not charged.",
+  notCharged:
+    "If the two results do not match, the job expires without a verdict or the safety check rejects it, the job is not charged and the price held for it is released.",
+  cutRule:
+    "Charges are sent once per epoch as one batch. 5% of the batch goes to the treasury, taken only from matched jobs and rounded down on the batch total, so a single job's 5% is a rounded share.",
+  potRule:
+    "The other 95% goes into the open epoch's node pot, which is split by work units across all matched jobs of that epoch, not paid to the nodes of one job in particular.",
+  withdrawRule:
+    "Start a withdrawal any time and complete it after the lock: once the epoch of the request and the next one have closed, or 2 days after the request at the latest.",
+} as const;
 
 export const FUNDING = feesToTeamWallet
   ? {
@@ -20,7 +39,7 @@ export const FUNDING = feesToTeamWallet
       noTopUp:
         "The pot is filled by job payments (and by any fees sent to the reward contract, all visible on-chain). Test jobs the team pays for itself are labelled team-funded on the jobs page.",
       potBody:
-        "The pot is customers' payments for that epoch's verified jobs (95% of each; 5% goes to the treasury) plus anything else sent to the reward contract, and any leftover rolled from the previous epoch.",
+        "The pot is customers' payments for that epoch's verified jobs (95% of each charged batch; the 5% treasury share is taken only from matched jobs, rounded per epoch batch) plus anything else sent to the reward contract, and any leftover rolled from the previous epoch.",
       factTitle: "Creator fees go to the team wallet",
       factBody:
         "This token's creator fees and creator tax are paid to the team wallet set at launch, not to the node reward pot. Node payouts come from customers' payments for verified jobs. There is no promised rate.",
@@ -41,7 +60,7 @@ export const FUNDING = feesToTeamWallet
       noTopUp:
         "The team does not top up the pot. Test jobs the team pays for itself are labelled team-funded on the jobs page.",
       potBody:
-        "The pot is the fees successfully claimed for that epoch plus customers' payments for its verified jobs (95% of each; 5% goes to the treasury), and any leftover rolled from the previous epoch.",
+        "The pot is the fees successfully claimed for that epoch plus customers' payments for its verified jobs (95% of each charged batch; the 5% treasury share is taken only from matched jobs, rounded per epoch batch), and any leftover rolled from the previous epoch.",
       factTitle: "Payouts from fees and paid jobs",
       factBody:
         "Node payouts come from creator trading fees collected into the reward contract and from customers' payments for verified jobs. The team does not top up the pot, and team-paid test jobs are labelled. There is no promised rate.",

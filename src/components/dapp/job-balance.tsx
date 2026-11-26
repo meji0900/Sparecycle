@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { createContext, useContext, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import type { Address } from "viem";
 import { useWaitForTransactionReceipt, useWriteContract } from "wagmi";
@@ -15,6 +16,8 @@ import { durationLabel } from "@/lib/dapp/duration";
 import { useApiGet } from "@/lib/dapp/use-api";
 import { useWallet } from "@/lib/dapp/use-wallet";
 import { formatTime } from "@/lib/format";
+import { BILLING } from "@/lib/funding-copy";
+import { isLowBalance, LOW_CREDIT_JOBS } from "@/lib/job-payment";
 import { cn } from "@/lib/utils";
 import { Dash, Row, Skeleton } from "./ui";
 import { WalletButton } from "./wallet-button";
@@ -80,9 +83,9 @@ type Action = "deposit" | "request" | "cancel" | "withdraw" | "limit" | "clear-l
 
 const DONE: Record<Action, string> = {
   deposit: "Deposit confirmed",
-  request: "Withdrawal requested",
+  request: "Withdrawal started",
   cancel: "Withdrawal request cancelled",
-  withdraw: "Withdrawal sent to your wallet",
+  withdraw: "Withdrawal completed: sent to your wallet",
   limit: "Spend limit set",
   "clear-limit": "Spend limit removed",
 };
@@ -165,17 +168,31 @@ function AmountForm({
   );
 }
 
-/** Earliest time a withdrawal request can be executed: the next-but-one epoch start, or the 2-day timeout. */
-function unlockTime(w: NonNullable<PaymentAccount["withdrawal"]>, status: StatusResponse | null) {
-  const timeout = w.requestedAt + WITHDRAW_TIMEOUT_SECONDS;
+/**
+ * When a withdrawal request can be completed, as a range, never a promise. The contract allows it once its epoch
+ * reaches request epoch + 2 (the request's epoch and the next one have closed) or WITHDRAW_TIMEOUT after the request,
+ * whichever is first. `earliest`: the scheduled end of epoch + 1 on the on-chain epoch clock (epochs close a little
+ * after their end, when the scheduler posts the root); null when unknown or not before the timeout. `latest`: the
+ * contract's timeout, a hard bound. `overdue`: the clock is past epoch + 1's end but the contract has not closed it.
+ */
+function unlockWindow(w: NonNullable<PaymentAccount["withdrawal"]>, status: StatusResponse | null) {
+  const latest = w.requestedAt + WITHDRAW_TIMEOUT_SECONDS;
   const e = status?.epoch;
-  if (!e || e.clock === "scheduler-local") return { at: timeout, byEpoch: false };
-  // The contract unlocks when its current epoch reaches request epoch + 2, i.e. when epoch + 1 closes.
+  if (!e || e.clock === "scheduler-local") return { earliest: null, latest, overdue: false };
   const toGo = w.epoch + 2 - e.id;
-  // toGo <= 0: the scheduler's clock is past it but the contract has not closed the epoch yet; only the deadline is sure.
-  if (toGo <= 0) return { at: timeout, byEpoch: false };
+  if (toGo <= 0) return { earliest: null, latest, overdue: true };
   const byEpoch = e.endsAt + (toGo - 1) * e.length;
-  return byEpoch < timeout ? { at: byEpoch, byEpoch: true } : { at: timeout, byEpoch: false };
+  return { earliest: byEpoch < latest ? byEpoch : null, latest, overdue: false };
+}
+
+/** A balance figure's label with its one-line explanation. */
+function Figure({ children, hint }: { children: ReactNode; hint: ReactNode }) {
+  return (
+    <>
+      {children}
+      <span className="mt-0.5 block max-w-[220px] text-xs leading-snug text-faint">{hint}</span>
+    </>
+  );
 }
 
 /** "Your balance": the customer's prepaid ETH in the payments contract and every action on it. */
@@ -222,7 +239,8 @@ export function JobBalance() {
   }
 
   const limit = account ? BigInt(account.spendLimitPerEpoch) : null;
-  const unlock = withdrawal && !withdrawal.ready ? unlockTime(withdrawal, status) : null;
+  const available = account ? BigInt(account.available) : null;
+  const unlock = withdrawal && !withdrawal.ready ? unlockWindow(withdrawal, status) : null;
 
   const tag = !mounted ? null : !isConnected ? (
     <StatusTag tone="off">Disconnected</StatusTag>
@@ -263,15 +281,13 @@ export function JobBalance() {
         <>
           <dl className="divide-y divide-line border-b border-line">
             <Row label="Wallet">{address ? <Hex value={address} /> : <Dash />}</Row>
-            <Row label="Balance">{value(account?.balance, failure ? "Not read" : undefined)}</Row>
-            <Row label="Held for running jobs">{value(account?.held, failure ? "Not read" : undefined)}</Row>
-            <Row label="Available for new jobs">
-              {account ? <Eth wei={account.available} className="font-medium" /> : value(null, failure ? "Not read" : undefined)}
+            <Row label={<Figure hint="All the ETH you hold in the payments contract. Only your wallet can withdraw it.">Balance</Figure>}>
+              {value(account?.balance, failure ? "Not read" : undefined)}
             </Row>
-            <Row label="Spend limit per epoch">
-              {limit === null ? value(null, failure ? "Not read" : undefined) : limit === 0n ? <span className="text-muted">No limit</span> : <Eth wei={limit} />}
+            <Row label={<Figure hint="Prices of your jobs not charged yet: still running, or matched and waiting for the epoch close.">Held for running jobs</Figure>}>
+              {value(account?.held, failure ? "Not read" : undefined)}
             </Row>
-            <Row label="Pending withdrawal">
+            <Row label={<Figure hint="Asked to withdraw; it can no longer pay for new jobs.">Withdrawal pending</Figure>}>
               {!account ? (
                 value(null, failure ? "Not read" : undefined)
               ) : withdrawal ? (
@@ -283,11 +299,12 @@ export function JobBalance() {
                 <span className="text-muted">None</span>
               )}
             </Row>
-            {withdrawal && unlock ? (
-              <Row label="Unlocks">
-                <span className="text-muted">{unlock.byEpoch ? "about" : "by"}</span> <span className="num">{formatTime(unlock.at)}</span>
-              </Row>
-            ) : null}
+            <Row label={<Figure hint="Balance minus what is held and what is pending withdrawal: what new jobs can use.">Available</Figure>}>
+              {account ? <Eth wei={account.available} className="font-medium" /> : value(null, failure ? "Not read" : undefined)}
+            </Row>
+            <Row label="Spend limit per epoch">
+              {limit === null ? value(null, failure ? "Not read" : undefined) : limit === 0n ? <span className="text-muted">No limit</span> : <Eth wei={limit} />}
+            </Row>
           </dl>
 
           <div className="space-y-5 px-5 py-4">
@@ -325,22 +342,45 @@ export function JobBalance() {
             />
 
             <div className="space-y-2">
+              <p className="text-sm text-text">Withdraw</p>
               {withdrawal ? (
                 <>
-                  <p className="text-sm text-text">Withdraw</p>
                   <p className="text-xs leading-relaxed text-muted">
                     {withdrawal.ready ? (
-                      <>Your request is unlocked. Withdraw sends up to <Eth wei={withdrawal.amount} /> to your wallet.</>
+                      <>
+                        The lock is over. Complete the withdrawal to send up to <Eth wei={withdrawal.amount} /> to your wallet.
+                      </>
                     ) : (
                       <>
-                        Requested in epoch <span className="num">{withdrawal.epoch}</span>. It unlocks once that epoch and the next one have
-                        closed{epochs}, or 2 days after the request, whichever is first.
+                        Started in epoch <span className="num">{withdrawal.epoch}</span>. Ready after epoch <span className="num">{withdrawal.epoch + 1}</span>{" "}
+                        closes (the contract&apos;s epoch reaches <span className="num">{withdrawal.epoch + 2}</span>) or by{" "}
+                        <span className="num">{formatTime(withdrawal.requestedAt + WITHDRAW_TIMEOUT_SECONDS)}</span> (2 days after the request),
+                        whichever is first{epochs}.
                       </>
                     )}
                   </p>
+                  {unlock ? (
+                    <p className="text-xs leading-relaxed text-muted">
+                      {unlock.earliest !== null ? (
+                        <>
+                          Expected between about <span className="num text-text">{formatTime(unlock.earliest)}</span>, if that epoch closes on
+                          schedule, and <span className="num text-text">{formatTime(unlock.latest)}</span> at the latest.
+                        </>
+                      ) : unlock.overdue ? (
+                        <>
+                          Waiting for epoch <span className="num">{withdrawal.epoch + 1}</span> to close on-chain; by{" "}
+                          <span className="num text-text">{formatTime(unlock.latest)}</span> at the latest.
+                        </>
+                      ) : (
+                        <>
+                          Expected by <span className="num text-text">{formatTime(unlock.latest)}</span> at the latest.
+                        </>
+                      )}
+                    </p>
+                  ) : null}
                   <div className="flex flex-wrap gap-2">
                     <Button variant="secondary" disabled={!canAct || !withdrawal.ready} onClick={() => send("withdraw", { functionName: "withdraw" })}>
-                      Withdraw
+                      Complete withdrawal
                     </Button>
                     <Button variant="quiet" disabled={!canAct} onClick={() => send("cancel", { functionName: "cancelWithdraw" })}>
                       Cancel request
@@ -348,17 +388,50 @@ export function JobBalance() {
                   </div>
                 </>
               ) : (
-                <AmountForm
-                  id="withdraw-amount"
-                  label="Request withdrawal"
-                  hint={`Withdrawals take two steps. Request now; the amount stops being spendable on new jobs. Withdraw once the current epoch and the next one have closed${epochs}, or after 2 days at the latest.`}
-                  button="Request"
-                  disabled={!canAct || !account}
-                  check={(wei) =>
-                    account && wei > BigInt(account.balance) ? `That is more than your balance of ${formatEth(account.balance)} ETH.` : null
-                  }
-                  onSubmit={(wei) => send("request", { functionName: "requestWithdraw", args: [wei] })}
-                />
+                <>
+                  <p className="text-xs leading-relaxed text-muted">
+                    Start a withdrawal any time; complete it after the lock: once the current epoch and the next one have closed{epochs}, or
+                    2 days after the request at the latest. The amount stops being spendable on new jobs at once. Prices held for running
+                    jobs stay held until those jobs settle.
+                  </p>
+                  <Button
+                    variant="secondary"
+                    disabled={!canAct || available === null || available === 0n}
+                    onClick={() => {
+                      if (available !== null && available > 0n) send("request", { functionName: "requestWithdraw", args: [available] });
+                    }}
+                  >
+                    {available !== null && available > 0n ? (
+                      <>
+                        Withdraw <Eth wei={available} />
+                      </>
+                    ) : (
+                      "Withdraw"
+                    )}
+                  </Button>
+                  {available === 0n ? (
+                    <p className="text-xs text-muted">
+                      Nothing is available to withdraw right now{account && BigInt(account.held) > 0n ? ": the rest is held for running jobs" : ""}.
+                    </p>
+                  ) : null}
+                  <details className="pt-1">
+                    <summary className="cursor-pointer text-xs text-muted hover:text-text">Withdraw a different amount</summary>
+                    <div className="pt-3">
+                      <AmountForm
+                        id="withdraw-amount"
+                        label="Amount to withdraw"
+                        button="Start"
+                        disabled={!canAct || !account}
+                        check={(wei) =>
+                          available !== null && wei > available
+                            ? `That is more than your available balance of ${formatEth(available)} ETH. Prices held for running jobs stay held until those jobs settle.`
+                            : null
+                        }
+                        onSubmit={(wei) => send("request", { functionName: "requestWithdraw", args: [wei] })}
+                      />
+                    </div>
+                  </details>
+                </>
               )}
             </div>
 
@@ -421,16 +494,25 @@ export function JobBalance() {
   );
 }
 
-/** Plain facts about where the money is and where a charge goes. */
+/** Plain facts about where the money is, where a charge goes, and what is public. */
 export function PaymentsNote({ className }: { className?: string }) {
   if (!config.jobPayments) return null;
   return (
     <div className={cn("space-y-3 text-xs leading-relaxed text-muted", className)}>
       <ul className="space-y-2">
-        <li>Your balance stays in the payments contract, not with the scheduler. Only your wallet can withdraw it.</li>
-        <li>A paid job is charged only when two nodes agree on its result. Disagreed, expired and rejected jobs are never charged.</li>
+        <li>Your balance stays in the payments contract, not with the scheduler. Only your wallet can withdraw it. {BILLING.withdrawRule}</li>
         <li>
-          Of each charge, 95% goes to the node reward pot and 5% to the treasury{config.treasury ? ", a Safe multisig" : ""}.
+          {BILLING.chargeRule} {BILLING.notCharged}
+        </li>
+        <li>
+          {BILLING.cutRule} {BILLING.potRule}
+          {config.treasury ? " The treasury is a Safe multisig." : ""}
+        </li>
+        <li>
+          <span className="text-text">What is public.</span> Each charge emits a CustomerCharged event on-chain with your wallet and the amount
+          charged in that epoch, and the epoch&apos;s charge list (/api/v1/epochs/&#123;id&#125;/charges) lists each charged job with its wallet
+          and price. The public job lists show only whether a job was paid; each job&apos;s price, charge status and output hash are on its
+          private invoice.
         </li>
       </ul>
       <dl className="space-y-1">
@@ -446,5 +528,50 @@ export function PaymentsNote({ className }: { className?: string }) {
         </div>
       </dl>
     </div>
+  );
+}
+
+/**
+ * Low-credit warning (D20 in the feature brief, a default: LOW_CREDIT_JOBS jobs). Shown when the connected wallet's
+ * available balance covers fewer than LOW_CREDIT_JOBS jobs at the current settings (`priceWei` is the live quote, so
+ * no price is hard-coded), and only for a wallet that pays: paid mode is on, or it holds a balance. It goes away after
+ * a deposit (the account is read again). When paid mode is on and this one job does not fit, the payment box says so.
+ */
+export function LowCreditNotice({
+  priceWei,
+  paid,
+  depositHref,
+  className,
+}: {
+  priceWei: bigint | null;
+  paid: boolean;
+  depositHref: string;
+  className?: string;
+}) {
+  const acct = useJobAccount();
+  const account = acct?.account;
+  if (!account || priceWei === null || priceWei <= 0n || !/^\d+$/.test(account.available) || !/^\d+$/.test(account.balance)) return null;
+  const available = BigInt(account.available);
+  if (!paid && BigInt(account.balance) === 0n) return null;
+  if (!isLowBalance(available, priceWei)) return null;
+  if (paid && available < priceWei) return null;
+  const left = available / priceWei;
+  return (
+    <Notice tone="warn" title="Low balance" className={className}>
+      {left === 0n ? (
+        <>
+          Your available balance (<Eth wei={available} />) does not cover one job at these settings (<Eth wei={priceWei} />).
+        </>
+      ) : (
+        <>
+          Your available balance (<Eth wei={available} />) covers <span className="num text-text">{left.toString()}</span> more job
+          {left === 1n ? "" : "s"} at these settings (<Eth wei={priceWei} /> each), fewer than {LOW_CREDIT_JOBS}.
+        </>
+      )}{" "}
+      <Link href={depositHref} className="link">
+        Deposit more
+      </Link>{" "}
+      to keep paying from your balance.
+    </Notice>
   );
 }

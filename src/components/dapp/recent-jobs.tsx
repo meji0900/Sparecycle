@@ -7,7 +7,7 @@ import { StatusTag } from "@/components/ui/status";
 import { apiUrl, type ApiJob, type JobsResponse } from "@/lib/dapp/api";
 import { config } from "@/lib/config";
 import { jobTag, modelLabel } from "@/lib/dapp/jobs";
-import { formatEth, paymentTag, showPayment } from "@/lib/dapp/paid-jobs";
+import { paymentTag, showPayment } from "@/lib/dapp/paid-jobs";
 import { useNow } from "@/lib/dapp/use-api";
 import { formatTime, relativeTime, truncateMiddle } from "@/lib/format";
 import { useLiveJson } from "@/lib/use-live";
@@ -52,9 +52,8 @@ export function RecentJobs({ jobs, now }: { jobs: ApiJob[]; now: number | null }
         const j = jobs[index];
         if (!j) return null;
         const tag = jobTag(j);
-        // Who paid (free trial, a customer, or the team's own test job: a disclosure, always shown).
+        // Who paid (free trial, a customer, or the team's own test job: a disclosure, always shown). Prices are private (D7).
         const pay = showPayment(j, !!config.jobPayments) ? paymentTag(j) : null;
-        const price = pay && j.payment !== "free" && j.priceWei && /^\d+$/.test(j.priceWei) ? formatEth(j.priceWei) : null;
         return (
           <div className="grid min-w-0 flex-1 gap-x-4 gap-y-1.5 px-1 py-0.5 sm:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)_auto] sm:items-center">
             <div className="flex min-w-0 items-baseline gap-2.5">
@@ -74,11 +73,6 @@ export function RecentJobs({ jobs, now }: { jobs: ApiJob[]; now: number | null }
                 // Phones: own line, so every row wraps the same way. Wide: inline before the time.
                 <span className="flex basis-full items-center gap-2 sm:basis-auto">
                   <StatusTag tone={pay.tone}>{pay.label}</StatusTag>
-                  {price ? (
-                    <span className="text-xs whitespace-nowrap text-muted">
-                      <span className="num">{price}</span> ETH
-                    </span>
-                  ) : null}
                 </span>
               ) : null}
               <span className="text-xs whitespace-nowrap text-faint" title={formatTime(j.createdAt)}>

@@ -28,7 +28,8 @@ const bumpAuth = () => {
   authEpoch += 1;
   for (const fn of listeners) fn();
 };
-const useAuthEpoch = () => useSyncExternalStore(subscribe, () => authEpoch, () => 0);
+/** Changes after every wallet sign-in: data that answered "sign in" or "not this wallet" should be fetched again. */
+export const useAuthEpoch = () => useSyncExternalStore(subscribe, () => authEpoch, () => 0);
 
 export type OutputState = "loading" | "ready" | "signin" | "forbidden" | "missing" | "error";
 type Outcome = { kind: "ok"; blob: Blob } | { kind: Exclude<OutputState, "loading" | "ready"> };
@@ -69,8 +70,9 @@ function load(id: string, secret: string | null, epoch: number): Promise<Outcome
 }
 
 /**
- * The output of job `id` (null = nothing to load): `url` is a blob: URL for images (revoked on unmount or change),
- * `text` the body of text outputs. "signin" = no credential was accepted (no secret here, no session);
+ * The output of job `id` (null = nothing to load): `url` is a blob: URL of the exact bytes served (revoked on unmount
+ * or change; for images and, to download, text), `text` the body of text outputs. "signin" = no credential was
+ * accepted (no secret here, no session);
  * "forbidden" = the secret or the signed-in wallet can't read this job.
  */
 export function useJobOutput(id: string | null, secret: string | null | undefined, opts: { text?: boolean } = {}) {
@@ -89,13 +91,10 @@ export function useJobOutput(id: string | null, secret: string | null | undefine
         setGot({ key, state: o.kind, url: null, text: null });
         return;
       }
-      if (asText) {
-        const text = await o.blob.text();
-        if (alive) setGot({ key, state: "ready", url: null, text });
-        return;
-      }
+      const text = asText ? await o.blob.text() : null;
+      if (!alive) return;
       url = URL.createObjectURL(o.blob);
-      setGot({ key, state: "ready", url, text: null });
+      setGot({ key, state: "ready", url, text });
     });
     return () => {
       alive = false;
