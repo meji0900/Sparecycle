@@ -3,6 +3,7 @@
 import Image from "next/image";
 import MagicBento, { type MagicBentoItem } from "@/components/reactbits/MagicBento";
 import { paidJobsLive } from "@/lib/funding-copy";
+import { TOKEN_COPY_OFF, tokenCopy, type TokenCopy } from "@/lib/token-copy";
 
 /** Flow-made maquette icon, cropped to its subject and faded into the card. Decoration only. */
 function ArtIcon({ name, zoom = 1.6 }: { name: string; zoom?: number }) {
@@ -49,7 +50,7 @@ const ITEMS: MagicBentoItem[] = [
     description: "Stable Diffusion 1.5 for images and Qwen2.5-1.5B for text. Small enough to check, on a normal gaming GPU.",
     visual: <ArtIcon name="models" zoom={2.1} />,
   },
-  { title: "No token needed", description: "You don't have to buy or lock the token to run a node or pay for a job.", visual: <ArtIcon name="no-holding" zoom={1.3} /> },
+  { ...tokenCopy(TOKEN_COPY_OFF).bentoNoToken, visual: <ArtIcon name="no-holding" zoom={1.3} /> },
   {
     title: "Everything on-chain",
     description:
@@ -59,10 +60,14 @@ const ITEMS: MagicBentoItem[] = [
   },
 ];
 
-export function FeatureBento() {
+const NO_TOKEN_ITEM = ITEMS.findIndex((it) => it.title === tokenCopy(TOKEN_COPY_OFF).bentoNoToken.title);
+
+/** `noToken`: the flag-dependent "No token needed" card (src/lib/token-copy.ts); the default is today's card. */
+export function FeatureBento({ noToken }: { noToken?: TokenCopy["bentoNoToken"] } = {}) {
+  const items = noToken ? ITEMS.map((it, i) => (i === NO_TOKEN_ITEM ? { ...it, ...noToken } : it)) : ITEMS;
   return (
     <MagicBento
-      items={ITEMS}
+      items={items}
       columns={3}
       rowHeight={250}
       gap={1}

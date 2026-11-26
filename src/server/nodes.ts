@@ -16,7 +16,10 @@
 //     kept apart from the GPU gate above. A node that never reported (older client) counts as active;
 //   - re-check rounds (src/server/rounds.ts): only the tasks of a job's current round are handed out, the two tasks of a
 //     round follow every rule above among themselves, and a node whose node key, owner wallet or GPU UUID held a lease or
-//     sent a result in an earlier round of the job gets neither task of a later round, nor counts as its peer.
+//     sent a result in an earlier round of the job gets neither task of a later round, nor counts as its peer;
+//   - stake gate (src/server/stake-gate.ts, TOKEN_STAKE_GATE, default OFF): with the flag on, only owners with
+//     stakedOf(owner) >= minStakePerNode x active nodes get job leases or count as the peer. With it off nothing is read
+//     and every query above is unchanged.
 import { getAddress, isAddress, verifyMessage, type Address, type Hex } from "viem";
 import { publicClient, targetChain } from "@/lib/chain";
 import { isNodeState, NODE_STATES, type NodeState, type PublicNodeState } from "@/lib/node-state";
@@ -45,6 +48,7 @@ import { expireStaleJobs } from "./jobs";
 import { challengeable, eligibilityParams, eligibleSql, jobEligible, nextChallenge, type ChallengeState } from "./challenge";
 import { classifyDevice, GPU_SUPPORT_URL, gpuStatusOf, sanitizeDeviceInfo, type GpuStatus } from "./gpu-allowlist";
 import { earlierRoundSql } from "./rounds";
+import { ownerMeetsStake, stakePeerSql } from "./stake-gate";
 
 export type NodeRow = {
   node_key: Address;
@@ -295,12 +299,20 @@ function heldLease(node: NodeRow): Assignment | null {
   };
 }
 
+/** The stake gate's last read for this owner passed (token_stake_reads, written by ownerMeetsStake). */
+function stakeReadPassed(owner: Address): boolean {
+  const row = getDb().prepare("SELECT ok FROM token_stake_reads WHERE owner = ?").get(owner.toLowerCase()) as { ok: number } | undefined;
+  return row?.ok === 1;
+}
+
 /** One job assignment attempt (synchronous, in a transaction). Only for nodes that pass the GPU gate and are not paused. */
 export function tryLease(node: NodeRow, epochId: number): Assignment | null {
   return tx((db) => {
     const now = nowSec();
     if (nodePaused(node.node_key)) return null;
     if (!jobEligible(node.node_key, now)) return null;
+    // Stake gate (off by default): the owner's last stake read (refreshed by pollForTask) must have passed.
+    if (serverEnv.tokenStakeGate() && !stakeReadPassed(node.owner)) return null;
     const caps = JSON.parse(node.caps) as string[];
     const backend: Backend = isBackend(node.backend) ? node.backend : "cuda";
     const models = MODEL_IDS.filter(
@@ -344,7 +356,7 @@ export function tryLease(node: NodeRow, epochId: number): Assignment | null {
                          AND p.node_key != $node AND p.owner != $owner AND p.gpu_uuid != $gpu
                          AND p.last_seen >= $online
                          AND ${activeSql("p")}
-                         AND ${eligibleSql("p")}
+                         AND ${eligibleSql("p")}${stakePeerSql("p")}
                          AND p.caps LIKE '%"' || j.kind || ':' || j.model || '"%'
                          AND p.vram_mb >= ${VRAM_CASE}
                          AND NOT EXISTS (${earlierRoundSql("t.job_id", "j.round", { key: "p.node_key", owner: "p.owner", gpu: "p.gpu_uuid" })}))
@@ -399,10 +411,12 @@ export async function pollForTask(nodeKey: Address, signal?: AbortSignal): Promi
   classifyIfNeeded(node);
   expireStaleJobs();
   const epoch = await ensureEpoch();
+  // Stake gate (TOKEN_STAKE_GATE, ./stake-gate): read once per poll while on; off (the default) = no read at all.
+  const staked = serverEnv.tokenStakeGate() ? await ownerMeetsStake(node.owner, epoch.id) : true;
   const deadline = Date.now() + POLICY.pollWaitMs;
   for (;;) {
     // A paused node gets nothing (a 0.4.0+ client does not poll while paused; this covers a stray poll).
-    const a = nodePaused(nodeKey) ? null : (heldLease(node) ?? nextChallenge(node.node_key) ?? tryLease(node, epoch.id));
+    const a = nodePaused(nodeKey) ? null : (heldLease(node) ?? nextChallenge(node.node_key) ?? (staked ? tryLease(node, epoch.id) : null));
     if (a) return a;
     if (Date.now() >= deadline || signal?.aborted) break;
     await new Promise((r) => setTimeout(r, 400));

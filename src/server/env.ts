@@ -4,6 +4,9 @@ import type { Hex } from "viem";
 
 const str = (v: string | undefined) => (v && v.trim() !== "" ? v.trim() : null);
 
+/** A token-feature flag (docs/token-features.md): on only when set to exactly "on" (any case). Unset = off. */
+const onFlag = (name: string) => str(process.env[name])?.toLowerCase() === "on";
+
 function intEnv(name: string, fallback: number, min = 0): number {
   const s = str(process.env[name]);
   if (s === null) return fallback;
@@ -96,6 +99,19 @@ export const serverEnv = {
    * hosting platform's request timeout, which is not known for Railway yet: 25 s until it is checked. 0 = never wait.
    */
   apiMaxWaitSeconds: () => Math.min(intEnv("API_MAX_WAIT_SECONDS", 25, 0), 300),
+  // ---- Token features (docs/token-features.md). Every flag defaults to OFF and stays off in production until the legal
+  // review (brief §9.1), the external audits of the new contracts and the Safe key split (F2) are done. Nothing behind
+  // them signs or sends a transaction: payloads are prepared, unsigned, for the Safe signers or the scheduler key.
+  /** TOKEN_BURNS=on: at each epoch close, plan the burn share (N1) and prepare an unsigned Safe transaction (phase 2a). */
+  tokenBurns: () => onFlag("TOKEN_BURNS"),
+  /** TOKEN_HOLDERS=on: at each epoch close, compute time-weighted SPARE holder weights and prepare the HolderPool root. */
+  tokenHolders: () => onFlag("TOKEN_HOLDERS"),
+  /** TOKEN_SLASHING=on: attribute faults from re-check rounds, prepare slash proposals, serve GET /api/v1/slashing. */
+  tokenSlashing: () => onFlag("TOKEN_SLASHING"),
+  /** TOKEN_STAKE_GATE=on: lease jobs only to owners with stakedOf(owner) >= minStakePerNode x active nodes. */
+  tokenStakeGate: () => onFlag("TOKEN_STAKE_GATE"),
+  /** TOKEN_HOLDER_PAGE=on: serve /token/holders (off = 404, and nothing links to it). */
+  tokenHolderPage: () => onFlag("TOKEN_HOLDER_PAGE"),
   /** The root-posting key. Returns null unless it is a well-formed 32-byte hex key. */
   signerKey: (): Hex | null => {
     const s = str(process.env.SCHEDULER_SIGNER_KEY);

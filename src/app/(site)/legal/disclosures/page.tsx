@@ -7,6 +7,8 @@ import { config, tickerLabel } from "@/lib/config";
 import { PONS, PONS_DOCS_URL } from "@/lib/pons";
 import { BILLING, FUNDING, feesToTeamWallet, paidJobsLive } from "@/lib/funding-copy";
 import { MAINNET, TREASURY } from "@/lib/proof";
+import { tokenCopy } from "@/lib/token-copy";
+import { tokenCopyState } from "@/server/token-copy-state";
 import { serverEnv } from "@/server/env";
 
 export const metadata: Metadata = {
@@ -18,8 +20,10 @@ export const metadata: Metadata = {
 // What it says about job results follows the scheduler's OUTPUT_AUTH setting, read per request.
 export const dynamic = "force-dynamic";
 
-export default function DisclosuresPage() {
+export default async function DisclosuresPage() {
   const privateResults = serverEnv.outputAuth() === "enforce";
+  // Token features (docs/token-features.md): one section per TOKEN_* flag that is on; none while they are off.
+  const copy = tokenCopy(await tokenCopyState());
   const ticker = config.ticker ? <span className="num text-text">{tickerLabel()}</span> : <Placeholder>[TICKER]</Placeholder>;
   const checked = config.factsCheckedOn;
   return (
@@ -59,6 +63,12 @@ export default function DisclosuresPage() {
           is no team token allocation: the supply is minted to the Pons curve.
         </p>
       </LegalSection>
+
+      {copy.disclosures.map((d) => (
+        <LegalSection key={d.title} title={d.title}>
+          <p>{d.body}</p>
+        </LegalSection>
+      ))}
 
       <LegalSection title={`Pons v2 was unaudited as of ${checked}`}>
         <p>

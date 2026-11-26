@@ -14,6 +14,9 @@ import { config } from "@/lib/config";
 import { feesToTeamWallet } from "@/lib/funding-copy";
 import { parseAbi } from "viem";
 import { HeyBuilderCard } from "@/components/dapp/hey-builder-card";
+import Link from "next/link";
+import { Notice } from "@/components/ui/status";
+import { serverEnv } from "@/server/env";
 
 export const metadata: Metadata = {
   title: "Proof",
@@ -133,6 +136,22 @@ export default async function ProofPage() {
           )
         }
       />
+
+      {/* Token features (docs/token-features.md): only with TOKEN_HOLDER_PAGE on; off (the default) renders nothing. */}
+      {serverEnv.tokenHolderPage() ? (
+        <Notice
+          tone="neutral"
+          title="Burns, holder claims and stakes"
+          className="mb-10"
+          action={
+            <Link href="/token/holders" className="link text-sm">
+              Open the holder page
+            </Link>
+          }
+        >
+          Every SPARE burn, holder root and claim, and node stake, read from the chain with its transaction.
+        </Notice>
+      ) : null}
 
       <section aria-labelledby="reward-contract">
         <SectionTitle

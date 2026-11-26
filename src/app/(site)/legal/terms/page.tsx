@@ -4,6 +4,8 @@ import { LegalPage, LegalSection } from "@/components/legal/legal-page";
 import { ReviewStatus } from "@/components/legal/review-status";
 import { config } from "@/lib/config";
 import { FUNDING } from "@/lib/funding-copy";
+import { tokenCopy } from "@/lib/token-copy";
+import { tokenCopyState } from "@/server/token-copy-state";
 import { serverEnv } from "@/server/env";
 
 export const metadata: Metadata = {
@@ -14,8 +16,10 @@ export const metadata: Metadata = {
 // What it says about job results follows the scheduler's OUTPUT_AUTH setting, read per request.
 export const dynamic = "force-dynamic";
 
-export default function TermsPage() {
+export default async function TermsPage() {
   const privateResults = serverEnv.outputAuth() === "enforce";
+  // Token features (docs/token-features.md): one clause per TOKEN_* flag that is on; none while they are off.
+  const copy = tokenCopy(await tokenCopyState());
   return (
     <LegalPage title="Terms of use" current="terms" status={<ReviewStatus url={config.links.tos} urlPlaceholder="[TOS_URL]" noun="terms" />}>
       <LegalSection title="This page is a placeholder">
@@ -28,7 +32,8 @@ export default function TermsPage() {
           <Link href="/legal/disclosures" className="link">
             disclosures
           </Link>
-          : not financial, legal or tax advice; not a yield product; {FUNDING.termsSummary}; the token can go to zero.
+          : not financial, legal or tax advice; not a yield product; {FUNDING.termsSummary}
+          {copy.termsExtra.length ? `; ${copy.termsExtra.join("; ")}; the token can go to zero.` : "; the token can go to zero."}
         </p>
       </LegalSection>
 
