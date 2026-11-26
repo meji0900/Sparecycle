@@ -58,8 +58,10 @@ export default function PrivacyPage() {
           </li>
           <li>
             <span className="text-text">Payments are public.</span> The CustomerCharged events of the payments contract and the
-            per-epoch charge list (/api/v1/epochs/&#123;id&#125;/charges) are public. They link the paying wallet to the amount and
-            the charge list links it to job ids.
+            per-epoch charge answer (/api/v1/epochs/&#123;id&#125;/charges) are public and link the paying wallet to the amount charged
+            per epoch. Charge lists published before job receipts also link it to job ids. Later ones publish the leaf hashes of a jobs
+            tree instead. Each leaf includes a random salt that is given only in the paying wallet&apos;s private receipt, so the public
+            leaves do not link a wallet to a job.
           </li>
           {privateResults ? (
             <li>

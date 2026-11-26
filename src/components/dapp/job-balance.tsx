@@ -510,9 +510,9 @@ export function PaymentsNote({ className }: { className?: string }) {
         </li>
         <li>
           <span className="text-text">What is public.</span> Each charge emits a CustomerCharged event on-chain with your wallet and the amount
-          charged in that epoch, and the epoch&apos;s charge list (/api/v1/epochs/&#123;id&#125;/charges) lists each charged job with its wallet
-          and price. The public job lists show only whether a job was paid; each job&apos;s price, charge status and output hash are on its
-          private invoice.
+          charged in that epoch, and the epoch&apos;s charge (/api/v1/epochs/&#123;id&#125;/charges) shows each wallet&apos;s total and the
+          leaves of a jobs tree, not job ids. The public job lists show only whether a job was paid; each job&apos;s price, charge status and
+          output hash are on its private invoice and receipt.
         </li>
       </ul>
       <dl className="space-y-1">

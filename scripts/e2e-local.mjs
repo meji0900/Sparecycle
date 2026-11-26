@@ -17,8 +17,12 @@
 //  5b. GPU gate round with signed requests from this script: a challenge-capable node fails -> cooldown, fails again
 //     -> suspended, is re-issued by the admin endpoint and passes; an old 0.2.0-style node never gets a challenge; a
 //     software rasterizer is refused (403 gpu-not-supported); an untested family registers as untested
-//  6. submit 2 image + 1 text jobs, wait until both nodes agree
+//  6. submit 2 image + 1 text jobs, wait until both nodes agree; a paid job and a team test job, and their receipts:
+//     provisional at the verdict with both node signatures
 //  7. warp anvil past the epoch end, POST /api/v1/epochs/close (posts the root on-chain)
+//  7b. the charge commits the jobs root (hashRule v2-jobs-merkle) as the Charged event's listHash; the public charge
+//     list shows per-customer totals (= CustomerCharged) and salted leaves, no job ids or salts; both receipts are sealed and verify
+//     against the Charged event read from anvil (src/lib/job-receipt.ts, the browser's check); a tampered one fails
 //  8. each owner fetches its proof and claims; balances must rise by exactly the leaf amount; a second claim
 //     must revert AlreadyClaimed; reserved <= pot; the rollover lands in epoch 1
 //  9. rate limit; restart the scheduler on the same DB with SCHEDULER_AUTOCLOSE=1 and OUTPUT_AUTH=enforce and let the
@@ -457,7 +461,7 @@ async function main() {
   const escrowLeft = await pub.readContract({ address: escrow, abi: mockArt.abi, functionName: "balanceOf", args: [rewards] });
   check("curve swept, escrow emptied, pot = 1.25 ETH", (await curveRead("quoteFeeBalance")) === 0n && escrowLeft === 0n && (await read("getEpoch", [0n])).pot === parseEther("1.25"));
   check("sweep never printed the signer key", ![paused, sent].some((r) => (r.stdout + r.stderr).includes(sweepKey.slice(2))));
-  let expectedPot = parseEther("1.25") + 1n; // + 95% of the paid job, added after the close
+  let expectedPot = parseEther("1.25") + 1n; // + 95% of the paid and team jobs, added after the close
 
   step("7. scheduler (next dev) from an isolated app copy");
   mkdirSync(APP_DIR, { recursive: true });
@@ -722,6 +726,39 @@ async function main() {
   check("invoice output hash = sha256 of the downloaded output", paidBytes.status === 200 && inv0.data.outputHash === `0x${createHash("sha256").update(paidBytes.data).digest("hex")}`);
   check("invoice without credentials -> 401", (await api("GET", `/jobs/${paid.data.id}/invoice`)).status === 401);
   check("free jobs are marked free", (await api("GET", "/jobs?limit=20")).data.jobs.filter((j) => jobIds.includes(j.id)).every((j) => j.payment === "free"));
+
+  // A team test job (TEAM_JOB_WALLETS = the sweeper key in this test): charged like any paid job, in the same jobs root.
+  {
+    const hash = await wallet(sweeper).writeContract({ address: payments, abi: jobPaymentsAbi, functionName: "deposit", value: parseEther("0.001") });
+    await pub.waitForTransactionReceipt({ hash });
+  }
+  const teamReq = { kind: "text", params: { model: "qwen2.5-1.5b", prompt: "A team test job for the receipt check.", system: "Be brief.", maxTokens: 16 } };
+  const teamPrice = jobPriceWei(teamReq, PRICE_WEI_PER_UNIT);
+  const teamJob = await api("POST", "/jobs", { request: teamReq, payment: await signPayment(sweeper, teamReq, teamPrice) });
+  check("team test job accepted", teamJob.status === 201 && teamJob.data.priceWei === teamPrice.toString(), teamJob.data.error ?? "");
+  secrets[teamJob.data.id] = teamJob.data.readSecret;
+  await waitFor("team job agreed", async () => (await api("GET", "/jobs/" + teamJob.data.id)).data.status === "agreed", { timeoutMs: 120_000, intervalMs: 1000 });
+  check("team job shown as team-funded", (await api("GET", "/jobs/" + teamJob.data.id)).data.payment === "team");
+
+  // Job receipts (feature brief #8): provisional from the verdict on, with both nodes' EIP-712 receipts.
+  const { verifyReceipt } = await srcImport("lib/job-receipt.ts");
+  const receiptOf = (id) => api("GET", `/jobs/${id}/receipt`, undefined, { authorization: `Bearer ${secrets[id]}` });
+  const verifyOpts = { client: pub, chainId: 31337, paymentsContract: payments };
+  const rc0 = await receiptOf(paid.data.id);
+  check(
+    "receipt (read secret): provisional at the verdict, both node signatures, private",
+    rc0.status === 200 && isPrivate(rc0) && rc0.data.state === "provisional" && rc0.data.chargeStatus === "pending" && rc0.data.nodes?.length === 2 &&
+      rc0.data.pending?.reason === "waiting-for-charge" && rc0.data.outputHash === inv0.data.outputHash,
+    JSON.stringify(rc0.data),
+  );
+  const rcAnon = await api("GET", `/jobs/${paid.data.id}/receipt`);
+  check("receipt without credentials -> 401, private", rcAnon.status === 401 && isPrivate(rcAnon));
+  const vc0 = await verifyReceipt(rc0.data, verifyOpts);
+  check(
+    "provisional receipt: node signatures valid, nothing on-chain to check yet",
+    vc0.outcome === "provisional" && vc0.checks.find((c) => c.id === "signatures")?.status === "pass",
+    JSON.stringify(vc0.checks),
+  );
   const treasuryBefore = await pub.getBalance({ address: treasury });
 
   step("10. warp past the epoch end and close");
@@ -744,16 +781,58 @@ async function main() {
   const e1 = await read("getEpoch", [1n]);
   const tree = (await api("GET", "/epochs/0/tree")).data;
   check("epoch 0 settled on-chain", e0.settled === true && (await read("currentEpoch")) === 1n);
-  const toTreasury = (paidPrice * 500n) / 10_000n;
-  expectedPot += paidPrice - toTreasury;
-  check("pot = 1 ETH fund + 0.25 ETH escrow + 1 wei unaccounted + 95% of the paid job", e0.pot === expectedPot, String(e0.pot));
+  const chargedTotal = paidPrice + teamPrice;
+  const toTreasury = (chargedTotal * 500n) / 10_000n; // 5% of the epoch's charged batch, rounded down
+  expectedPot += chargedTotal - toTreasury;
+  check("pot = 1 ETH fund + 0.25 ETH escrow + 1 wei unaccounted + 95% of the paid and team jobs", e0.pot === expectedPot, String(e0.pot));
   const charges = (await api("GET", "/epochs/0/charges")).data;
-  check("charge list published, done, one job", charges.status === "done" && charges.jobs.length === 1 && charges.jobs[0].jobId === paid.data.id, JSON.stringify(charges));
+  check(
+    "charge published, done, hashRule v2-jobs-merkle, two leaves, no per-job list",
+    charges.status === "done" && charges.hashRule === "v2-jobs-merkle" && charges.leaves?.length === 2 && !("jobs" in charges),
+    JSON.stringify(charges),
+  );
   const chargeRcpt = await pub.getTransactionReceipt({ hash: charges.tx });
   check("charge sent from the scheduler key", chargeRcpt.status === "success" && chargeRcpt.from.toLowerCase() === scheduler.address.toLowerCase());
   const viem = await import("viem");
-  check("published list hashes to the on-chain listHash", charges.listHash === viem.keccak256(viem.toHex(JSON.stringify(charges.jobs))));
-  check("treasury got 5%", (await pub.getBalance({ address: treasury })) - treasuryBefore === toTreasury, toTreasury + " wei");
+  const chargeEvents = viem.parseEventLogs({ abi: jobPaymentsAbi, logs: chargeRcpt.logs.filter((l) => l.address.toLowerCase() === payments.toLowerCase()) });
+  const chargedEv = chargeEvents.find((e) => e.eventName === "Charged");
+  check("Charged(epoch 0) carries the published jobs root as listHash", chargedEv?.args.epochId === 0n && chargedEv.args.listHash === charges.listHash, charges.listHash);
+  check("merkle.ts rebuilds the jobs root from the published leaves", buildTree(charges.leaves).root === charges.listHash);
+  const onchainTotals = Object.fromEntries(chargeEvents.filter((e) => e.eventName === "CustomerCharged").map((e) => [e.args.customer.toLowerCase(), e.args.amount.toString()]));
+  check(
+    "per-customer totals == the CustomerCharged events (customer and team wallet)",
+    charges.customers.length === 2 && charges.customers.every((c) => onchainTotals[c.customer.toLowerCase()] === c.amountWei) &&
+      onchainTotals[customer.address.toLowerCase()] === paidPrice.toString() && onchainTotals[sweeper.address.toLowerCase()] === teamPrice.toString(),
+    JSON.stringify(charges.customers),
+  );
+  check("no job ids in the public charge list (D7)", ![paid.data.id, teamJob.data.id].some((id) => JSON.stringify(charges).includes(id.slice(2))));
+  check("treasury got 5% of the batch", (await pub.getBalance({ address: treasury })) - treasuryBefore === toTreasury, toTreasury + " wei");
+
+  // The receipts are sealed and verify against the Charged event read straight from the chain (here anvil, on the live
+  // site the chain's public RPC), never through the scheduler API.
+  const rc1 = await receiptOf(paid.data.id);
+  check(
+    "receipt sealed in epoch 0 with the charge tx and the jobs root",
+    rc1.data.state === "sealed" && rc1.data.epochId === 0 && rc1.data.chargeTx === charges.tx.toLowerCase() && rc1.data.anchor?.listHash === charges.listHash &&
+      rc1.data.chargeStatus === "charged",
+    JSON.stringify(rc1.data),
+  );
+  const vc1 = await verifyReceipt(rc1.data, verifyOpts);
+  check("the paid job's receipt verifies against the Charged event on the local chain", vc1.outcome === "verified", JSON.stringify(vc1.checks));
+  const vcTeam = await verifyReceipt((await receiptOf(teamJob.data.id)).data, verifyOpts);
+  check("the team job's receipt verifies too", vcTeam.outcome === "verified", JSON.stringify(vcTeam.checks));
+  const saved = JSON.parse(JSON.stringify(rc1.data)); // what "Save receipt (JSON)" writes
+  const tamperedPrice = await verifyReceipt({ ...saved, priceWei: (BigInt(saved.priceWei) - 1n).toString() }, verifyOpts);
+  const tamperedEpoch = await verifyReceipt({ ...saved, epochId: 1, anchor: { ...saved.anchor, leafInputs: { ...saved.anchor.leafInputs, epochId: 1 } } }, verifyOpts);
+  const tamperedSalt = await verifyReceipt({ ...saved, anchor: { ...saved.anchor, leafInputs: { ...saved.anchor.leafInputs, salt: `0x${"ab".repeat(32)}` } } }, verifyOpts);
+  check("a tampered receipt (price, epoch, salt) does not verify", tamperedPrice.outcome === "failed" && tamperedEpoch.outcome === "failed" && tamperedSalt.outcome === "failed");
+  const salt = saved.anchor.leafInputs.salt;
+  check(
+    "the leaf's salt is only in the payer's receipt, not in the public charge answer",
+    /^0x[0-9a-f]{64}$/.test(salt) && !JSON.stringify((await api("GET", "/epochs/0/charges")).data).includes(salt.slice(2)),
+  );
+  const deadRpc = await verifyReceipt(saved, { ...verifyOpts, client: createPublicClient({ chain: foundry, transport: http("http://127.0.0.1:9", { retryCount: 0 }) }) });
+  check("an unreachable RPC is reported as unreachable, never as verified", deadRpc.outcome === "unreachable");
   const acct2 = (await api("GET", "/payments/account?address=" + customer.address)).data;
   check("customer balance reduced by the price, nothing held", BigInt(acct2.balance) === parseEther("0.01") - paidPrice && acct2.held === "0", JSON.stringify(acct2));
   const inv1 = (await invoiceOf(paid.data.id)).data;
@@ -815,7 +894,7 @@ async function main() {
   nextProc = await startNext("next-restart", { SCHEDULER_AUTOCLOSE: "1", OUTPUT_AUTH: "enforce" });
   const afterRestart = (await api("GET", "/epochs")).data.epochs;
   check("state survived the restart (epoch 0 posted, epoch 1 open)", afterRestart.find((e) => e.id === 0)?.status === "posted" && afterRestart.find((e) => e.id === 1)?.status === "open");
-  check("jobs survived the restart", (await api("GET", "/jobs?limit=20")).data.jobs.filter((j) => j.status === "agreed").length === 5); // 3 + 1 free from the rate-limit step + 1 paid
+  check("jobs survived the restart", (await api("GET", "/jobs?limit=20")).data.jobs.filter((j) => j.status === "agreed").length === 6); // 3 + 1 free from the rate-limit step + 1 paid + 1 team
   await pub.request({ method: "evm_increaseTime", params: [EPOCH_LENGTH * 2] });
   await pub.request({ method: "evm_mine", params: [] });
   await waitFor("autoclose to post epoch 1", async () => (await api("GET", "/epochs")).data.epochs.find((e) => e.id === 1)?.status === "posted", {

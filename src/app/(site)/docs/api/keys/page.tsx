@@ -142,8 +142,9 @@ curl -s ${origin}/api/v1/jobs/0x…/result -H "Authorization: Bearer $SPARECYCLE
             scheduler&apos;s records.
           </li>
           <li>
-            Every entry of an epoch&apos;s published charge list (<C>/api/v1/epochs/&lt;id&gt;/charges</C>) carries <C>apiKeyId</C> (null for a
-            wallet-signed job), so you can see which charges came from which key. Lists charged before keys existed are served unchanged, without the field.
+            The scheduler records which key paid for each job, and the key list shows what each key spent today. Charge lists published before job
+            receipts name each charged job with its <C>apiKeyId</C> (<C>/api/v1/epochs/&lt;id&gt;/charges</C>); later ones publish only each
+            wallet&apos;s total and the leaves of the jobs tree. Each job&apos;s invoice and receipt stay private to you.
           </li>
           <li>Anyone holding a key can spend up to its daily cap. Keep keys out of code repositories and browsers; turn a key off as soon as it may have leaked.</li>
         </ul>

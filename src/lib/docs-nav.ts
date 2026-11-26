@@ -58,7 +58,7 @@ export const DOCS_NAV: DocsNavSection[] = [
       {
         href: "/docs/billing",
         title: "Billing",
-        description: "Deposit, what is held, when you are charged and how to withdraw.",
+        description: "Deposit, what is held, when you are charged, job receipts you can check on-chain, and how to withdraw.",
       },
     ],
   },

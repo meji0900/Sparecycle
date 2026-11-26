@@ -441,11 +441,15 @@ describe("a disagreed paid job is never charged (brief §3.2 step 5)", () => {
     const status = (id: string) => (getDb().prepare("SELECT charge_status FROM jobs WHERE id = ?").get(id) as { charge_status: string }).charge_status;
     assert.equal(status(disagreed.id), "released");
     assert.equal(status(agreed.id), "pending", "the agreed job stays due for the next attempt");
-    const list = chargesJson(epoch);
-    const ids = list.jobs.map((j) => j.jobId);
+    // The charged list (internal since job receipts: the public v2 answer has per-customer totals and jobs-tree leaves).
+    const stored = getDb().prepare("SELECT list_json FROM charges WHERE epoch_id = ?").get(epoch) as { list_json: string };
+    const ids = (JSON.parse(stored.list_json) as { jobId: string }[]).map((j) => j.jobId);
     assert.ok(ids.includes(agreed.id), "the agreed job is in the charge list");
     assert.ok(!ids.includes(disagreed.id), "the disagreed job is not");
+    const list = chargesJson(epoch) as { totalWei: string; customers?: { customer: string; amountWei: string }[] };
     assert.equal(list.totalWei, priceOf(reqA).toString());
+    assert.deepEqual(list.customers, [{ customer: payer.address, amountWei: priceOf(reqA).toString() }], "only the matched job's price is charged");
+    assert.ok(!JSON.stringify(list).includes(disagreed.id.slice(2)), "no job id in the public charge list");
     const late = jobInvoice(disagreed.id, { address: payer.address, secret: null });
     assert.ok(late.invoice);
     assert.equal(late.chargeStatus, "released");

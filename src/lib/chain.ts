@@ -6,6 +6,8 @@ import { foundry, robinhood, robinhoodTestnet } from "viem/chains";
 import { config } from "./config";
 
 export const ROBINHOOD_CHAIN_ID = 4663 as const;
+/** Robinhood Chain's own public RPC (mainnet). Some ISPs, many in Indonesia among them, block it by DNS. */
+export const ROBINHOOD_PUBLIC_RPC = robinhood.rpcUrls.default.http[0];
 
 const base: Record<typeof config.network, Chain> = {
   mainnet: robinhood,
