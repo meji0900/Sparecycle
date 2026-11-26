@@ -181,9 +181,11 @@ and A14 are still open (`docs/x402-decision.md`).
   jurisdiction logic is present.
 - **Deploying the Uniswap v4 swap adapter**: it is written and fork-tested (see above), not deployed.
 - `SparecycleNodeStake` (brief §3). It is in stage 3 of §11 but not in this task.
-- **The scheduler side** (stage 4):
-  - time-weighted holder weights, exclusions and minimum (N11/N14/N15);
-  - root posting and price posting;
+- **The scheduler side** (stage 4). Since built, behind flags (`docs/token-features.md`): time-weighted holder
+  weights, exclusions and minimum (N11/N14/N15), and the holder-pool root posting with the claim-as-credits panel
+  (`TOKEN_HOLDERS`; `test/v2/HolderPoolVectors.t.sol` posts and claims the scheduler's own vectors on the pool).
+  Still open here:
+  - price posting;
   - V1+V2 dual charging;
   - receipts with asset and price fields;
   - the burns and holder pages.
