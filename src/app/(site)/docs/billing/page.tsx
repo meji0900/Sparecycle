@@ -4,6 +4,7 @@ import { C, Defs, DocsHeader, DocsNext, DocsSection, Ext, Note, Step, Steps } fr
 import { CodeBlock } from "@/components/ui/code-block";
 import { ADDR, explorerAddressUrl } from "@/lib/addresses";
 import { MAINNET } from "@/lib/proof";
+import { MAX_ROUNDS, PICKUP_TIMEOUT_SECONDS } from "@/lib/rounds";
 import { repoFile, siteOrigin } from "@/lib/site";
 import { POLICY } from "@/server/env";
 
@@ -16,6 +17,7 @@ export const metadata: Metadata = {
 export default function BillingPage() {
   const epochHours = MAINNET.epochLengthSeconds / 3600;
   const ttlHours = POLICY.jobTtlSeconds / 3600;
+  const roundMinutes = (PICKUP_TIMEOUT_SECONDS + POLICY.taskLeaseSeconds) / 60;
   return (
     <>
       <DocsHeader eyebrow="Reference" title="Billing">
@@ -56,8 +58,18 @@ export default function BillingPage() {
             together with the epoch&apos;s other matched jobs.
           </li>
           <li>
-            When they do not match, when the safety checker rejects an image, or when there is no verdict within {ttlHours} hours,
-            the job is <span className="text-text">not charged</span>. The hold is released and nothing leaves your balance.
+            When the two results do not match, or the two nodes give no verdict within {roundMinutes} minutes of the first one
+            starting, the job is <span className="text-text">checked again on another pair</span>: two nodes whose owner wallets
+            and GPUs took no part in it before, if two such nodes are registered with the network. That happens at most{" "}
+            {MAX_ROUNDS - 1} times ({MAX_ROUNDS} pairs in all), and only the last pair&apos;s verdict counts. Without such a pair
+            the mismatch is final at once. Meanwhile the job shows &quot;Re-checking on another pair (round 2 of {MAX_ROUNDS})&quot;,
+            the price stays held and nothing is charged. Every pair runs inside the same {ttlHours}-hour limit; a new pair starts
+            only while a full {roundMinutes} minutes are still left of it.
+          </li>
+          <li>
+            When no pair&apos;s results match, when the safety checker rejects an image (never checked again), or when there is no
+            verdict within {ttlHours} hours, the job is <span className="text-text">not charged</span>. The hold is released and
+            nothing leaves your balance.
           </li>
           <li>
             A charge sends 95% into the open epoch&apos;s node pot and 5% to the treasury Safe. The pot is shared by all matched
@@ -108,7 +120,10 @@ export default function BillingPage() {
       </DocsSection>
 
       <DocsSection id="free" title="Free trial jobs">
-        <p>Free trial jobs are never charged and need no balance. Their work shares the same node pot as paid work.</p>
+        <p>
+          Free trial jobs are never charged and need no balance. Their work shares the same node pot as paid work. They run on one
+          pair only: a mismatch is final, with no re-check on another pair.
+        </p>
         <p className="text-sm">
           Contract source and tests: <Ext href={repoFile("contracts/src/SparecycleJobPayments.sol")}>SparecycleJobPayments.sol</Ext>.
         </p>

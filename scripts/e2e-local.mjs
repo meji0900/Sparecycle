@@ -23,6 +23,12 @@
 //     must revert AlreadyClaimed; reserved <= pot; the rollover lands in epoch 1
 //  9. rate limit; restart the scheduler on the same DB with SCHEDULER_AUTOCLOSE=1 and OUTPUT_AUTH=enforce and let the
 //     timer close a funded epoch and then an empty one (root 0x00…00, reserved 0)
+// 9b. re-check on a new pair (feature brief #9): the two honest nodes stop and six dev runners started with
+//     SPARECYCLE_DEV_CORRUPT=1 (wrong job outputs on purpose, correct GPU challenges) take over. A paid image job runs
+//     three mismatching rounds, each on node keys, owners and GPUs new to the job, and ends disagreed, not charged; a
+//     free job's mismatch ends disagreed with no re-check. A paid text job mismatches on two corrupting nodes, waits in
+//     round 1 (they are excluded) with the price still held, then agrees on the honest pair once it restarts; that
+//     epoch's payout tree holds only the honest pair's owners and the charge list only that job
 // 10. private outputs (OUTPUT_AUTH=enforce, nodes stopped): the 401/403/404/409/200 route matrix with read secrets and
 //     wallet sign-in (EOA and an ERC-1271 smart wallet), the retired /output URL (410), and no /api/v1/jobs/* response
 //     ever carrying a `public` cache directive
@@ -841,6 +847,179 @@ async function main() {
     check(`${n.name}: no rejected requests (replay / signature / dev-runner)`, !/replayed-request|bad-signature|stale-request|bad-receipt|dev-runner-not-accepted|failed:/.test(text));
     check(`${n.name}: log shows the dev-runner banner`, text.includes("DEV RUNNER") && text.includes("NEVER paid"));
     check(`${n.name}: log shows a passed GPU challenge`, /GPU challenge \S+ \((image|text)\) done in .* -> passed \(eligible\)/.test(text));
+  }
+
+  step("16b. re-check on a new pair (dev runners told to corrupt their outputs)");
+  {
+    const sqlite = await import("node:sqlite");
+    /** Read-only query of the scheduler's scratch DB (node identities per round are not in any public view). */
+    const q = (sql, ...args) => {
+      const d = new sqlite.DatabaseSync(dbPath, { readOnly: true });
+      try {
+        return d.prepare(sql).all(...args);
+      } finally {
+        d.close();
+      }
+    };
+    const childNamed = (name) => children.find((c) => c.name === name)?.child;
+    const keyOf = (keyFile) => privateKeyToAccount(JSON.parse(readFileSync(keyFile, "utf8")).privateKey).address;
+    /** Starts a dev-runner node client (a fresh key unless `n.keyFile` exists); returns its node key. */
+    const startDevNode = async (n, logName, extraEnv = {}) => {
+      if (!n.keyFile) {
+        n.keyFile = join(RUN_DIR, `${n.name}-key.json`);
+        const init = spawnSync(process.execPath, [agent, "init", "--key-file", n.keyFile], { cwd: ROOT, encoding: "utf8" });
+        if (init.status !== 0) throw new Error(`${n.name}: init failed`);
+      }
+      const nodeKey = keyOf(n.keyFile);
+      const sig = await n.owner.signMessage({ message: proto.linkMessage(nodeKey, n.owner.address) });
+      start(logName, process.execPath, [agent, "start", "--network", SITE, "--owner", n.owner.address, "--owner-sig", sig, "--dev-runner", "--key-file", n.keyFile], {
+        env: cleanEnv({ SPARECYCLE_GPU_UUID: n.gpu, ...extraEnv }),
+      });
+      return nodeKey;
+    };
+    const final = (s) => ["agreed", "disagreed", "expired", "rejected"].includes(s);
+    const job = async (id) => (await api("GET", `/jobs/${id}`)).data;
+    const invoice = async (j) => (await api("GET", `/jobs/${j.id}/invoice`, undefined, { authorization: `Bearer ${j.readSecret}` })).data;
+    /** Every result of a later round comes from a node key, owner wallet and GPU that no earlier round used. */
+    const freshPerRound = (rows) =>
+      rows.every((r) => rows.filter((e) => e.round < r.round).every((e) => e.node_key !== r.node_key && e.owner.toLowerCase() !== r.owner.toLowerCase() && e.gpu_uuid !== r.gpu_uuid));
+    const balanceOf = (who) => pub.readContract({ address: payments, abi: jobPaymentsAbi, functionName: "balanceOf", args: [who] });
+    // A stopped node's last long poll (up to 8 s) can still lease a task on the scheduler: let it run out first.
+    const stopNodes = async (names) => {
+      for (const name of names) killTree(childNamed(name));
+      await sleep(10_000);
+    };
+
+    // The honest pair stops; six corrupting dev runners (six owners, six GPUs) take over.
+    await stopNodes(["node-a", "node-b"]);
+    const corrupt = Array.from({ length: 6 }, (_, i) => ({ name: `node-c${i + 1}`, owner: privateKeyToAccount(generatePrivateKey()), gpu: `E2E-GPU-C${i + 1}` }));
+    for (const c of corrupt) c.key = await startDevNode(c, c.name, { SPARECYCLE_DEV_CORRUPT: "1" });
+    await waitFor("six corrupting dev nodes online and past their GPU challenge", async () => {
+      const listedNow = (await api("GET", "/nodes")).data.nodes;
+      return corrupt.every((c) => listedNow.some((x) => x.nodeKey === c.key && x.online && x.challengeState === "eligible"));
+    }, { timeoutMs: 120_000, intervalMs: 1000 });
+    check("6 dev runners with SPARECYCLE_DEV_CORRUPT=1 registered and passed their GPU challenge (challenges are never corrupted)", true);
+    check(
+      "corrupting nodes log that they corrupt job outputs on purpose",
+      corrupt.every((c) => readFileSync(join(RUN_DIR, `${c.name}.log`), "utf8").includes("SPARECYCLE_DEV_CORRUPT=1")),
+    );
+
+    // J1: a paid image job that no pair agrees on. J3: a free text job (another address: this one's free hour is used).
+    const balBefore = await balanceOf(customer.address);
+    const imgReq = { kind: "image", params: { model: "sd15", prompt: "a lighthouse no pair agrees on", width: 256, height: 256, steps: 10 } };
+    const j1 = (await api("POST", "/jobs", { request: imgReq, payment: await signPayment(customer, imgReq, jobPriceWei(imgReq, PRICE_WEI_PER_UNIT)) })).data;
+    const j3 = (await api("POST", "/jobs", { kind: "text", params: { model: "qwen2.5-1.5b", prompt: "a free job its pair disagrees on", maxTokens: 16 } }, { "x-forwarded-for": "10.77.0.1" })).data;
+    check("paid image job J1 and free text job J3 accepted", /^0x[0-9a-f]{64}$/.test(j1.id ?? "") && /^0x[0-9a-f]{64}$/.test(j3.id ?? ""), `${j1.error ?? ""} ${j3.error ?? ""}`);
+    const seen = [];
+    await waitFor("J1 through its rounds and J3 settled", async () => {
+      const [a, b] = await Promise.all([job(j1.id), job(j3.id)]);
+      const state = `${a.status}/round ${a.round}`;
+      if (seen.at(-1) !== state) seen.push(state);
+      return final(a.status) && final(b.status);
+    }, { timeoutMs: 180_000, intervalMs: 250 });
+    log(`J1 as the public API showed it: ${seen.join(" -> ")}`);
+    const d1 = await job(j1.id);
+    check("J1 (paid): 3 mismatching rounds end disagreed (round 2, maxRounds 3)", d1.status === "disagreed" && d1.round === 2 && d1.maxRounds === 3 && d1.payment === "paid", JSON.stringify({ status: d1.status, round: d1.round, note: d1.note }));
+    const r1 = q("SELECT round, node_key, owner, gpu_uuid FROM results WHERE job_id = ? ORDER BY round, received_at", j1.id);
+    check("J1: two results in each of rounds 0, 1 and 2, all from corrupting nodes", r1.map((r) => r.round).join(",") === "0,0,1,1,2,2" && r1.every((r) => corrupt.some((c) => c.key === r.node_key)));
+    check(
+      "J1: each new round ran on node keys, owners and GPUs that took no part in an earlier round (6 of each)",
+      freshPerRound(r1) && ["node_key", "owner", "gpu_uuid"].every((k) => new Set(r1.map((r) => r[k].toLowerCase())).size === 6),
+    );
+    check("J1: each disagreeing round logged per node (6 rows)", q("SELECT COUNT(*) AS n FROM job_rounds WHERE job_id = ? AND outcome = 'disagreed'", j1.id)[0].n === 6);
+    const pubText = JSON.stringify([d1, (await api("GET", "/jobs?limit=50")).data]).toLowerCase();
+    check("public job views: round and maxRounds, no node keys or owners", corrupt.every((c) => !pubText.includes(c.key.slice(2).toLowerCase()) && !pubText.includes(c.owner.address.slice(2).toLowerCase())));
+    const inv1 = await invoice(j1);
+    check(
+      "J1 invoice: disagreed, not charged (released, 0 wei), round 2 of 3",
+      inv1.verdict === "disagreed" && inv1.chargeStatus === "released" && inv1.chargedWei === "0" && inv1.round === 2 && inv1.maxRounds === 3,
+      JSON.stringify({ verdict: inv1.verdict, chargeStatus: inv1.chargeStatus, round: inv1.round, reason: inv1.reason }),
+    );
+    const d3 = await job(j3.id);
+    check("J3 (free): its mismatch ends disagreed in round 0, no re-check (maxRounds 1)", d3.status === "disagreed" && d3.round === 0 && d3.maxRounds === 1 && d3.payment === "free", JSON.stringify({ status: d3.status, round: d3.round }));
+    check("J3: only its first pair's two tasks and two results", q("SELECT COUNT(*) AS n FROM tasks WHERE job_id = ?", j3.id)[0].n === 2 && q("SELECT COUNT(*) AS n FROM results WHERE job_id = ?", j3.id)[0].n === 2);
+
+    // J2: a paid text job. Round 0 on two corrupting nodes (the other four stop); round 1 waits until honest nodes return.
+    await stopNodes(corrupt.slice(2).map((c) => c.name));
+    const [c1, c2] = corrupt;
+    const txtReq = { kind: "text", params: { model: "qwen2.5-1.5b", prompt: "a paid job a second pair gets right", maxTokens: 32 } };
+    const j2Price = jobPriceWei(proto.parseJobRequest(txtReq), PRICE_WEI_PER_UNIT); // the scheduler prices the parsed request
+    const j2 = (await api("POST", "/jobs", { request: txtReq, payment: await signPayment(customer, txtReq, j2Price) })).data;
+    check("paid text job J2 accepted", /^0x[0-9a-f]{64}$/.test(j2.id ?? ""), j2.error ?? "");
+    await waitFor("J2's first pair (two corrupting nodes) mismatches and J2 goes back to the queue in round 1", async () => {
+      const d = await job(j2.id);
+      if (final(d.status)) throw new Error(`J2 settled: ${d.status}`);
+      return d.round === 1;
+    }, { timeoutMs: 60_000, intervalMs: 250 });
+    await sleep(10_000); // longer than a long poll: c1 and c2 keep polling and must get nothing
+    const w = await job(j2.id);
+    const wRow = q("SELECT round_started_at FROM jobs WHERE id = ?", j2.id)[0];
+    check(
+      "J2 waits in round 1: its round-0 nodes keep polling but are excluded, so no lease and no round used up",
+      w.status === "queued" && w.round === 1 && w.maxRounds === 3 && wRow.round_started_at === null,
+      JSON.stringify({ status: w.status, round: w.round, note: w.note }),
+    );
+    const r2a = q("SELECT round, node_key FROM results WHERE job_id = ?", j2.id);
+    check("J2 round 0 ran on the two corrupting nodes", r2a.length === 2 && r2a.every((r) => r.round === 0 && [c1.key, c2.key].includes(r.node_key)));
+    const invW = await invoice(j2);
+    check(
+      "payer view while re-checking: price held, nothing charged, round 1 (shown as round 2 of 3)",
+      invW.chargeStatus === "pending" && invW.verdict === null && invW.chargedWei === null && invW.round === 1 && invW.maxRounds === 3 && /re-checking on another pair \(round 2 of 3\)/.test(w.note ?? ""),
+      JSON.stringify({ chargeStatus: invW.chargeStatus, round: invW.round, note: w.note }),
+    );
+    const acctW = (await api("GET", "/payments/account?address=" + customer.address)).data;
+    check("the hold stays in place: held = J2's price", BigInt(acctW.held) === j2Price, JSON.stringify({ held: acctW.held, price: j2Price.toString() }));
+
+    // The honest pair returns (same keys, owners and GPUs) and takes round 1.
+    for (const n of nodes) await startDevNode(n, `${n.name}-recheck`);
+    await waitFor("J2 agreed on the honest pair", async () => {
+      const d = await job(j2.id);
+      if (final(d.status) && d.status !== "agreed") throw new Error(`J2 ${d.status}`);
+      return d.status === "agreed";
+    }, { timeoutMs: 90_000, intervalMs: 500 });
+    const d2 = await job(j2.id);
+    const honest = nodes.map((n) => keyOf(n.keyFile));
+    const r2 = q("SELECT round, node_key, owner, gpu_uuid FROM results WHERE job_id = ? ORDER BY round, received_at", j2.id);
+    check("J2 agreed in round 1", d2.status === "agreed" && d2.round === 1, JSON.stringify({ status: d2.status, round: d2.round }));
+    check(
+      "J2 round 1 ran on the honest pair: other owners and GPUs than round 0",
+      r2.length === 4 && freshPerRound(r2) && r2.filter((r) => r.round === 1).every((r) => honest.includes(r.node_key)),
+    );
+    const listedNow = (await api("GET", "/nodes")).data.nodes;
+    check(
+      "the corrupting nodes never count an agreed job (all time and this epoch)",
+      corrupt.every((c) => {
+        const x = listedNow.find((y) => y.nodeKey === c.key);
+        return x && x.agreedJobs === 0 && x.epochAgreedJobs === 0;
+      }),
+    );
+
+    // J2's epoch: the payout tree holds only the final pair's owners; the charge takes J2 and never J1.
+    const E = d2.epochId;
+    await pub.request({ method: "evm_increaseTime", params: [EPOCH_LENGTH * 2] });
+    await pub.request({ method: "evm_mine", params: [] });
+    await waitFor(`autoclose to post epoch ${E}`, async () => (await api("GET", "/epochs")).data.epochs.find((e) => e.id === E)?.status === "posted", {
+      timeoutMs: 90_000,
+      intervalMs: 2000,
+    });
+    const treeE = (await api("GET", `/epochs/${E}/tree`)).data;
+    const accounts = treeE.leaves.map((l) => l.account.toLowerCase()).sort();
+    check(
+      `epoch ${E} payout: only the final pair's owners (A and B), equal halves of J2's units`,
+      accounts.join() === [ownerA, ownerB].map((o) => o.address.toLowerCase()).sort().join() && treeE.leaves[0].amount === treeE.leaves[1].amount && BigInt(treeE.leaves[0].amount) > 0n,
+      JSON.stringify(treeE.leaves),
+    );
+    const cProofs = await Promise.all([c1, c2].map((c) => api("GET", `/epochs/${E}/proof?account=${c.owner.address}`)));
+    check("J2's round-0 owners are not in the payout root (404 not-in-root)", cProofs.every((r) => r.status === 404 && r.data.error === "not-in-root"));
+    const chargesE = (await api("GET", `/epochs/${E}/charges`)).data;
+    check(`epoch ${E} charge list: J2 charged, J1 not`, chargesE.status === "done" && chargesE.jobs.some((x) => x.jobId === j2.id) && !chargesE.jobs.some((x) => x.jobId === j1.id), JSON.stringify(chargesE.jobs));
+    let j1Charged = false;
+    for (let e = 0; e <= E; e++) if ((await api("GET", `/epochs/${e}/charges`)).data.jobs?.some((x) => x.jobId === j1.id)) j1Charged = true;
+    check("J1 (three mismatching rounds) is in no epoch's charge list", !j1Charged);
+    const inv2 = await invoice(j2);
+    check(`J2 invoice: matched on round 1, charged in epoch ${E}`, inv2.verdict === "agreed" && inv2.round === 1 && inv2.chargeStatus === "charged" && inv2.chargedEpoch === E, JSON.stringify({ verdict: inv2.verdict, chargeStatus: inv2.chargeStatus, chargedEpoch: inv2.chargedEpoch }));
+    const balAfter = await balanceOf(customer.address);
+    check("customer balance: only J2's price was taken, nothing for J1", balBefore - balAfter === j2Price, `${balBefore - balAfter} wei`);
   }
 
   step("17. private outputs (OUTPUT_AUTH=enforce; nodes stopped so a new job stays queued)");

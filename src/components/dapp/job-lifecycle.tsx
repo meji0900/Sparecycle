@@ -3,7 +3,10 @@ import { cn } from "@/lib/utils";
 const STAGES = [
   { title: "Queued", body: "The scheduler holds the job until two suitable nodes poll for work." },
   { title: "Running on two nodes", body: "Two nodes with different owners and different GPUs run the same spec." },
-  { title: "Results compared", body: "The scheduler compares the two outputs within a small tolerance." },
+  {
+    title: "Results compared",
+    body: "The scheduler compares the two outputs within a small tolerance. A paid job that does not match runs again on another pair, up to three pairs.",
+  },
   { title: "Agreed or disagreed", body: "Agreed jobs count for the epoch. Disagreed, expired or rejected jobs are unpaid." },
   { title: "Eligible in the epoch root", body: "At close, agreed jobs share the pot by work units and land in the Merkle root." },
 ];

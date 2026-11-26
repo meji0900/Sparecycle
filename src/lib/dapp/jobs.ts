@@ -1,4 +1,5 @@
 import type { Tone } from "@/components/ui/status";
+import { recheckLabel } from "@/lib/rounds";
 import type { ApiJob } from "./api";
 
 export const MODEL_LABEL: Record<string, string> = {
@@ -9,7 +10,10 @@ export const MODEL_LABEL: Record<string, string> = {
 export const modelLabel = (m: string) => MODEL_LABEL[m] ?? m;
 
 /** Check status of a job as a tag: shape + words, never colour alone. */
-export function jobTag(job: Pick<ApiJob, "status" | "eligible" | "paid">): { tone: Tone; label: string } {
+export function jobTag(job: Pick<ApiJob, "status" | "eligible" | "paid" | "round" | "maxRounds">): { tone: Tone; label: string } {
+  // A paid job checked again on another pair (src/server/rounds.ts): say so while it waits or runs.
+  const recheck = TERMINAL.includes(job.status) ? null : recheckLabel(job.round, job.maxRounds);
+  if (recheck) return { tone: "neutral", label: recheck };
   switch (job.status) {
     case "queued":
       return { tone: "neutral", label: "Queued" };

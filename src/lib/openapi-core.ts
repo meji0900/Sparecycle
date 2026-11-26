@@ -209,7 +209,7 @@ export const coreApi: OpenApiModule = {
         operationId: "getJobInvoice",
         summary: "The private invoice of a paid or team job (a stub for a free trial job)",
         description:
-          "Price, rounded 5% protocol cut (charged per epoch batch), verdict, charge status, output hash (sha256 of the agreed output, not the file), epochs, and the charge and root transactions. Same credentials as /jobs/{id}/result, enforced whatever OUTPUT_AUTH says. A free trial job answers { payment: \"free\", invoice: false, note: \"free trial, no charge\" }. Always Cache-Control: private, no-store and Vary: Authorization, Cookie.",
+          "Price, rounded 5% protocol cut (charged per epoch batch), verdict, charge status, output hash (sha256 of the agreed output, not the file), epochs, the charge and root transactions, and round / maxRounds (a paid job re-checked on another pair: the price stays held, the verdict and charge are the final round's). Same credentials as /jobs/{id}/result, enforced whatever OUTPUT_AUTH says. A free trial job answers { payment: \"free\", invoice: false, note: \"free trial, no charge\" }. Always Cache-Control: private, no-store and Vary: Authorization, Cookie.",
         tags: ["Jobs"],
         security: [{ readSecret: [] }, { walletSession: [] }],
         responses: {
@@ -399,7 +399,25 @@ export const coreApi: OpenApiModule = {
             },
           },
         },
-        responses: { "200": json({ type: "object", properties: { ok: { const: true }, jobId: { type: "string" }, status: { type: "string" } } }, "Accepted.") },
+        responses: {
+          "200": json(
+            {
+              type: "object",
+              properties: {
+                ok: { const: true },
+                jobId: { type: "string" },
+                status: {
+                  type: "string",
+                  description:
+                    "The job's status after this result: checking (waiting for the other result), agreed, disagreed or rejected, or queued when the two results of a paid or team job did not match and it goes to another pair.",
+                },
+                verdict: { const: "disagreed", description: "Only with status queued: this round's two results did not match." },
+                round: { type: "integer", description: "The job's re-check round after this result (0 = the first pair)." },
+              },
+            },
+            "Accepted.",
+          ),
+        },
       },
     },
     "/challenges/{id}/result": {
@@ -574,6 +592,16 @@ export const coreApi: OpenApiModule = {
           eligible: { type: "boolean" },
           paid: { type: "boolean", description: "Its epoch's root is posted with a non-zero pot." },
           payment: { enum: ["free", "paid", "team"] },
+          round: {
+            type: "integer",
+            minimum: 0,
+            description:
+              "Re-check round, 0-based. 0 = the first pair of nodes. A paid or team job whose two results do not match, or whose pair gives no verdict within 40 minutes of its first lease, runs again on two nodes whose node keys, owner wallets and GPUs took no part in an earlier round (round 1, then 2), when two such nodes are registered; otherwise the mismatch is final at once. Only the final round's verdict counts and only its two nodes are paid. While round > 0 and the job is queued, running or checking, it is being re-checked on another pair; its price stays held and nothing is charged until a final agreed.",
+          },
+          maxRounds: {
+            type: "integer",
+            description: "The most pairs this job can be checked on: 3 for paid and team jobs, 1 for free trial jobs (no re-check).",
+          },
         },
       },
       JobDetail: {

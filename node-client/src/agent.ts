@@ -14,7 +14,9 @@
 //
 // The node key only signs scheduler requests and job receipts. The owner wallet (linked once with a signature)
 // is the account in the payout Merkle tree, so this program never needs the owner's private key.
-// --dev-runner: synthetic outputs with no GPU, for local end-to-end tests only (never paid on a real network).
+// --dev-runner: synthetic outputs with no GPU, for local end-to-end tests only (never paid on a real network). With
+// SPARECYCLE_DEV_CORRUPT=1 a dev runner returns wrong job outputs on purpose (re-check tests; ignored without
+// --dev-runner, never applied to GPU challenges).
 import { getAddress, isAddress, verifyMessage, type Address, type Hex, type LocalAccount } from "viem";
 import {
   BACKENDS,
@@ -36,7 +38,7 @@ import { DEFAULT_KEY_FILE, loadKey, loadOrCreateKey } from "#keys";
 import { gpuBusyOrHot, inHours, parseHours, probeDevice, probeDeviceInfo, sharedMemoryMb, simulatedPause, type Gpu } from "#gpu";
 import { currentState, heartbeatBody, heartbeatDue, pauseSleepMs, STATE_TEXT, type GpuPause, type NodeState, type Sent } from "#idle-guard";
 import { ImageRunner, TextRunner } from "#runners";
-import { DEV_BANNER, devImage, devText } from "#dev-runner";
+import { corruptDevImage, corruptDevText, DEV_BANNER, devCorrupt, devImage, devText } from "#dev-runner";
 import { bench } from "#bench";
 
 // 0.3.0: device info + GPU challenge support at registration. 0.4.0: Idle Guard heartbeat (the node reports active /
@@ -107,6 +109,7 @@ async function start(opts: StartOptions) {
   let gpu: Gpu;
   if (opts.dev) {
     console.log(DEV_BANNER);
+    if (devCorrupt(opts.dev)) say("SPARECYCLE_DEV_CORRUPT=1: this dev runner returns WRONG job outputs on purpose (re-check tests only)");
     gpu = {
       name: `dev-runner (no GPU, ${opts.backend})`,
       uuid: process.env.SPARECYCLE_GPU_UUID ?? `dev-${account.address.toLowerCase()}`,
@@ -257,12 +260,13 @@ async function start(opts: StartOptions) {
       say(`bad job spec from scheduler: ${e instanceof Error ? e.message : String(e)}`);
       continue;
     }
-    const runRunner = async (s: JobSpec) => {
+    // `corrupt`: a job task on a dev runner with SPARECYCLE_DEV_CORRUPT=1 (never a GPU challenge).
+    const runRunner = async (s: JobSpec, corrupt = false) => {
       if (s.kind === "image") {
-        const r = opts.dev ? devImage(s.params) : await image.run(s.params);
+        const r = corrupt ? corruptDevImage(s.params, account.address) : opts.dev ? devImage(s.params) : await image.run(s.params);
         return { outputHash: sha256Hex(r.png), gpuMs: Math.round(r.gpuMs), speed: "", body: { png: r.png.toString("base64"), nsfw: r.nsfw } };
       }
-      const r = opts.dev ? devText(s.params) : await text.run(s.params, say);
+      const r = corrupt ? corruptDevText(s.params, account.address) : opts.dev ? devText(s.params) : await text.run(s.params, say);
       const speed = r.tokens !== null ? ` · ${r.tokens} tok${r.tokensPerSecond ? ` at ${r.tokensPerSecond.toFixed(1)} tok/s` : ""}` : "";
       return { outputHash: sha256Hex(r.text), gpuMs: Math.round(r.gpuMs), speed, body: { text: r.text } as Record<string, unknown> };
     };
@@ -287,7 +291,7 @@ async function start(opts: StartOptions) {
     const jobId = String(task.data.jobId) as Hex;
     const epoch = Number(task.data.epoch);
     try {
-      const { outputHash, gpuMs, speed, body } = await runRunner(spec);
+      const { outputHash, gpuMs, speed, body } = await runRunner(spec, devCorrupt(opts.dev));
       const signature = await signReceipt(account, chainId, {
         jobId,
         node: account.address,

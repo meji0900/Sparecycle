@@ -40,6 +40,13 @@ export type ApiJob = {
   paid?: boolean;
   /** Who paid: free trial, a customer's balance, or the team's own test job. Absent on older schedulers. */
   payment?: "free" | "paid" | "team";
+  /**
+   * Re-check round, 0-based (0 = the first pair; 1 or 2 = checked again on another pair after a mismatch or a pair that
+   * never finished). Absent on older schedulers.
+   */
+  round?: number;
+  /** Most pairs this job can be checked on: 3 for paid and team jobs, 1 for free trial jobs. */
+  maxRounds?: number;
   // Price and charge status are not in the public job views (D7): the payer reads them from the invoice.
 };
 export type JobsResponse = { jobs: ApiJob[] };
@@ -58,6 +65,9 @@ export type PaidInvoice = {
   createdAt: number;
   settledAt: number | null;
   generatedAt: number;
+  /** Re-check round (0 = the first pair) and the most pairs this job can use. Absent on older schedulers. */
+  round?: number;
+  maxRounds?: number;
   payment: "paid" | "team";
   invoice: true;
   payer: string;
@@ -90,6 +100,8 @@ export type FreeInvoiceStub = {
   createdAt: number;
   settledAt: number | null;
   generatedAt: number;
+  round?: number;
+  maxRounds?: number;
   payment: "free";
   invoice: false;
   note: string;

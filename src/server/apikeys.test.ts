@@ -209,6 +209,7 @@ describe("paying with a key", () => {
     const c = await h.customer(10n ** 15n, price.toString());
     const j1 = await (await submit(c.key)).json();
     assert.equal((await submit(c.key)).status, 429, "cap used by the first job");
+    h.lastRound(j1.id); // a final mismatch (an earlier round would go to another pair)
     assert.equal(await h.run(j1.id, { text: "one" }, { text: "two" }), "disagreed");
     const j2 = await (await submit(c.key)).json();
     assert.ok(j2.id, "the disagreed job's price came back");

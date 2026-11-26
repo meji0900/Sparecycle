@@ -51,7 +51,7 @@ const MIGRATIONS: string[] = [
   CREATE TABLE tasks (
     id            TEXT PRIMARY KEY,
     job_id        TEXT NOT NULL REFERENCES jobs(id),
-    slot          INTEGER NOT NULL,           -- 0 or 1: each job runs on two distinct nodes
+    slot          INTEGER NOT NULL,           -- 0 or 1: each job runs on two distinct nodes (v9: 2 x round + 0 or 1)
     status        TEXT NOT NULL,              -- open|leased|done|cancelled
     node_key      TEXT,
     owner         TEXT,
@@ -281,6 +281,52 @@ const MIGRATIONS: string[] = [
     created_at       INTEGER NOT NULL
   );
   CREATE UNIQUE INDEX api_requests_idem ON api_requests(key_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+  `,
+  // v9 (re-check rounds, feature brief #9; src/server/rounds.ts). Self-contained and additive only.
+  // A paid or team job whose results do not match, or whose round gets no verdict within PICKUP_TIMEOUT + one task lease
+  // of its first lease, runs again on another pair: jobs.round counts up (0 = the first pair, at most MAX_ROUNDS - 1),
+  // two new tasks are inserted with slots 2 x round and 2 x round + 1 (so UNIQUE (job_id, slot) still holds), and the
+  // earlier round's tasks and results stay for audit. jobs.round_started_at = the current round's first lease (NULL =
+  // not leased yet; such a round is never abandoned). Every lease is logged in job_leases, so a node that held a lease
+  // and let it expire is still known when a later round excludes the nodes of earlier rounds. job_rounds records, per
+  // node, each round that ended without agreement (disagreed | abandoned), as input for GPU suspension later; nothing
+  // reads it for suspension yet. Existing rows: round 0; running jobs get round_started_at from their earliest lease,
+  // and the current holders of open jobs' tasks are copied into job_leases.
+  `
+  ALTER TABLE jobs ADD COLUMN round INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE jobs ADD COLUMN round_started_at INTEGER;
+  ALTER TABLE tasks ADD COLUMN round INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE results ADD COLUMN round INTEGER NOT NULL DEFAULT 0;
+  CREATE INDEX tasks_job_round ON tasks(job_id, round);
+  CREATE INDEX results_job_round ON results(job_id, round);
+  CREATE INDEX jobs_round_started ON jobs(round_started_at) WHERE round_started_at IS NOT NULL;
+  UPDATE jobs SET round_started_at = (SELECT MIN(t.leased_at) FROM tasks t WHERE t.job_id = jobs.id)
+    WHERE status IN ('running','checking');
+  CREATE TABLE job_leases (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id    TEXT NOT NULL,
+    round     INTEGER NOT NULL,
+    task_id   TEXT NOT NULL,
+    node_key  TEXT NOT NULL,
+    owner     TEXT NOT NULL,
+    gpu_uuid  TEXT NOT NULL,
+    leased_at INTEGER NOT NULL
+  );
+  CREATE INDEX job_leases_job ON job_leases(job_id, round);
+  INSERT INTO job_leases (job_id, round, task_id, node_key, owner, gpu_uuid, leased_at)
+    SELECT t.job_id, 0, t.id, t.node_key, t.owner, t.gpu_uuid, COALESCE(t.leased_at, 0) FROM tasks t JOIN jobs j ON j.id = t.job_id
+    WHERE j.status IN ('queued','running','checking') AND t.node_key IS NOT NULL AND t.owner IS NOT NULL AND t.gpu_uuid IS NOT NULL;
+  CREATE TABLE job_rounds (
+    job_id    TEXT NOT NULL,
+    round     INTEGER NOT NULL,
+    node_key  TEXT NOT NULL,
+    owner     TEXT NOT NULL,
+    gpu_uuid  TEXT NOT NULL,
+    outcome   TEXT NOT NULL CHECK (outcome IN ('disagreed','abandoned')),
+    at        INTEGER NOT NULL,
+    PRIMARY KEY (job_id, round, node_key)
+  );
+  CREATE INDEX job_rounds_node ON job_rounds(node_key, at);
   `,
 ];
 

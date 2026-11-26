@@ -35,6 +35,8 @@ Object.assign(process.env, {
 });
 
 const { getDb, nowSec, randomHex } = await import("./db");
+const { POLICY } = await import("./env");
+const { ROUND_MAX_SECONDS } = await import("./rounds");
 const { submitJob, listJobs, jobDetail, expireStaleJobs } = await import("./jobs");
 const { registerNode, pollForTask } = await import("./nodes");
 const { submitResult } = await import("./results");
@@ -269,6 +271,8 @@ describe("GET /api/v1/jobs/:id/invoice", () => {
         createdAt: inv.createdAt,
         settledAt: inv.settledAt,
         generatedAt: 0,
+        round: 0,
+        maxRounds: 3,
         payment: "paid",
         invoice: true,
         payer: payer.address,
@@ -415,6 +419,8 @@ describe("a disagreed paid job is never charged (brief §3.2 step 5)", () => {
     const agreed = await submitPaid(payer, reqA);
     assert.equal(await run(agreed.id, ["alpha beta gamma delta", "alpha beta gamma delta"]), "agreed");
     const disagreed = await submitPaid(payer, reqB);
+    // Less than one full re-check round (2400 s) left of its TTL: this mismatch is final, no other pair (./rounds).
+    getDb().prepare("UPDATE jobs SET created_at = ? WHERE id = ?").run(nowSec() - POLICY.jobTtlSeconds + ROUND_MAX_SECONDS - 1, disagreed.id);
     assert.equal(await run(disagreed.id, ["alpha beta gamma delta", "completely different words here and more"]), "disagreed");
 
     // Before the close: no longer held, and the invoice already says not charged.

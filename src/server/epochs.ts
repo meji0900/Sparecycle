@@ -222,13 +222,17 @@ function summary(action: CloseSummary["action"], id: number, note: string | null
   };
 }
 
-/** Agreed, payable jobs of an epoch with the owners of their two agreeing results. */
-function agreedJobsOf(epochId: number): AgreedJob[] {
+/**
+ * Agreed, payable jobs of an epoch with the owners of their two agreeing results. Only the final round's two results
+ * count (re-check rounds, ./rounds): the nodes of an earlier round that did not match or never finished get nothing
+ * for the job. Exported for tests.
+ */
+export function agreedJobsOf(epochId: number): AgreedJob[] {
   const allowDev = serverEnv.allowDevRunner();
   const rows = getDb()
     .prepare(
       `SELECT j.id AS id, j.work_units AS units, j.dev AS dev, GROUP_CONCAT(r.owner) AS owners, COUNT(r.task_id) AS n
-       FROM jobs j JOIN results r ON r.job_id = j.id
+       FROM jobs j JOIN results r ON r.job_id = j.id AND r.round = j.round
        WHERE j.status = 'agreed' AND j.epoch_id = ?
        GROUP BY j.id`,
     )
