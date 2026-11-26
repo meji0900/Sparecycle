@@ -34,6 +34,18 @@ export const KIND_LABEL: Record<ChangelogKind, string> = {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    id: "run-a-model",
+    title: "Run a model: a public catalog, checked by two machines",
+    date: "2026-11-26",
+    kind: "site",
+    summary:
+      "A public model catalog lists each model with its live price per unit, its limits and whether a pair of machines with different owners can take a job right now; the API has it as GET /v1/catalog, no key needed. In the playground a wallet runs either model from its prepaid balance, and paid jobs get a Verify button for their receipt. Every API and MCP answer carries a receipt link. When no pair of machines can be reached, a new job is refused up front and nothing is held or charged. Today every node is run by the project.",
+    evidence: [
+      { label: "Models", url: `${LIVE_SITE}/models` },
+      { label: "Catalog API", url: `${LIVE_SITE}/v1/catalog` },
+    ],
+  },
+  {
     id: "job-receipts",
     title: "Job receipts you can check in your browser",
     date: "2026-11-26",
