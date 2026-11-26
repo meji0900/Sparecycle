@@ -42,6 +42,11 @@
 //     ever carrying a `public` cache directive
 // 10b. capacity guard with the nodes gone: 503 no-node-pair on POST /api/v1/jobs (free and wallet-paid) and, with an API
 //     key, on POST /v1/chat/completions (OpenAI shape, no_node_pair); nothing queued and nothing held
+// 10c. optional node staking: SparecycleNodeStake (minimum 0, short test windows) on a mock SPARE, deployed in step 4;
+//     owners approve the exact amount and stake with the site's own ABI fragments (src/lib/token-contracts.ts), a refused
+//     call is named by them, request -> cancel -> request again, the cooldown ends (src/lib/staking.ts windowState agrees
+//     with canUnstake before and after an anvil time warp), unstake pays everything back; GET /api/v1/staking follows
+//     every step (total, owners from Staked events, the contract's rules). Last step: the time warp touches nothing after it
 // 11. PASS / FAIL summary; every process started here is stopped, even on failure
 //
 // With E2E_X402=1 (E2E_X402=1 npm run e2e:local) the run also covers x402 pay-per-job (src/server/x402.ts; INTERNAL
@@ -363,6 +368,8 @@ async function main() {
           "src/SparecycleRewards.sol",
           "src/SparecycleJobPayments.sol",
           "test/mocks/MockPonsFeeEscrow.sol",
+          "src/SparecycleNodeStake.sol",
+          "test/mocks/StakeMocks.sol",
           ...(X402 ? ["src/SparecycleX402Escrow.sol", "test/mocks/MockEIP3009.sol"] : []),
         ],
         { cwd: join(ROOT, "contracts"), encoding: "utf8" },
@@ -420,6 +427,20 @@ async function main() {
     ]);
     check("x402: mock EIP-3009 token and SparecycleX402Escrow deployed", Boolean(x402Token && x402Escrow), `${x402Token} ${x402Escrow}`);
   }
+  // Optional node staking (step 17c): a mock SPARE (ERC20Burnable, 18 decimals) and SparecycleNodeStake on the reward
+  // contract, minimum 0 as launched, but with the shortest valid windows (cooldown 3 epochs of 30 s) so the test can end
+  // a cooldown. The Safe stands in as the treasury address (it only judges proposals; none are made here).
+  const spareMock = await deploy(artifact(forgeOut, "StakeMocks.sol", "MockBurnableERC20"), []);
+  const nodeStakeArt = artifact(forgeOut, "SparecycleNodeStake.sol", "SparecycleNodeStake");
+  const nodeStakeDeploy = await pub.waitForTransactionReceipt({
+    hash: await wallet(admin).deployContract({
+      abi: nodeStakeArt.abi,
+      bytecode: nodeStakeArt.bytecode,
+      args: [spareMock, rewards, treasury, true, 0n, { slashBps: 1000, faultWindowEpochs: 1n, appealWindowEpochs: 1n, cooldownEpochs: 3n, decisionWindowEpochs: 1n, minStakeDelayEpochs: 1n }],
+    }),
+  });
+  const nodeStake = nodeStakeDeploy.contractAddress;
+  check("SparecycleNodeStake deployed on a mock SPARE (minimum 0, cooldown 3 epochs)", Boolean(spareMock && nodeStake), `${nodeStake} (SPARE mock ${spareMock})`);
   check("scheduler = anvil account 1", (await read("scheduler")).toLowerCase() === scheduler.address.toLowerCase());
   check("epoch length 30 s", (await read("epochLength")) === BigInt(EPOCH_LENGTH));
   // TS leaf == Solidity leaf
@@ -531,6 +552,9 @@ async function main() {
         CHALLENGE_COOLDOWN_HOURS: String(CHALLENGE_COOLDOWN_S / 3600),
         JOB_RATE_LIMIT: "4",
         DB_PATH: dbPath,
+        // GET /api/v1/staking reads the local stake contract and scans its events from its deploy block (step 17c).
+        TOKEN_NODE_STAKE_ADDRESS: nodeStake,
+        TOKEN_NODE_STAKE_START_BLOCK: nodeStakeDeploy.blockNumber.toString(),
         ...(X402
           ? {
               X402_ENABLED: "1",
@@ -1522,6 +1546,117 @@ async function main() {
     const held1 = (await api("GET", "/payments/account?address=" + customer.address)).data.held;
     check("nothing queued and nothing held by the refused jobs", jobRows() === jobs0 && held1 === held0, `jobs ${jobs0} -> ${jobRows()}, held ${held0} -> ${held1}`);
     d.close();
+  }
+
+  step("17c. optional node staking: approve + stake, request -> cancel -> request, cooldown, unstake; GET /api/v1/staking follows");
+  {
+    // The site's own ABI fragments and helpers: what the staking panel signs and how it words a refusal.
+    const { nodeStakeAbi, spareTokenAbi } = await srcImport("lib/token-contracts.ts");
+    const { windowState, explainStakeTxError, parseSpareInput } = await srcImport("lib/staking.ts");
+    const mockSpareAbi = artifact(forgeOut, "StakeMocks.sol", "MockBurnableERC20").abi;
+    const E18 = 10n ** 18n;
+    const stakeRead = (functionName, args = []) => pub.readContract({ address: nodeStake, abi: nodeStakeAbi, functionName, args });
+    const spareRead = (functionName, args = []) => pub.readContract({ address: spareMock, abi: spareTokenAbi, functionName, args });
+    const send = async (account, address, abi, functionName, args = []) => {
+      const { request } = await pub.simulateContract({ account, address, abi, functionName, args });
+      const r = await pub.waitForTransactionReceipt({ hash: await wallet(account).writeContract(request) });
+      if (r.status !== "success") throw new Error(`${functionName} reverted`);
+      return r;
+    };
+    const stakeAs = (account, functionName, args = []) => send(account, nodeStake, nodeStakeAbi, functionName, args);
+    /** GET /api/v1/staking until `ok(body)` (answers are cached for 30 s, so a change shows within about half a minute). */
+    const stakingUntil = (label, ok) =>
+      waitFor(label, async () => {
+        const r = await api("GET", "/staking");
+        return r.status === 200 && ok(r.data) ? r : null;
+      }, { timeoutMs: 75_000, intervalMs: 2_000 });
+
+    const first = await api("GET", "/staking");
+    check(
+      "GET /staking before anyone stakes: 200, the local contract, total 0, no owners, minimum 0, the contract's windows, public 30 s cache",
+      first.status === 200 &&
+        first.data.contract.toLowerCase() === nodeStake.toLowerCase() &&
+        first.data.token.toLowerCase() === spareMock.toLowerCase() &&
+        first.data.totalStakedWei === "0" &&
+        first.data.totalSlashedWei === "0" &&
+        first.data.minStakePerNodeWei === "0" &&
+        first.data.proposals === 0 &&
+        JSON.stringify(first.data.owners) === JSON.stringify({ staking: 0, active: 0, cooling: 0, fromBlock: nodeStakeDeploy.blockNumber.toString() }) &&
+        first.data.rules.cooldownEpochs === 3 &&
+        first.data.rules.epochLengthSeconds === EPOCH_LENGTH &&
+        first.data.rules.slashBps === 1000 &&
+        first.data.rules.proposalGraceEpochs === 2 &&
+        first.data.explorerUrl === null &&
+        first.headers.get("cache-control") === "public, max-age=30",
+      JSON.stringify(first.data),
+    );
+
+    for (const [who, n] of [[ownerA, 1000n], [ownerB, 500n]]) {
+      const hash = await wallet(admin).writeContract({ address: spareMock, abi: mockSpareAbi, functionName: "mint", args: [who.address, n * E18] });
+      await pub.waitForTransactionReceipt({ hash });
+    }
+    let refused = null;
+    try {
+      await pub.simulateContract({ account: ownerA, address: nodeStake, abi: nodeStakeAbi, functionName: "unstake" });
+    } catch (e) {
+      refused = e;
+    }
+    check(
+      "a refused call is named by the site's fragments: unstake() with nothing in the cooldown -> NothingToUnstake, worded plainly",
+      revertName(refused) === "NothingToUnstake" && /Nothing is in the cooldown/.test(explainStakeTxError(refused)),
+      refused ? `${revertName(refused)}: ${explainStakeTxError(refused)}` : "no revert",
+    );
+
+    // The panel's flow: approve exactly the typed amount, then stake it.
+    for (const [who, typed] of [[ownerA, "300"], [ownerB, "200"]]) {
+      const amount = parseSpareInput(typed);
+      await send(who, spareMock, spareTokenAbi, "approve", [nodeStake, amount]);
+      const r = await stakeAs(who, "stake", [amount]);
+      check(`${who === ownerA ? "owner A" : "owner B"}: approve ${typed} SPARE, stake it; the exact approval is used up`, r.status === "success" && (await spareRead("allowance", [who.address, nodeStake])) === 0n);
+    }
+    const accA = await stakeRead("getAccount", [ownerA.address]);
+    check("getAccount (the panel's read) decodes: owner A staked 300, nothing in the cooldown, no proposal", accA.staked === 300n * E18 && accA.unstaking === 0n && accA.lastProposal === 0n, JSON.stringify(accA, (_, v) => (typeof v === "bigint" ? v.toString() : v)));
+    const s1 = await stakingUntil("GET /staking: 500 staked by two owners", (b) => b.totalStakedWei === (500n * E18).toString());
+    check("GET /staking counts both owners from the Staked events", JSON.stringify(s1.data.owners) === JSON.stringify({ staking: 2, active: 2, cooling: 0, fromBlock: nodeStakeDeploy.blockNumber.toString() }), JSON.stringify(s1.data.owners));
+
+    // Request, change of mind, request everything.
+    await stakeAs(ownerB, "requestUnstake", [50n * E18]);
+    await stakeAs(ownerB, "cancelUnstake");
+    const afterCancel = await stakeRead("getAccount", [ownerB.address]);
+    check("request 50 then cancelUnstake: all 200 back in owner B's active stake", afterCancel.staked === 200n * E18 && afterCancel.unstaking === 0n);
+    await stakeAs(ownerB, "requestUnstake", [200n * E18]);
+    const [amount, requestEpoch, requestedAt] = await stakeRead("unstakingOf", [ownerB.address]);
+    const win = async () => {
+      const block = await pub.getBlock();
+      const current = await read("currentEpoch");
+      const started = (await read("getEpoch", [current])).startedAt;
+      return windowState({ startEpoch: requestEpoch, startAt: requestedAt, epochs: 3n, epochLength: BigInt(EPOCH_LENGTH), stallFactor: 2n, currentEpoch: current, currentEpochStartedAt: started, now: Number(block.timestamp) });
+    };
+    const before = await win();
+    check(
+      "requested 200: in the cooldown, canUnstake false, and the page's windowState agrees (not over)",
+      amount === 200n * E18 && (await stakeRead("canUnstake", [ownerB.address])) === false && before.over === false && before.notBefore === Number(requestedAt) + 3 * EPOCH_LENGTH,
+    );
+    let early = null;
+    try {
+      await pub.simulateContract({ account: ownerB, address: nodeStake, abi: nodeStakeAbi, functionName: "unstake" });
+    } catch (e) {
+      early = e;
+    }
+    check("unstake during the cooldown -> CooldownNotOver", revertName(early) === "CooldownNotOver", revertName(early) ?? "no revert");
+    const s2 = await stakingUntil("GET /staking: one owner in the cooldown", (b) => b.owners?.cooling === 1);
+    check("GET /staking: still 500 in the contract; 2 owners staking, 1 active, 1 in the cooldown", s2.data.totalStakedWei === (500n * E18).toString() && s2.data.owners.staking === 2 && s2.data.owners.active === 1, JSON.stringify(s2.data.owners));
+
+    // End the cooldown on the chain's clock: past STALL_FACTOR x 3 epochs, so it is over whether or not epochs closed.
+    await pub.request({ method: "evm_increaseTime", params: [2 * 3 * EPOCH_LENGTH + 5] });
+    await pub.request({ method: "evm_mine", params: [] });
+    const after = await win();
+    const can = await stakeRead("canUnstake", [ownerB.address]);
+    check("after the cooldown canUnstake is true, and the page's windowState agrees", can === true && after.over === true, `over ${after.over}, epochs left ${after.epochsLeft}`);
+    await stakeAs(ownerB, "unstake");
+    check("unstake pays owner B everything back (500 SPARE in the wallet again)", (await spareRead("balanceOf", [ownerB.address])) === 500n * E18 && (await stakeRead("totalStaked")) === 300n * E18);
+    const s3 = await stakingUntil("GET /staking: owner B gone", (b) => b.totalStakedWei === (300n * E18).toString());
+    check("GET /staking: 300 staked, one owner left", JSON.stringify(s3.data.owners) === JSON.stringify({ staking: 1, active: 1, cooling: 0, fromBlock: nodeStakeDeploy.blockNumber.toString() }), JSON.stringify(s3.data.owners));
   }
 
   const leaky = jobsCacheHeaders.filter((h) => /public|immutable/i.test(h.cc));

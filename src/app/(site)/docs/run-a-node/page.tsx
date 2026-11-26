@@ -1,8 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { DocsHeader, DocsNext, DocsSection, Ext } from "@/components/docs/docs-ui";
+import { C, Defs, DocsHeader, DocsNext, DocsSection, Ext, Note } from "@/components/docs/docs-ui";
 import { NodeGuide } from "@/components/docs/node-guide";
+import { ADDR, explorerAddressUrl } from "@/lib/addresses";
 import { repoFile, siteOrigin } from "@/lib/site";
+import { PROPOSAL_GRACE_EPOCHS } from "@/lib/staking";
+import { APPEAL_WINDOW_EPOCHS, FAULT_WINDOW_EPOCHS, FAULTS_PER_PROPOSAL, SLASH_BPS, UNSTAKE_COOLDOWN_EPOCHS } from "@/lib/token-rules";
 
 export const metadata: Metadata = {
   title: "Run a node",
@@ -44,6 +47,75 @@ export default function RunANodePage() {
             Stuck? Ask on the <Link href="/docs/support" className="link">support page</Link>.
           </li>
         </ul>
+      </DocsSection>
+
+      <DocsSection id="staking" title="Staking (optional)">
+        <p>
+          You can lock SPARE in the stake contract as collateral for your nodes. You don&apos;t have to: the minimum stake per node is
+          0, so a node needs no token to run and is paid for checked work either way. Staking pays nothing by itself. To stake, connect
+          your owner wallet on the <Link href="/nodes/stake" className="link">staking page</Link>.
+        </p>
+        <Defs
+          items={[
+            [
+              "Stake",
+              <>
+                Two transactions: approve exactly the amount for the stake contract, then <C>stake(amount)</C>. Staking more is always
+                allowed.
+              </>,
+            ],
+            [
+              "When part of it can be taken",
+              <>
+                Only after repeated faults proven against two other owners&apos; results: a fault is your node&apos;s signed result
+                disagreeing with a result two other nodes of two other owner wallets agreed on, and the scheduler proposes a slash after{" "}
+                {FAULTS_PER_PROPOSAL} faults within {FAULT_WINDOW_EPOCHS} epochs. A single mismatch never leads to a slash.
+              </>,
+            ],
+            [
+              "Appeal and decision",
+              <>
+                Each proposal opens a {APPEAL_WINDOW_EPOCHS}-epoch appeal window (at least {APPEAL_WINDOW_EPOCHS * 6} hours): your stake is
+                frozen and you can record the hash of an appeal bundle with <C>appeal(proposalId, hash)</C>. The treasury Safe then
+                executes or cancels it; undecided, it expires.
+              </>,
+            ],
+            [
+              "Cap and burn",
+              <>
+                At most {SLASH_BPS / 100}% of your stake per executed proposal, and it is burned: nobody receives it. After every proposal,
+                none against the same wallet for {PROPOSAL_GRACE_EPOCHS} epochs (the grace window).
+              </>,
+            ],
+            [
+              "Leaving",
+              <>
+                <C>requestUnstake(amount)</C>, then wait {UNSTAKE_COOLDOWN_EPOCHS} epochs (at least {(UNSTAKE_COOLDOWN_EPOCHS * 6) / 24}{" "}
+                days) and <C>unstake()</C>. A new request restarts the cooldown for everything waiting, so request everything at once.
+                SPARE in the cooldown no longer counts as stake but can still be slashed; <C>cancelUnstake()</C> moves it back.
+              </>,
+            ],
+            [
+              "Public figures",
+              <>
+                Total staked, owners staking, total slashed and the minimum, read from the chain: <C>GET /api/v1/staking</C>, and on the{" "}
+                <Link href="/nodes#staking" className="link">node page</Link>.
+              </>,
+            ],
+          ]}
+        />
+        <Note tone="warn" title="Not trustless, not externally audited">
+          <p>
+            The scheduler proposes and the treasury Safe decides; all three of the Safe&apos;s keys are held by the project owner today. The
+            contract only enforces the limits (the cap, the appeal window, the burn, the expiry, the grace window). SparecycleNodeStake has
+            had an internal review only.
+          </p>
+        </Note>
+        <p>
+          Every rule, the evidence and appeal bundle formats and the review notes:{" "}
+          <Ext href={repoFile("docs/node-staking.md")}>docs/node-staking.md</Ext>. The contract:{" "}
+          <Ext href={explorerAddressUrl(ADDR.nodeStake)}>SparecycleNodeStake on Blockscout</Ext>.
+        </p>
       </DocsSection>
 
       <DocsNext
