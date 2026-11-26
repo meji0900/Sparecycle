@@ -148,7 +148,7 @@ console.log(res.status, await res.json()); // keep id and readSecret`;
                 ["agreed", "The results matched. A paid job is charged at the end of the epoch (every six hours)."],
                 [
                   "queued again (re-check)",
-                  `A paid job whose two results did not match, or whose two nodes did not finish, runs again on two other nodes with different owners and GPUs, up to ${MAX_ROUNDS} pairs in all. Its status goes back to queued and its round goes up; the site shows "Re-checking on another pair (round 2 of ${MAX_ROUNDS})". The price stays held.`,
+                  `A paid job whose two results did not match, or whose two nodes did not finish, runs again on two other nodes with different owners and GPUs when such a pair is registered, up to ${MAX_ROUNDS} pairs in all. Its status goes back to queued and its round goes up; the site shows "Re-checking on another pair (round 2 of ${MAX_ROUNDS})". The price stays held.`,
                 ],
                 ["disagreed", "The results did not match (a paid job: on any pair it was tried on). Not charged, and no node is paid for it."],
                 ["rejected", "The image safety checker flagged it. Not charged."],

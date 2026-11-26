@@ -103,11 +103,12 @@ export async function submitResult(nodeKey: Address, taskId: string, body: unkno
     // Re-check inside the transaction (the signature check above was async).
     const t = db.prepare("SELECT status, node_key FROM tasks WHERE id = ?").get(taskId) as { status: string; node_key: string };
     if (t.status !== "leased" || t.node_key !== nodeKey) throw new ApiError(409, "not-your-task", "this task is no longer leased to this node");
-    const j = db.prepare("SELECT status, round, payer, created_at FROM jobs WHERE id = ?").get(job.id) as {
+    const j = db.prepare("SELECT status, round, payer, created_at, model FROM jobs WHERE id = ?").get(job.id) as {
       status: string;
       round: number;
       payer: string | null;
       created_at: number;
+      model: string;
     };
     if (!["running", "checking"].includes(j.status)) throw new ApiError(409, "job-closed", `job is ${j.status}; result not needed`);
     // Never happens (a round's tasks are done or cancelled before the next round starts); kept as a guard.
@@ -186,9 +187,10 @@ export async function submitResult(nodeKey: Address, taskId: string, body: unkno
     }
     if (verdict === "disagreed") {
       logDisagreedRound(db, job.id, round, now);
-      // A paid or team job with a round left that still fits in its TTL: another pair checks it (./rounds).
-      const rj = { id: job.id, payer: j.payer, round, created_at: j.created_at };
-      if (canStartNextRound(rj, now)) {
+      // A paid or team job with a round left that still fits in its TTL, and a registered pair that could take it:
+      // another pair checks it (./rounds). Otherwise the mismatch is final now, as before re-checks.
+      const rj = { id: job.id, payer: j.payer, round, created_at: j.created_at, model: j.model };
+      if (canStartNextRound(db, rj, now)) {
         return { status: "queued" as const, verdict, round: startNextRound(db, rj, "disagreed", now) };
       }
       if (round > 0) note = `${note} (checked on ${round + 1} pairs; none matched)`;

@@ -596,7 +596,7 @@ export const coreApi: OpenApiModule = {
             type: "integer",
             minimum: 0,
             description:
-              "Re-check round, 0-based. 0 = the first pair of nodes. A paid or team job whose two results do not match, or whose pair gives no verdict within 40 minutes of its first lease, runs again on two nodes whose node keys, owner wallets and GPUs took no part in an earlier round: round 1, then 2. Only the final round's verdict counts and only its two nodes are paid. While round > 0 and the job is queued, running or checking, it is being re-checked on another pair; its price stays held and nothing is charged until a final agreed.",
+              "Re-check round, 0-based. 0 = the first pair of nodes. A paid or team job whose two results do not match, or whose pair gives no verdict within 40 minutes of its first lease, runs again on two nodes whose node keys, owner wallets and GPUs took no part in an earlier round (round 1, then 2), when two such nodes are registered; otherwise the mismatch is final at once. Only the final round's verdict counts and only its two nodes are paid. While round > 0 and the job is queued, running or checking, it is being re-checked on another pair; its price stays held and nothing is charged until a final agreed.",
           },
           maxRounds: {
             type: "integer",

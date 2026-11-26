@@ -11,30 +11,83 @@
 //     result in an earlier round of the same job (tryLease in ./nodes). Every other assignment rule still applies.
 //   - Limits: a new round starts only when round + 1 < MAX_ROUNDS and at least ROUND_MAX_SECONDS of the job TTL are
 //     left, so every round fits inside jobTtlSeconds (9.4: the TTL is never extended and expireStaleJobs stays the hard
-//     stop). Free trial jobs get one round (D17); a `rejected` verdict is never retried; an abandoned round that cannot
-//     be followed by another simply keeps running until it gets a verdict or the job expires.
+//     stop). Free trial jobs get one round (D17); a `rejected` verdict is never retried.
+//   - A pair must exist: a new round starts only when the REGISTERED nodes (online or not, so a stopped pool machine
+//     counts) that could take it include two with different owners and different GPUs: the job's capability and VRAM,
+//     a backend that runs the model, the same backend and dev flag for both (dev nodes only for a dev job), the GPU
+//     gate of tryLease, and neither node key, owner nor GPU from any round so far. Without such a pair a mismatch is
+//     final at once (`disagreed`, not charged, as before re-checks) instead of waiting out the TTL, and a stuck round is
+//     not abandoned. A round that cannot be followed by another keeps running until a verdict or the TTL.
 //   - Each round that ends without agreement is logged per node in job_rounds (disagreed | abandoned), as input for the
 //     GPU challenge / suspension logic later. Nothing changes a node's eligibility from it yet.
 // The hold on a paid job's price stays in place through every round; nothing is charged until a final `agreed`.
 import type { DatabaseSync } from "node:sqlite";
+import { BACKENDS, MODELS, modelRunsOn, type ModelId } from "@/lib/protocol";
 import { MAX_ROUNDS, maxRoundsFor, PICKUP_TIMEOUT_SECONDS } from "@/lib/rounds";
+import { eligibilityParams, eligibleSql } from "./challenge";
 import { randomHex } from "./db";
-import { POLICY } from "./env";
+import { POLICY, serverEnv } from "./env";
 
 export { MAX_ROUNDS, PICKUP_TIMEOUT_SECONDS };
 
 /** The longest an active round can take: PICKUP_TIMEOUT + one task lease (1800 + 600 = 2400 s). */
 export const ROUND_MAX_SECONDS = PICKUP_TIMEOUT_SECONDS + POLICY.taskLeaseSeconds;
 
-export type RoundJob = { id: string; payer: string | null; round: number; created_at: number };
+export type RoundJob = { id: string; payer: string | null; round: number; created_at: number; model: string };
 export type RoundOutcome = "disagreed" | "abandoned";
 
-/**
- * May this job start another round at `now`? Only a paid or team job (D17) with rounds left, and only while a full
- * round (ROUND_MAX_SECONDS) still fits before created_at + jobTtlSeconds.
- */
-export function canStartNextRound(job: RoundJob, now: number): boolean {
+/** Paid or team job (D17), rounds left, and a full round (ROUND_MAX_SECONDS) still fits before the TTL. No DB read. */
+export function roundAllowed(job: RoundJob, now: number): boolean {
   return job.round + 1 < maxRoundsFor(job.payer) && job.created_at + POLICY.jobTtlSeconds - now >= ROUND_MAX_SECONDS;
+}
+
+/**
+ * Could the job's next round ever be served? True when the registered nodes (online or not) that could take it include
+ * two with different owners and different GPUs (so different node keys), on the same backend: the model's capability
+ * tag and VRAM, a backend that runs the model, the dev flag of the job's current round (dev nodes only for a dev job,
+ * and only on a scheduler that accepts them), tryLease's GPU gate (eligibleSql), and no node key, owner or GPU UUID
+ * from this or an earlier round of the job.
+ */
+export function pairForNextRound(db: DatabaseSync, job: RoundJob, now: number): boolean {
+  if (!(job.model in MODELS)) return false;
+  const model = job.model as ModelId;
+  const dev =
+    (db.prepare("SELECT MAX(COALESCE(dev, 0)) AS dev FROM tasks WHERE job_id = ? AND round = ? AND node_key IS NOT NULL").get(job.id, job.round) as {
+      dev: number | null;
+    }).dev ?? 0;
+  if (dev && !serverEnv.allowDevRunner()) return false;
+  const backends = BACKENDS.filter((b) => modelRunsOn(model, b));
+  const params: Record<string, string | number> = {
+    job: job.id,
+    next: job.round + 1,
+    tag: `%"${MODELS[model].tag}"%`,
+    vram: MODELS[model].vramMb,
+    dev: dev ? 1 : 0,
+    now,
+    ...eligibilityParams(),
+  };
+  backends.forEach((b, i) => (params[`b${i}`] = b));
+  const row = db
+    .prepare(
+      `WITH c AS (
+         SELECT n.node_key, lower(n.owner) AS owner, n.gpu_uuid, n.backend FROM nodes n
+         WHERE n.caps LIKE $tag AND n.vram_mb >= $vram AND n.backend IN (${backends.map((_, i) => `$b${i}`).join(",")})
+           AND n.dev = $dev
+           AND ${eligibleSql("n")}
+           AND NOT EXISTS (${earlierRoundSql("$job", "$next", { key: "n.node_key", owner: "n.owner", gpu: "n.gpu_uuid" })})
+       )
+       SELECT 1 AS ok FROM c a JOIN c b ON a.backend = b.backend AND a.owner != b.owner AND a.gpu_uuid != b.gpu_uuid LIMIT 1`,
+    )
+    .get(params) as { ok: number } | undefined;
+  return Boolean(row);
+}
+
+/**
+ * May this job start another round at `now`? roundAllowed (paid or team, rounds left, a full round fits in the TTL) and
+ * a registered pair that could serve it (pairForNextRound).
+ */
+export function canStartNextRound(db: DatabaseSync, job: RoundJob, now: number): boolean {
+  return roundAllowed(job, now) && pairForNextRound(db, job, now);
 }
 
 /** Inserts the two open tasks of `round` (slots 2 x round and 2 x round + 1). */
@@ -101,14 +154,15 @@ export function startNextRound(db: DatabaseSync, job: RoundJob, outcome: RoundOu
 export function abandonStuckRounds(db: DatabaseSync, now: number): number {
   const stuck = db
     .prepare(
-      `SELECT id, payer, round, created_at FROM jobs
+      `SELECT id, payer, round, created_at, model FROM jobs
        WHERE status IN ('queued','running','checking') AND round_started_at IS NOT NULL AND round_started_at <= ?
          AND payer IS NOT NULL AND round < ?`,
     )
     .all(now - ROUND_MAX_SECONDS, MAX_ROUNDS - 1) as RoundJob[];
   let n = 0;
   for (const job of stuck) {
-    if (!canStartNextRound(job, now)) continue; // nothing to move to: the round keeps running until a verdict or the TTL
+    // No next round allowed, or no registered pair could serve it: the round keeps running until a verdict or the TTL.
+    if (!canStartNextRound(db, job, now)) continue;
     startNextRound(db, job, "abandoned", now);
     n++;
   }

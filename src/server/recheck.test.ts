@@ -3,7 +3,8 @@
 // end disagreed and are not charged; a round with a first lease but no verdict after 2400 s is abandoned and the next
 // round goes to other nodes; a round never leased uses up nothing; no new round with less than 2400 s of the TTL left;
 // nothing runs after the TTL; free trial jobs are not retried, team jobs are; rejected is never retried; work units go
-// only to the final agreeing pair (agreedJobsOf, epoch totals, node stats). Dev-runner "nodes" are driven in-process
+// only to the final agreeing pair (agreedJobsOf, epoch totals, node stats); a new round starts only when a registered
+// pair (online or not) could take it, else a mismatch is final at once. Dev-runner "nodes" are driven in-process
 // (register -> poll -> signed result). The payments contract is replaced by stubs (nothing is sent). Run: npm test
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -91,19 +92,26 @@ after(() => {
 type Node = { key: LocalAccount; owner: LocalAccount; gpuUuid: string };
 let gpuSeq = 0;
 
-/** Registers a dev-runner node (text and image). `owner` / `gpuUuid` / `key` reuse another node's to test exclusion. */
-async function mkNode(o: { owner?: LocalAccount; gpuUuid?: string; key?: LocalAccount } = {}): Promise<Node> {
+/**
+ * Registers a node: by default a dev runner on cuda (text and image). `owner` / `gpuUuid` / `key` reuse another node's to
+ * test exclusion; `backend`, `caps` and `dev: false` make nodes a job cannot use.
+ */
+async function mkNode(
+  o: { owner?: LocalAccount; gpuUuid?: string; key?: LocalAccount; backend?: "cuda" | "vulkan"; caps?: string[]; dev?: boolean } = {},
+): Promise<Node> {
   const key = o.key ?? privateKeyToAccount(generatePrivateKey());
   const owner = o.owner ?? privateKeyToAccount(generatePrivateKey());
   const gpuUuid = o.gpuUuid ?? `TEST-RECHECK-GPU-${gpuSeq++}`;
+  const dev = o.dev ?? true;
   await registerNode(key.address, {
-    gpu: "TEST dev",
+    gpu: dev ? "TEST dev" : "NVIDIA GeForce RTX 3060",
     gpuUuid,
     vramMb: 24_000,
-    caps: ["text:qwen2.5-1.5b", "image:sd15"],
+    caps: o.caps ?? (o.backend === "vulkan" ? ["text:qwen2.5-1.5b"] : ["text:qwen2.5-1.5b", "image:sd15"]),
     owner: owner.address,
     ownerSig: await owner.signMessage({ message: linkMessage(key.address, owner.address) }),
-    dev: true,
+    dev,
+    backend: o.backend ?? "cuda",
   });
   return { key, owner, gpuUuid };
 }
@@ -227,11 +235,13 @@ before(async () => {
 });
 
 beforeEach(() => {
-  // Each test starts with an empty queue: nothing left over from an earlier test can be leased or abandoned.
+  // Each test starts with an empty queue and an empty network: nothing left over from an earlier test can be leased or
+  // abandoned, and the registered-pair check of a new round (./rounds) sees only this test's nodes.
   const db = getDb();
   db.exec("UPDATE tasks SET status = 'cancelled' WHERE status IN ('open','leased')");
   db.exec("UPDATE jobs SET status = 'expired' WHERE status IN ('queued','running','checking')");
-  db.exec("UPDATE nodes SET last_seen = 0");
+  db.exec("DELETE FROM nodes");
+  delete process.env.GPU_ALLOWLIST_MODE;
 });
 
 // ---- the values (D16, 9.4) and the schema ----------------------------------------------------------------------------
@@ -366,6 +376,119 @@ describe("a forced mismatch on a paid job", () => {
     assert.equal((await pair(a, b, "one answer here", "an entirely different reply")).status, "queued");
     assert.equal(job(j.id).round, 1);
     assert.equal((await pair(c, d, "same", "same")).status, "agreed");
+  });
+});
+
+// ---- a new round needs a registered pair that could take it ------------------------------------------------------------
+describe("a new round starts only when a registered pair could take it", () => {
+  /** Runs a paid job's first round on a and b with a mismatch; returns the job id and the second answer. */
+  async function mismatch(a: Node, b: Node, request: unknown = textRequest(`pair check ${gpuSeq}`)) {
+    const payer = newPayer();
+    const j = await submitPaid(payer, request);
+    const la = await lease(a);
+    const lb = await lease(b);
+    const out = (n: number) => (parseJobRequest(request).kind === "image" ? { img: n ? ("down" as const) : ("up" as const) } : n ? "an entirely different answer" : "the first answer here");
+    assert.equal((await send(a, la, out(0))).status, "checking");
+    return { id: j.id, payer, res: await send(b, lb, out(1)), price: priceOf(request) };
+  }
+  const assertFinal = (r: Awaited<ReturnType<typeof mismatch>>, label: string) => {
+    assert.equal(r.res.status, "disagreed", `${label}: the mismatch is final at once`);
+    const row = job(r.id);
+    assert.equal(row.status, "disagreed", label);
+    assert.equal(row.round, 0, label);
+    assert.equal(row.note, "the two results do not match", `${label}: exactly as before re-checks`);
+    assert.equal(tasksOf(r.id).length, 2, `${label}: no tasks for another round`);
+    assert.equal(heldFor(r.payer.address), 0n, `${label}: nothing held`);
+    const inv = jobInvoice(r.id, { address: r.payer.address, secret: null });
+    assert.ok(inv.invoice);
+    assert.equal(inv.chargeStatus, "released", label);
+    assert.equal(inv.chargedWei, "0", label);
+  };
+
+  test("only the round-0 owners are registered (also on other node keys and GPUs): the mismatch is final at once, nothing held", async () => {
+    const [a, b] = await nodes(2);
+    await mkNode({ owner: a.owner }); // A's wallet on another machine
+    await mkNode({ owner: b.owner, gpuUuid: b.gpuUuid }); // B's GPU under another node key
+    onlyOnline(a, b);
+    assertFinal(await mismatch(a, b), "two owners only");
+  });
+
+  test("a third and a fourth owner registered but offline: the new round starts and waits for them, the price still held", async () => {
+    const [a, b, c, d] = await nodes(4);
+    onlyOnline(a, b); // c and d are registered (e.g. stopped pool machines) but not polling
+    const r = await mismatch(a, b);
+    assert.equal(r.res.status, "queued");
+    assert.equal(r.res.round, 1);
+    assert.equal(await poll(a), null);
+    assert.equal(await poll(b), null);
+    const row = job(r.id);
+    assert.equal(row.status, "queued");
+    assert.equal(row.round, 1);
+    assert.equal(row.round_started_at, null, "waiting uses up nothing");
+    assert.equal(heldFor(r.payer.address), r.price, "held while it waits");
+    assert.equal((await pair(c, d, "same", "same")).status, "agreed", "c and d come online and take round 1");
+  });
+
+  test("registered nodes the job could not use do not count: other backend, missing capability, GPU gate, non-dev nodes for a dev job", async () => {
+    const variants: [string, () => Promise<unknown>, (a: Node, b: Node) => Promise<Awaited<ReturnType<typeof mismatch>>>][] = [
+      [
+        "a cuda node and a vulkan node (no same-backend pair)",
+        async () => {
+          await mkNode();
+          await mkNode({ backend: "vulkan" });
+        },
+        (a, b) => mismatch(a, b),
+      ],
+      [
+        "two text-only nodes for an image job",
+        async () => {
+          await mkNode({ caps: ["text:qwen2.5-1.5b"] });
+          await mkNode({ caps: ["text:qwen2.5-1.5b"] });
+        },
+        (a, b) => mismatch(a, b, imageRequest(`image pair check ${gpuSeq}`)),
+      ],
+      [
+        "two nodes of an untested GPU family with GPU_ALLOWLIST_MODE=enforce",
+        async () => {
+          const [c, d] = await nodes(2);
+          getDb().prepare("UPDATE nodes SET gpu_status = 'untested' WHERE node_key IN (?, ?)").run(c.key.address, d.key.address);
+          process.env.GPU_ALLOWLIST_MODE = "enforce";
+        },
+        (a, b) => mismatch(a, b),
+      ],
+      [
+        "two real-GPU nodes for a job that ran on dev runners",
+        async () => {
+          await mkNode({ dev: false });
+          await mkNode({ dev: false });
+        },
+        (a, b) => mismatch(a, b),
+      ],
+    ];
+    for (const [label, setup, run] of variants) {
+      getDb().exec("DELETE FROM nodes");
+      delete process.env.GPU_ALLOWLIST_MODE;
+      const [a, b] = await nodes(2);
+      await setup();
+      onlyOnline(a, b);
+      assertFinal(await run(a, b), label);
+    }
+  });
+
+  test("a stuck round is abandoned only when a registered pair could take the next one", async () => {
+    const [a, b] = await nodes(2);
+    const payer = newPayer();
+    const j = await submitPaid(payer, textRequest("stuck, nobody else"));
+    onlyOnline(a, b);
+    await lease(a);
+    advance(ROUND_MAX_SECONDS + 60);
+    expireStaleJobs();
+    assert.equal(job(j.id).round, 0, "no other pair registered: the round keeps running");
+    assert.equal(job(j.id).status, "running");
+    await nodes(2); // two more owners register (offline)
+    expireStaleJobs();
+    assert.equal(job(j.id).round, 1, "now the round is abandoned and the next one queued");
+    assert.equal(job(j.id).status, "queued");
   });
 });
 

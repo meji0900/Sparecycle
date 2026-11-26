@@ -60,8 +60,9 @@ export default function BillingPage() {
           <li>
             When the two results do not match, or the two nodes give no verdict within {roundMinutes} minutes of the first one
             starting, the job is <span className="text-text">checked again on another pair</span>: two nodes whose owner wallets
-            and GPUs took no part in it before. That happens at most {MAX_ROUNDS - 1} times ({MAX_ROUNDS} pairs in all), and only
-            the last pair&apos;s verdict counts. Meanwhile the job shows &quot;Re-checking on another pair (round 2 of {MAX_ROUNDS})&quot;,
+            and GPUs took no part in it before, if two such nodes are registered with the network. That happens at most{" "}
+            {MAX_ROUNDS - 1} times ({MAX_ROUNDS} pairs in all), and only the last pair&apos;s verdict counts. Without such a pair
+            the mismatch is final at once. Meanwhile the job shows &quot;Re-checking on another pair (round 2 of {MAX_ROUNDS})&quot;,
             the price stays held and nothing is charged. Every pair runs inside the same {ttlHours}-hour limit; a new pair starts
             only while a full {roundMinutes} minutes are still left of it.
           </li>
