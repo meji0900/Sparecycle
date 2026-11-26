@@ -9,6 +9,9 @@
 /** The treasury cut of every charge in SparecycleJobPayments (TREASURY_BPS, a constant in the live contract). */
 export const TREASURY_CUT_BPS = 500;
 
+// N1 below is the split of the phase-2a burn plan (src/server/burns.ts, TOKEN_BURNS, postponed by the owner on
+// 26 Nov 2026). SparecycleJobPaymentsV2 holds the decided split on-chain: 350 treasury / 0 burner / 150 holder pool, with
+// 4% slippage. The holder share (150) is the same in both.
 /** N1: burn share of the 500 bps treasury cut. Default, not yet confirmed by Fabio. */
 export const SPLIT_BURN_BPS = 150;
 /** N1: holder-pool share of the 500 bps treasury cut. Default, not yet confirmed by Fabio. */

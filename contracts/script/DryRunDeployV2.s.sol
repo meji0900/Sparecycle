@@ -120,6 +120,7 @@ contract DryRunDeployV2 is Script {
         console2.log("SparecycleHolderPool    ", address(d.holderPool));
         console2.log("split treasury/burner/holder bps (N1)", t, b, h);
         console2.log("SPARE discount bps (N2) ", d.payments.SPARE_DISCOUNT_BPS());
+        console2.log("SPARE sale slippage bps (N12)", d.payments.maxSwapSlippageBps());
         console2.log("max price deviation bps (N13)", d.payments.maxPriceDeviationBps());
         console2.log("SPARE pay cap wei (N13) ", spareCap);
         console2.log("max ETH per burn wei (N12)", maxBurn);

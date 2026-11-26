@@ -7,11 +7,12 @@ import { Button } from "@/components/ui/button";
 import { StatusTag } from "@/components/ui/status";
 import type { PaidInvoice } from "@/lib/dapp/api";
 import { downloadJson, sameHash, sha256OfFile, type InvoiceState } from "@/lib/dapp/invoice";
-import { chargeWords } from "@/lib/dapp/paid-jobs";
+import { chargeWords, formatEth } from "@/lib/dapp/paid-jobs";
 import { formatTime } from "@/lib/format";
 import { recheckLabel } from "@/lib/rounds";
 import { cn } from "@/lib/utils";
 import { Eth } from "./job-balance";
+import { formatSpare } from "./pay-from";
 import { SignInToView } from "./private-output";
 import { Row } from "./ui";
 
@@ -133,9 +134,26 @@ function InvoiceBody({ inv }: { inv: PaidInvoice }) {
           {notCharged ? <span className="text-muted">None, not charged</span> : <Eth wei={inv.toPotWei} />}
         </Row>
         <Row label="Results">{resultsText(inv) ?? <span className="text-muted">Not compared yet</span>}</Row>
+        {inv.asset ? (
+          <Row label={<Label hint={inv.spare?.note ?? "Holder credits are spent before deposits."}>Paid from</Label>}>
+            <span className="inline-block max-w-[320px] text-right">
+              {inv.asset === "spare" ? "SPARE balance" : "ETH balance"}, {inv.contract === "v2" ? "V2 payments contract" : "V1 payments contract"}
+              {inv.spare?.spareWei && inv.spare.priceWeiPer1e18Spare ? (
+                <span className="block text-xs text-muted">
+                  <span className="num">{formatSpare(inv.spare.spareWei)}</span> SPARE at <span className="num">{formatEth(inv.spare.priceWeiPer1e18Spare)}</span> ETH per SPARE
+                </span>
+              ) : null}
+            </span>
+          </Row>
+        ) : null}
         <Row label="Charge">
           <span className="inline-block max-w-[320px] text-right">{words.text}</span>
         </Row>
+        {inv.waiting ? (
+          <Row label="Waiting">
+            <span className="inline-block max-w-[320px] text-right text-amber">{inv.waiting.text}</span>
+          </Row>
+        ) : null}
         <Row label={<Label hint="The epoch open when the results were compared.">Epoch</Label>}>
           {inv.epochId !== null ? (
             <span className="inline-flex flex-wrap items-center justify-end gap-2">

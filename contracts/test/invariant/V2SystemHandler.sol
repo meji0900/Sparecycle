@@ -54,6 +54,10 @@ contract V2SystemHandler is Test {
     bytes public lastUnexpected;
     uint256 public ghostBurnMismatch;
     uint256 public ghostSpareCharges;
+    uint256 public ghostSpareChargesAtZeroBurner;
+    /// @notice SPARE charges made with burner part 0 whose sale gave the pot less than its share (needed cover).
+    ///         Owner decision (26-27 Nov 2026): at 0% discount and 4% slippage this never happens.
+    uint256 public ghostSubsidizedAtZeroBurner;
     uint256 public ghostSpareDeferred;
     uint256 public ghostBurns;
     uint256 public ghostClaims;
@@ -261,6 +265,7 @@ contract V2SystemHandler is Test {
         uint256 ea;
         uint256 burnAmt;
         uint256 expectedOut;
+        uint16 burnerBps;
     }
 
     function chargeSpare(uint256 sSeed, uint256 value, uint256 eSeed, uint256 ethAmt) external {
@@ -281,6 +286,7 @@ contract V2SystemHandler is Test {
         c.ea = avail == 0 ? 0 : bound(ethAmt, 0, avail);
 
         (, uint16 bBps,) = pay.currentSplit();
+        c.burnerBps = bBps;
         c.burnAmt = (owed * bBps) / BPS;
         c.expectedOut = adapter.quoteSell(owed - c.burnAmt);
         (SparecycleJobPaymentsV2.SpareStatus st,,,,) = pay.previewSpareLeg(c.e, c.ea, c.value, c.expectedOut);
@@ -312,6 +318,10 @@ contract V2SystemHandler is Test {
             ghostV2SpareBurned += burned;
             if (burned != c.burnAmt) ghostBurnMismatch += 1;
             ghostSpareCharges += 1;
+            if (c.burnerBps == 0) {
+                ghostSpareChargesAtZeroBurner += 1;
+                if (b.adapter - address(adapter).balance < _potShare(c.value)) ghostSubsidizedAtZeroBurner += 1;
+            }
         } catch (bytes memory err) {
             _unexpected(err);
         }
@@ -340,7 +350,7 @@ contract V2SystemHandler is Test {
 
     function movePool(uint256 moveSeed) external {
         uint256 p = adapter.price();
-        uint256 np = (p * bound(moveSeed, 9_600, 10_400)) / BPS; // +-4%: sometimes beyond the 2% slippage
+        uint256 np = (p * bound(moveSeed, 9_400, 10_600)) / BPS; // +-6%: sometimes beyond the 4% slippage
         adapter.setPrice(np == 0 ? 1 : np);
     }
 

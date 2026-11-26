@@ -2,8 +2,9 @@
 pragma solidity ^0.8.28;
 
 // =====================================================================================================================
-// AUDIT REQUIRED BEFORE MAINNET. Written and tested only; NOT deployed. Every value marked "Default, not yet confirmed
-// by Fabio" comes from section 10 of the next-update brief and is a starting point, not an approved number.
+// AUDIT REQUIRED BEFORE MAINNET. Written and tested only; NOT deployed. Values marked "Decided by the owner on 26-27 Nov
+// 2026" are approved numbers. Values still marked "Default, not yet confirmed by Fabio" come from section 10 of the
+// next-update brief and are a starting point, not an approved number.
 // =====================================================================================================================
 
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -17,6 +18,11 @@ import {SpareBurn} from "./libraries/SpareBurn.sol";
 /// @notice Usage burn, phase 2b (brief section 4). Receives the burner part of every charge in ETH from
 ///         SparecycleJobPaymentsV2 and, once per epoch, buys SPARE with it through the swap adapter and burns the
 ///         SPARE in the same transaction.
+///
+///         Burn postponed (decided by the owner on 26-27 Nov 2026): V2 starts with a burner part of 0 bps, so this
+///         contract is deployed but receives nothing until the treasury Safe changes V2's split (at least
+///         SPLIT_CHANGE_DELAY_EPOCHS later). With no balance `burnEpoch` reverts `NothingToBurn` and the scheduler
+///         simply skips the burn; nothing else depends on it.
 ///
 ///         - `burnEpoch(epochId, minOut)`: scheduler only, for the epoch that closed last, once per epoch. It spends
 ///           at most `maxEthPerBurn` (N12 cap); what is left carries over to the next epoch instead of being bought at
@@ -35,9 +41,10 @@ contract SparecycleBurner is ReentrancyGuard {
     uint16 public constant BPS = 10_000;
     /// @notice Unit of the SPARE price: wei of ETH per 10^18 SPARE base units (same as the price source).
     uint256 public constant PRICE_UNIT = 1e18;
-    /// @notice N12: initial max slippage of a buy against the epoch price, in bps (2%).
-    ///         Default, not yet confirmed by Fabio.
-    uint16 public constant DEFAULT_MAX_SLIPPAGE_BPS = 200;
+    /// @notice N12: initial max slippage of a buy against the epoch price, in bps (4%). Decided by the owner on
+    ///         26-27 Nov 2026: room for the Pons hook's 2.90% cut (taken in SPARE on a buy) plus price impact. The Safe
+    ///         can change it (`setMaxSlippageBps`, at most 10%).
+    uint16 public constant DEFAULT_MAX_SLIPPAGE_BPS = 400;
     /// @notice Hard upper bound the Safe cannot exceed for the slippage (design bound, not from the brief).
     uint16 public constant MAX_SLIPPAGE_BPS_LIMIT = 1_000;
     /// @notice Wait between a rescue request and its execution. Design value ("a long delay" in the brief, no

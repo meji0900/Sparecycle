@@ -8,11 +8,12 @@ import {MockPoolManager} from "../mocks/MockPoolManager.sol";
 
 /// @notice The real UniswapV4SpareAdapter (over MockPoolManager) wired into SparecycleJobPaymentsV2 and
 ///         SparecycleBurner, so CI covers the wiring without a fork: V2 accepts the sale's ETH because it comes from
-///         the adapter, and the 290 bps output fee (like the Pons hook) is above the 2% default slippage of both
-///         contracts until the Safe raises it. The live-pool version is test/fork/V4AdapterWiringFork.t.sol.
+///         the adapter, and the 290 bps output fee (like the Pons hook) fits the 4% default slippage of both contracts
+///         (decided by the owner on 26-27 Nov 2026); a 2% setting would not. The live-pool version is
+///         test/fork/V4AdapterWiringFork.t.sol.
 contract UniswapV4SpareAdapterWiringTest is V2Fixture {
     uint256 internal constant RATE = 1e4; // SPARE base units per wei: 1 SPARE = 1e-4 ETH = PRICE
-    uint16 internal constant RAISED_SLIPPAGE_BPS = 500;
+    uint16 internal constant TOO_TIGHT_SLIPPAGE_BPS = 200;
 
     MockPoolManager internal pm;
     Adapter internal v4;
@@ -40,54 +41,65 @@ contract UniswapV4SpareAdapterWiringTest is V2Fixture {
         assertEq(pm.deltaOf(address(spareTok)), 0);
     }
 
+    /// @notice Deployed values (0% discount, burner part 0, 4% slippage): a SPARE-paid charge sells all of its SPARE
+    ///         through the adapter, pays the pot its full 95% with no ETH leg and no discount reserve, and burns
+    ///         nothing. A 2% setting is below the fee and the adapter refuses the fill.
     function test_Wiring_SpareChargeSellsThroughTheAdapter() public {
         _deposit(bob, 10 ether);
         _spareDeposit(alice, 1_000_000 ether);
-        vm.prank(carol);
-        pay.fundDiscountReserve{value: 1 ether}();
         _anchorAndPost(PRICE);
         assertEq(address(pay.swapAdapter()), address(v4));
+        assertEq(pay.discountReserve(), 0);
 
-        // default 2%: the floor is above what a 2.90%-fee pool gives
         uint64 id = _open();
+        vm.prank(treasury);
+        pay.setMaxSwapSlippageBps(TOO_TIGHT_SLIPPAGE_BPS);
         uint256 floor = _floor(10 ether);
-        (address[] memory cs, uint256[] memory as_) = _one(bob, 10 ether);
+        (address[] memory cs, uint256[] memory as_) = _none();
         (address[] memory ss, uint256[] memory sa) = _one(alice, 10 ether);
         vm.prank(sched);
         vm.expectPartialRevert(Adapter.InsufficientOutput.selector);
         pay.chargeWithSpare(id, cs, as_, ss, sa, floor, keccak256("l"));
 
+        uint16 deflt = pay.DEFAULT_MAX_SWAP_SLIPPAGE_BPS();
         vm.prank(treasury);
-        pay.setMaxSwapSlippageBps(RAISED_SLIPPAGE_BPS);
+        pay.setMaxSwapSlippageBps(deflt);
         floor = _floor(10 ether);
+        assertEq(floor, 9.6 ether);
         uint256 potBefore = ethR.getEpoch(id).pot;
         uint256 supplyBefore = spareTok.totalSupply();
         uint256 owed = pay.spareOwed(id, 10 ether);
-        _chargeSpareMin(bob, 10 ether, alice, 10 ether, floor);
+        assertEq(owed, 100_000 ether, "no discount");
+        _chargeSpareMin(bob, 0, alice, 10 ether, floor);
 
-        assertEq(ethR.getEpoch(id).pot - potBefore, 19 ether, "95% of both legs");
-        uint256 burned = (owed * 150) / BPS;
-        assertEq(supplyBefore - spareTok.totalSupply(), burned);
-        uint256 sold = owed - burned;
-        uint256 ethOut = sold / RATE - ((sold / RATE) * 290) / 10_000;
-        assertGe(ethOut, floor);
+        assertEq(ethR.getEpoch(id).pot - potBefore, 9.5 ether, "95% of the SPARE job's ETH price");
+        assertEq(spareTok.totalSupply(), supplyBefore, "burner part 0: nothing burned");
+        uint256 ethOut = owed / RATE - ((owed / RATE) * 290) / 10_000;
+        assertEq(ethOut, 9.71 ether);
+        assertEq(treasury.balance, ethOut - 9.5 ether, "the sale covered the pot; the rest to the treasury");
+        assertEq(pay.discountReserve(), 0, "no subsidy");
+        assertEq(address(burner).balance, 0);
         _assertV2Accounting();
         _assertAdapterEmpty();
     }
 
+    /// @notice The burn buy through the adapter at the 4% default (with ETH the Safe sent; V2's burner part is 0).
     function test_Wiring_BurnBuysThroughTheAdapter() public {
         vm.prank(funder);
         (bool ok,) = address(burner).call{value: 0.5 ether}("");
         assertTrue(ok);
         _anchorAndPost(PRICE);
         uint64 e = _closeEmpty(ethR);
+        vm.prank(treasury);
+        burner.setMaxSlippageBps(TOO_TIGHT_SLIPPAGE_BPS);
         uint256 floor = burner.minOutFloor(0.5 ether, PRICE);
         vm.prank(sched);
         vm.expectPartialRevert(Adapter.InsufficientOutput.selector);
         burner.burnEpoch(e, floor);
 
+        uint16 deflt = burner.DEFAULT_MAX_SLIPPAGE_BPS();
         vm.prank(treasury);
-        burner.setMaxSlippageBps(RAISED_SLIPPAGE_BPS);
+        burner.setMaxSlippageBps(deflt);
         floor = burner.minOutFloor(0.5 ether, PRICE);
         uint256 supplyBefore = spareTok.totalSupply();
         vm.prank(sched);

@@ -14,6 +14,7 @@ import { checkReceipt, checkRpcUrl, defaultVerifyRpc, savedVerifyRpc, saveVerify
 import { formatEth } from "@/lib/dapp/paid-jobs";
 import type { CheckStatus, JobReceipt, ReceiptOutcome, ReceiptVerification } from "@/lib/job-receipt";
 import { cn } from "@/lib/utils";
+import { formatSpare } from "./pay-from";
 import { Row } from "./ui";
 
 const hostOf = (url: string) => {
@@ -301,6 +302,19 @@ export function JobReceiptPanel({ state, className }: { state: ReceiptState; cla
                 </>
               ) : null}
             </Row>
+            {r.payment ? (
+              <Row label="Paid from">
+                <span className="inline-block max-w-[320px] text-right">
+                  {r.payment.asset === "spare" ? "SPARE balance" : "ETH balance"}, {r.payment.contract === "v2" ? "V2 payments contract" : "V1 payments contract"}
+                  {r.payment.spare ? (
+                    <span className="block text-xs text-muted">
+                      <span className="num">{formatSpare(r.payment.spare.spareWei)}</span> SPARE at{" "}
+                      <span className="num">{formatEth(r.payment.spare.priceWeiPer1e18Spare)}</span> ETH per SPARE
+                    </span>
+                  ) : null}
+                </span>
+              </Row>
+            ) : null}
             <Row label="Node signatures">
               {r.nodes.length ? (
                 <span className="inline-flex flex-wrap items-center justify-end gap-x-3 gap-y-1">

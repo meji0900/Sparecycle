@@ -2,8 +2,9 @@
 pragma solidity ^0.8.28;
 
 // =====================================================================================================================
-// AUDIT REQUIRED BEFORE MAINNET. Written and tested only; NOT deployed. Every value marked "Default, not yet confirmed
-// by Fabio" comes from section 10 of the next-update brief and is a starting point, not an approved number.
+// AUDIT REQUIRED BEFORE MAINNET. Written and tested only; NOT deployed. Values marked "Decided by the owner on 26-27 Nov
+// 2026" are approved numbers. Values still marked "Default, not yet confirmed by Fabio" come from section 10 of the
+// next-update brief and are a starting point, not an approved number.
 // =====================================================================================================================
 
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -34,12 +35,13 @@ import {SpareBurn} from "./libraries/SpareBurn.sol";
 ///           can never be withdrawn (N20). Charges spend credits first, then deposits (N21).
 ///         - The 5% fee is split into treasury / burner / holder pool. The parts always sum to 500 bps; only the
 ///           treasury Safe can change them, and a change takes effect SPLIT_CHANGE_DELAY_EPOCHS epochs later.
-///         - SPARE balances and SPARE-paid jobs at a discount (brief section 5). The scheduler posts one SPARE price
-///           per epoch; a price outside the Safe-set band around the reference price pauses SPARE charges for that
-///           epoch while ETH charges go on. A SPARE-paid job gives the node pot at least what an ETH-paid job of the
-///           same size gives; any shortfall of the SPARE sale is covered from the ETH treasury share, then the
-///           Safe-funded discount reserve, then the ETH burn share; if that is not enough the SPARE leg reverts
-///           (the scheduler leaves those jobs for a later epoch: deferred, never underpaid).
+///         - SPARE balances and SPARE-paid jobs (brief section 5) at SPARE_DISCOUNT_BPS (0: decided by the owner on
+///           26-27 Nov 2026). The scheduler posts one SPARE price per epoch; a price outside the Safe-set band around
+///           the reference price pauses SPARE charges for that epoch while ETH charges go on. A SPARE-paid job gives
+///           the node pot at least what an ETH-paid job of the same size gives; any shortfall of the SPARE sale is
+///           covered from the ETH treasury share, then the Safe-funded discount reserve, then the ETH burn share; if
+///           that is not enough the SPARE leg reverts (the scheduler leaves those jobs for a later epoch: deferred,
+///           never underpaid). At 0% discount with the default slippage the sale floor alone covers the pot.
 ///
 ///         ETH can leave this contract only to: the reward contract (`fund`), the treasury Safe, the burner, the
 ///         holder pool, or a customer's own withdrawal (the swap adapter is only ever given SPARE, never ETH).
@@ -66,25 +68,35 @@ contract SparecycleJobPaymentsV2 is ReentrancyGuard, ISparePriceSource {
     /// @notice Unit of the SPARE price: wei of ETH per 10^18 SPARE base units.
     uint256 public constant PRICE_UNIT = 1e18;
 
-    /// @notice N1: initial treasury part of the 5% fee, in bps of the charge. Default, not yet confirmed by Fabio.
-    uint16 public constant DEFAULT_TREASURY_BPS = 200;
-    /// @notice N1: initial burner part of the 5% fee, in bps of the charge. Default, not yet confirmed by Fabio.
-    uint16 public constant DEFAULT_BURNER_BPS = 150;
-    /// @notice N1: initial holder-pool part of the 5% fee, in bps of the charge. Default, not yet confirmed by Fabio.
+    /// @notice N1: initial treasury part of the 5% fee, in bps of the charge (3.5%). Decided by the owner on
+    ///         26-27 Nov 2026: the burn is postponed, so the treasury takes the burner's former 150 bps.
+    uint16 public constant DEFAULT_TREASURY_BPS = 350;
+    /// @notice N1: initial burner part of the 5% fee, in bps of the charge: 0. Decided by the owner on 26-27 Nov 2026
+    ///         (burn postponed). The Burner is still deployed and receives nothing until the treasury Safe proposes a
+    ///         new split (`proposeSplit`, effective SPLIT_CHANGE_DELAY_EPOCHS later). Every path works with 0: no ETH
+    ///         is sent to the burner, no SPARE is burned, and the events report 0.
+    uint16 public constant DEFAULT_BURNER_BPS = 0;
+    /// @notice N1: initial holder-pool part of the 5% fee, in bps of the charge (1.5%). Decided by the owner on
+    ///         26-27 Nov 2026.
     uint16 public constant DEFAULT_HOLDER_POOL_BPS = 150;
     /// @notice N1: a split change takes effect this many epochs after it is proposed ("at least 4 epochs").
     ///         Default, not yet confirmed by Fabio.
     uint64 public constant SPLIT_CHANGE_DELAY_EPOCHS = 4;
-    /// @notice N2: discount on the ETH price for SPARE-paid jobs, in bps (10%). Default, not yet confirmed by Fabio.
+    /// @notice N2: discount on the ETH price for SPARE-paid jobs, in bps: 0 (no discount). Decided by the owner on
+    ///         26-27 Nov 2026. The Pons hook takes 2.90% of every swap's output (docs/uniswap-v4-adapter.md), so a SPARE
+    ///         job's sale brings in about 97% of its ETH price: at 0% discount (and burner part 0) the slippage floor
+    ///         alone (100% - DEFAULT_MAX_SWAP_SLIPPAGE_BPS = 96%) is above the node pot's 95%, so the pot gets its full
+    ///         95% without the discount reserve or any other subsidy. The reserve mechanism stays for later use.
     ///         N2b (share of the SPARE received that is burned) has no number of its own: it is the burner part of
-    ///         the current split applied to the discounted value (`burnerBps / 10_000` of the SPARE received).
-    uint16 public constant SPARE_DISCOUNT_BPS = 1_000;
+    ///         the current split applied to the discounted value (`burnerBps / 10_000` of the SPARE received; 0 now).
+    uint16 public constant SPARE_DISCOUNT_BPS = 0;
     /// @notice N13: initial max deviation of a posted SPARE price from the reference price, in bps (20%).
     ///         Default, not yet confirmed by Fabio.
     uint16 public constant DEFAULT_MAX_PRICE_DEVIATION_BPS = 2_000;
-    /// @notice N12: initial max slippage of a swap against the epoch price, in bps (2%). Used here for the
-    ///         SPARE -> ETH sale (the brief gives no separate number for it). Default, not yet confirmed by Fabio.
-    uint16 public constant DEFAULT_MAX_SWAP_SLIPPAGE_BPS = 200;
+    /// @notice N12: initial max slippage of the SPARE -> ETH sale against the epoch price, in bps (4%). Decided by the
+    ///         owner on 26-27 Nov 2026: room for the Pons hook's 2.90% cut plus price impact (about size / ETH side)
+    ///         and movement since the posted price. The Safe can change it (`setMaxSwapSlippageBps`, at most 10%).
+    uint16 public constant DEFAULT_MAX_SWAP_SLIPPAGE_BPS = 400;
 
     /// @notice Hard upper bound the Safe cannot exceed for the price band (design bound, not from the brief).
     uint16 public constant MAX_PRICE_DEVIATION_BPS_LIMIT = 5_000;

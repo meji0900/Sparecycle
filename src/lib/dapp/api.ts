@@ -56,7 +56,8 @@ export type TxLink = { hash: string; url: string | null };
 
 /** GET /api/v1/jobs/:id/invoice for a paid or team job (wallet session of the payer, or the job's read secret). */
 export type PaidInvoice = {
-  version: 1;
+  /** 2 while the scheduler runs SparecycleJobPaymentsV2: then the fields below marked "V2" are present. */
+  version: 1 | 2;
   jobId: string;
   model: string;
   kind: "image" | "text";
@@ -87,6 +88,14 @@ export type PaidInvoice = {
   /** sha256 of the output served at /result (0x + 64 hex); null unless agreed. */
   outputHash: string | null;
   links: { chargeTx: TxLink | null; epochRootTx: TxLink | null };
+  /** V2: the contract that charges the job, its address and the balance it is paid from. */
+  contract?: "v1" | "v2";
+  paymentsContract?: string | null;
+  asset?: "eth" | "spare";
+  /** V2, SPARE-paid jobs: the epoch price used and the SPARE taken (null until charged). */
+  spare?: { discountBps: number; priceWeiPer1e18Spare: string | null; spareWei: string | null; note: string } | null;
+  /** V2, SPARE-paid jobs not charged at the last close: why, in plain words. */
+  waiting?: { reason: string; text: string; closesWaited: number; maxCloses: number } | null;
 };
 
 /** The same route for a free trial job: no invoice. */
@@ -117,9 +126,38 @@ export type SubmitResponse = {
   readSecret?: string;
   available?: string;
   lowBalance?: boolean;
+  /** Only while the scheduler runs SparecycleJobPaymentsV2. */
+  contract?: "v1" | "v2";
+  asset?: "eth" | "spare";
 };
 
 /** GET /api/v1/payments/account?address= — wei amounts as decimal strings. */
+export type PaymentWithdrawal = { amount: string; epoch: number; requestedAt: number; ready: boolean } | null;
+/** SparecycleJobPaymentsV2 (only while the scheduler has TOKEN_PAYMENTS_V2 on). */
+export type PaymentAccountV2 = {
+  contract: string;
+  spareToken: string;
+  balance: string;
+  /** Spend-only credits from the holder pool: spent before deposits, never withdrawable. */
+  credits: string;
+  held: string;
+  available: string;
+  spendLimitPerEpoch: string;
+  withdrawal: PaymentWithdrawal;
+  spare: {
+    balance: string;
+    held: string;
+    heldEthValueWei: string;
+    available: string;
+    availableEthValueWei: string | null;
+    spendLimitPerEpoch: string;
+    withdrawal: PaymentWithdrawal;
+    priceWeiPer1e18Spare: string | null;
+    open: boolean;
+    discountBps: number;
+    waiting: { jobs: number; reason: string; text: string } | null;
+  };
+};
 export type PaymentAccount = {
   address: string;
   contract: string;
@@ -128,7 +166,9 @@ export type PaymentAccount = {
   held: string;
   available: string;
   spendLimitPerEpoch: string;
-  withdrawal: { amount: string; epoch: number; requestedAt: number; ready: boolean } | null;
+  withdrawal: PaymentWithdrawal;
+  /** Present only when the scheduler runs SparecycleJobPaymentsV2 (null or absent otherwise). */
+  v2?: PaymentAccountV2 | null;
 };
 export type JobDetail = ApiJob & {
   params?: Record<string, number | undefined>;

@@ -437,3 +437,49 @@ describe("parseReceipt", () => {
     if (/[a-fA-F]/.test(badChecksum.payer.slice(2))) assert.throws(() => parseReceipt(badChecksum), /payer/);
   });
 });
+
+type VerifyOptions = Parameters<typeof verifyReceipt>[1];
+
+describe("version 2 receipts (SparecycleJobPaymentsV2)", () => {
+  const V2: Address = "0x7c0a1A6F31c1d7aB7Ad3a5B1a1f1E2b3c4D5e6F7";
+  /** The version 1 fixture as a version 2 receipt charged on V1 with ETH (same leaf, same Charged event). */
+  const asV2 = (r: JobReceipt, payment: NonNullable<JobReceipt["payment"]>): JobReceipt => {
+    const { format, version: _v, state, chainId, paymentsContract, ...rest } = clone(r);
+    void _v;
+    return { format, version: 2, state, chainId, paymentsContract, payment, ...rest };
+  };
+
+  test("a version 2 receipt of a V1 ETH job verifies like version 1; saved version 1 receipts still do", async () => {
+    const b = await sealedReceipt();
+    const r2 = asV2(b.receipt, { contract: "v1", asset: "eth", spare: null });
+    assert.deepEqual(Object.keys(r2).slice(0, 6), ["format", "version", "state", "chainId", "paymentsContract", "payment"]);
+    const v = await verifyReceipt(clone(r2), { ...opts(b.client), paymentsContractV2: V2 });
+    assert.equal(v.outcome, "verified", JSON.stringify(v.checks));
+    assert.equal(v.checks.find((c) => c.id === "format")?.detail, "Sparecycle job receipt, version 2");
+    const v1 = await verifyReceipt(clone(b.receipt), { ...opts(b.client), paymentsContractV2: V2 });
+    assert.equal(v1.outcome, "verified");
+  });
+
+  test("the payment block must fit: SPARE only on V2, a SPARE price only for a charged SPARE job, the right contract", async () => {
+    const b = await sealedReceipt();
+    const fails = async (r: JobReceipt, o: VerifyOptions = { ...opts(b.client), paymentsContractV2: V2 }) => (await verifyReceipt(clone(r), o)).outcome === "failed";
+    assert.ok(await fails(asV2(b.receipt, { contract: "v1", asset: "spare", spare: null })), "SPARE on V1");
+    assert.ok(await fails(asV2(b.receipt, { contract: "v1", asset: "eth", spare: { priceWeiPer1e18Spare: "1", spareWei: "1" } })), "a SPARE price on an ETH job");
+    assert.ok(await fails(asV2(b.receipt, { contract: "v2", asset: "eth", spare: null })), "says V2 but names the V1 address");
+    const onV2 = { ...asV2(b.receipt, { contract: "v2", asset: "eth", spare: null }), paymentsContract: V2 };
+    assert.ok(await fails(onV2, opts(b.client)), "a site without V2 refuses a V2 receipt");
+  });
+
+  test("parseReceipt: exactly the fields of the version", async () => {
+    const b = await sealedReceipt();
+    const r2 = asV2(b.receipt, { contract: "v1", asset: "eth", spare: null });
+    assert.equal(parseReceipt(clone(r2)).version, 2);
+    assert.throws(() => parseReceipt({ ...clone(b.receipt), payment: { contract: "v1", asset: "eth", spare: null } }), /version 1 receipt does not have: payment/);
+    const noPayment = clone(r2) as Partial<JobReceipt>;
+    delete noPayment.payment;
+    assert.throws(() => parseReceipt(noPayment), /missing: payment/);
+    assert.throws(() => parseReceipt({ ...clone(r2), payment: { contract: "v3", asset: "eth", spare: null } }), /payment.contract/);
+    assert.throws(() => parseReceipt({ ...clone(r2), payment: { contract: "v2", asset: "spare", spare: { priceWeiPer1e18Spare: "0", spareWei: "1" } } }), /above 0/);
+    assert.throws(() => parseReceipt({ ...clone(r2), version: 3 }), /unknown receipt version 3/);
+  });
+});

@@ -81,7 +81,7 @@ export async function checkReceipt(raw: unknown, rpcUrl: string): Promise<Receip
       error: null,
     };
   }
-  return verifyReceipt(raw, { client: verifyClient(rpcUrl), chainId: targetChain.id, paymentsContract: config.jobPayments });
+  return verifyReceipt(raw, { client: verifyClient(rpcUrl), chainId: targetChain.id, paymentsContract: config.jobPayments, paymentsContractV2: config.jobPaymentsV2 });
 }
 
 /** The receipt route's answer for a free trial job. */

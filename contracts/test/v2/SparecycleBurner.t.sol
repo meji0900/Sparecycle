@@ -41,7 +41,7 @@ contract SparecycleBurnerTest is V2Fixture {
         assertEq(address(burner.priceSource()), address(pay));
         assertTrue(burner.useBurnFunction());
         assertEq(burner.maxEthPerBurn(), MAX_BURN);
-        assertEq(burner.maxSlippageBps(), 200, "N12");
+        assertEq(burner.maxSlippageBps(), 400, "N12: 4% (owner, 26-27 Nov 2026)");
     }
 
     function test_Constructor_Rejects() public {
@@ -57,14 +57,33 @@ contract SparecycleBurnerTest is V2Fixture {
 
     // ================================================================ burnEpoch
 
+    /// @notice Burn postponed (owner, 26-27 Nov 2026): with the deployed split the burner part is 0, so charges send
+    ///         the burner nothing and `burnEpoch` has nothing to do (`NothingToBurn`, the epoch is not used up). ETH
+    ///         and SPARE charges work as usual.
+    function test_Burn_DefaultSplitSendsTheBurnerNothing() public {
+        _deposit(alice, 100 ether);
+        _spareDeposit(bob, 1_000_000 ether);
+        _anchorAndPost(PRICE);
+        _charge(alice, 40 ether);
+        _chargeSpare(alice, 1 ether, bob, 1 ether);
+        uint64 e = _closeEmpty(ethR);
+        assertEq(address(burner).balance, 0, "burner part 0 bps");
+        vm.prank(sched);
+        vm.expectRevert(SparecycleBurner.NothingToBurn.selector);
+        burner.burnEpoch(e, 1);
+        assertFalse(burner.epochHandled(e), "a skipped burn uses nothing up");
+        assertEq(burner.burnCount(), 0);
+    }
+
     function test_Burn_FromChargesBuysAndBurns() public {
+        _setSplit(200, 150, 150); // the Safe gives the burner a share (the deployed part is 0)
         _deposit(alice, 100 ether);
         _anchorAndPost(PRICE);
         _charge(alice, 40 ether); // burner part 150 bps = 0.6 ETH
         uint64 e = _closeEmpty(ethR);
         assertEq(address(burner).balance, 0.6 ether);
         uint256 floor = burner.minOutFloor(0.6 ether, PRICE);
-        assertEq(floor, 6_000 ether * 98 / 100);
+        assertEq(floor, 6_000 ether * 96 / 100);
         uint256 supply = spareTok.totalSupply();
         vm.expectEmit(address(burner));
         emit SparecycleBurner.Burned(e, 0.6 ether, 6_000 ether);
@@ -163,7 +182,7 @@ contract SparecycleBurnerTest is V2Fixture {
         _fundBurner(1 ether);
         uint64 e = _pricedEpoch(PRICE);
         uint256 floor = burner.minOutFloor(1 ether, PRICE);
-        assertEq(floor, 9_800 ether);
+        assertEq(floor, 9_600 ether, "value minus 4%");
         vm.prank(sched);
         vm.expectRevert(abi.encodeWithSelector(SparecycleBurner.MinOutBelowFloor.selector, floor - 1, floor));
         burner.burnEpoch(e, floor - 1);
@@ -177,10 +196,21 @@ contract SparecycleBurnerTest is V2Fixture {
         _burn(e, 9_500 ether);
     }
 
+    /// @notice Owner decision (26-27 Nov 2026): the 4% default leaves room for the Pons hook's 2.90% cut (taken in
+    ///         SPARE on a buy) plus impact: a buy that gets 3.07% less than the epoch price still burns.
+    function test_Burn_DefaultSlippageFitsTheHookCut() public {
+        _fundBurner(1 ether);
+        uint64 e = _pricedEpoch(PRICE);
+        adapter.setShortBps(307);
+        (uint256 ethIn, uint256 burned) = _burn(e, burner.minOutFloor(1 ether, PRICE));
+        assertEq(ethIn, 1 ether);
+        assertEq(burned, 9_693 ether);
+    }
+
     function test_Burn_PoolMovedBeyondSlippageReverts() public {
         _fundBurner(1 ether);
         uint64 e = _pricedEpoch(PRICE);
-        adapter.setPrice(PRICE * 103 / 100); // SPARE 3% dearer than the epoch price: fewer tokens per ETH
+        adapter.setPrice(PRICE * 105 / 100); // SPARE 5% dearer than the epoch price: fewer tokens per ETH
         uint256 floor = burner.minOutFloor(1 ether, PRICE);
         vm.prank(sched);
         vm.expectRevert(bytes("adapter: min out"));
@@ -192,10 +222,10 @@ contract SparecycleBurnerTest is V2Fixture {
         _fundBurner(1 ether);
         uint64 e = _pricedEpoch(PRICE);
         adapter.setIgnoreMinOut(true);
-        adapter.setShortBps(300);
+        adapter.setShortBps(500);
         uint256 floor = burner.minOutFloor(1 ether, PRICE);
         vm.prank(sched);
-        vm.expectRevert(abi.encodeWithSelector(SparecycleBurner.InsufficientOutput.selector, 9_700 ether, floor));
+        vm.expectRevert(abi.encodeWithSelector(SparecycleBurner.InsufficientOutput.selector, 9_500 ether, floor));
         burner.burnEpoch(e, floor);
     }
 

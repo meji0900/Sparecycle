@@ -31,16 +31,37 @@ export const isLowBalance = (availableWei: bigint, jobPriceWei: bigint): boolean
 /** Hash a paid job's signature commits to: sha256 of the exact JSON text of the request object. */
 export const jobRequestHash = (request: unknown): Hex => sha256Hex(JSON.stringify(request));
 
+/** What a paid job is paid from: the ETH balance (V1, or V2 credits then deposits) or the V2 SPARE balance. */
+export type PayAsset = "eth" | "spare";
+
+/** The line a SPARE payment adds to the signed message (an ETH payment's message is unchanged). */
+export const SPARE_PAYMENT_LINE = "Pay with: my SPARE balance, at the epoch's SPARE price";
+
 /**
  * The EIP-191 message a customer signs (personal_sign, no gas) to pay for one job from their balance in the
- * payments contract. Human-readable on purpose: the wallet shows it before signing.
+ * payments contract. Human-readable on purpose: the wallet shows it before signing. `contract` names the payments
+ * contract the job is charged on (V1 or V2); a SPARE payment (V2 only) adds SPARE_PAYMENT_LINE before `Issued`.
  */
-export const jobPaymentMessage = (p: { chainId: number; contract: string; requestHash: string; priceWei: bigint; issued: number }) =>
+export const jobPaymentMessage = (p: { chainId: number; contract: string; requestHash: string; priceWei: bigint; issued: number; asset?: PayAsset }) =>
   [
     "Sparecycle: pay for one job from my balance",
     `Chain: ${p.chainId}`,
     `Payments contract: ${p.contract.toLowerCase()}`,
     `Job request: ${p.requestHash.toLowerCase()}`,
     `Price: ${p.priceWei.toString()} wei`,
+    ...(p.asset === "spare" ? [SPARE_PAYMENT_LINE] : []),
     `Issued: ${p.issued}`,
   ].join("\n");
+
+/** Unit of a SPARE price in SparecycleJobPaymentsV2: wei of ETH per 10^18 SPARE base units (per 1 SPARE). */
+export const SPARE_PRICE_UNIT = 10n ** 18n;
+
+/**
+ * SPARE taken for a job of `ethWei` at `priceWeiPer1e18` with no discount (SPARE_DISCOUNT_BPS = 0, decided by the
+ * owner on 26-27 Nov 2026), rounded up exactly as the contract rounds a customer's SPARE charge.
+ */
+export const spareForWei = (ethWei: bigint, priceWeiPer1e18: bigint): bigint =>
+  priceWeiPer1e18 <= 0n ? 0n : (ethWei * SPARE_PRICE_UNIT + priceWeiPer1e18 - 1n) / priceWeiPer1e18;
+
+/** ETH value of `spareWei` at `priceWeiPer1e18`, rounded down. */
+export const ethValueOfSpare = (spareWei: bigint, priceWeiPer1e18: bigint): bigint => (spareWei * priceWeiPer1e18) / SPARE_PRICE_UNIT;

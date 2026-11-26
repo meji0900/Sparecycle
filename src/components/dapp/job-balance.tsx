@@ -19,6 +19,7 @@ import { formatTime } from "@/lib/format";
 import { BILLING } from "@/lib/funding-copy";
 import { isLowBalance, LOW_CREDIT_JOBS } from "@/lib/job-payment";
 import { cn } from "@/lib/utils";
+import { V2Balance } from "./job-balance-v2";
 import { Dash, Row, Skeleton } from "./ui";
 import { WalletButton } from "./wallet-button";
 
@@ -256,6 +257,8 @@ export function JobBalance() {
 
   const value = (v: string | null | undefined, why?: string) =>
     v !== null && v !== undefined ? <Eth wei={v} /> : loading && !failure ? <Skeleton /> : <Dash why={why} />;
+  // SparecycleJobPaymentsV2 (only while the scheduler runs it): new deposits go there; this V1 balance stays usable.
+  const v2 = account?.v2 ?? null;
 
   return (
     <section aria-labelledby="balance-title" id="balance" className="min-w-0 scroll-mt-24 rounded-l border border-line bg-coal">
@@ -279,8 +282,23 @@ export function JobBalance() {
         </div>
       ) : (
         <>
+          {v2 ? (
+            <>
+              <dl className="border-b border-line">
+                <Row label="Wallet">{address ? <Hex value={address} /> : <Dash />}</Row>
+              </dl>
+              <V2Balance v2={v2} address={address} canTransact={isConnected && !wrongNetwork} reload={acct.reload} />
+              <div className="px-5 pt-4">
+                <h3 className="text-sm font-medium text-text">Older balance (V1 payments contract)</h3>
+                <p className="mt-1 text-xs leading-relaxed text-muted">
+                  Still usable: a job your V2 balance does not cover is paid from here. Withdraw it any time with the same two-step
+                  withdrawal. New deposits go to V2 above.
+                </p>
+              </div>
+            </>
+          ) : null}
           <dl className="divide-y divide-line border-b border-line">
-            <Row label="Wallet">{address ? <Hex value={address} /> : <Dash />}</Row>
+            {v2 ? null : <Row label="Wallet">{address ? <Hex value={address} /> : <Dash />}</Row>}
             <Row label={<Figure hint="All the ETH you hold in the payments contract. Only your wallet can withdraw it.">Balance</Figure>}>
               {value(account?.balance, failure ? "Not read" : undefined)}
             </Row>
@@ -332,14 +350,16 @@ export function JobBalance() {
               </Notice>
             ) : null}
 
-            <AmountForm
-              id="deposit-amount"
-              label="Deposit"
-              hint="Sends ETH from your wallet into your balance. You pay the gas."
-              button="Deposit"
-              disabled={!canAct}
-              onSubmit={(wei) => send("deposit", { functionName: "deposit", value: wei })}
-            />
+            {v2 ? null : (
+              <AmountForm
+                id="deposit-amount"
+                label="Deposit"
+                hint="Sends ETH from your wallet into your balance. You pay the gas."
+                button="Deposit"
+                disabled={!canAct}
+                onSubmit={(wei) => send("deposit", { functionName: "deposit", value: wei })}
+              />
+            )}
 
             <div className="space-y-2">
               <p className="text-sm text-text">Withdraw</p>

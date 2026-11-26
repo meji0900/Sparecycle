@@ -8,6 +8,11 @@
 // Who can read it: exactly who can read the invoice (./invoices): a session of the wallet that paid, the job's read
 // secret, or the API key that submitted the job; always enforced, whatever OUTPUT_AUTH says. A free trial job has no
 // receipt: its read-secret holder gets a "free trial, no charge" stub.
+//
+// With SparecycleJobPaymentsV2 on (TOKEN_PAYMENTS_V2, ./payments-v2) receipts are version 2: version 1 plus `payment`
+// (the contract that charges the job, the asset, and for a charged SPARE job the epoch price used and the SPARE taken).
+// A V2 job's leaf sits in V2's jobs root (v2_charges), committed by V2's Charged event. With the flag off every receipt
+// is version 1, exactly as before.
 import { getAddress, type Hex } from "viem";
 import { targetChain } from "@/lib/chain";
 import {
@@ -17,6 +22,7 @@ import {
   LEAF_VERDICT,
   RECEIPT_FORMAT,
   RECEIPT_VERSION,
+  RECEIPT_VERSION_V2,
   ZERO_HASH,
   type JobReceipt,
   type LeafChargeStatus,
@@ -32,6 +38,7 @@ import { AUTH_REQUIRED, ApiError } from "./http";
 import { chargeStatusOf } from "./invoices";
 import { accessOf, expireStaleJobs, hasCredentials, isJobId, paymentKind, X402_CHARGE_STATUS } from "./jobs";
 import { paymentsAddress } from "./payments";
+import { v2Address } from "./payments-v2";
 import { x402Receipt } from "./x402";
 
 type Row = {
@@ -46,7 +53,15 @@ type Row = {
   api_key_id: string | null;
   settled_at: number | null;
   receipt_epoch: number | null;
+  pay_contract: string | null;
+  pay_asset: string | null;
+  spare_price: string | null;
+  spare_wei: string | null;
 };
+
+/** The charge table and leaf set of the contract that charges this job (V1: `charges`, V2: `v2_charges`). */
+const ledgerOf = (r: Pick<Row, "pay_contract">): { key: "v1" | "v2"; table: "charges" | "v2_charges" } =>
+  r.pay_contract === "v2" ? { key: "v2", table: "v2_charges" } : { key: "v1", table: "charges" };
 
 type LeafRow = {
   payer: string;
@@ -82,12 +97,13 @@ function nodesOf(jobId: string): ReceiptNode[] {
 /** Why a settled job's receipt is not sealed yet (see ReceiptPending in src/lib/job-receipt.ts). */
 function pendingOf(r: Row, chargeStatus: JobReceipt["chargeStatus"]): ReceiptPending {
   const db = getDb();
+  const l = ledgerOf(r);
   const sending = db
     .prepare(
-      `SELECT cl.epoch_id AS id FROM charge_leaves cl JOIN charges c ON c.epoch_id = cl.epoch_id
-       WHERE cl.job_id = ? AND c.status = 'sending' ORDER BY cl.epoch_id DESC LIMIT 1`,
+      `SELECT cl.epoch_id AS id FROM charge_leaves cl JOIN ${l.table} c ON c.epoch_id = cl.epoch_id
+       WHERE cl.job_id = ? AND cl.contract = ? AND c.status = 'sending' ORDER BY cl.epoch_id DESC LIMIT 1`,
     )
-    .get(r.id) as { id: number } | undefined;
+    .get(r.id, l.key) as { id: number } | undefined;
   if (sending) return { reason: "charge-unconfirmed", epochId: sending.id };
   if (chargeStatus === "charged") return { reason: "charged-before-receipts", epochId: r.charged_epoch };
   if (chargeStatus === "released" || chargeStatus === "unpaid") {
@@ -96,7 +112,7 @@ function pendingOf(r: Row, chargeStatus: JobReceipt["chargeStatus"]): ReceiptPen
     // it waits for the next charge.)
     const closed = db
       .prepare(
-        `SELECT e.id AS id, (SELECT c.status FROM charges c WHERE c.epoch_id = e.id) AS charge FROM epochs e
+        `SELECT e.id AS id, (SELECT c.status FROM ${l.table} c WHERE c.epoch_id = e.id) AS charge FROM epochs e
          WHERE e.status != 'open' AND e.closed_at IS NOT NULL AND e.closed_at >= ? ORDER BY e.id DESC LIMIT 1`,
       )
       .get(r.settled_at ?? 0) as { id: number; charge: string | null } | undefined;
@@ -111,17 +127,18 @@ function sealed(r: Row): Pick<JobReceipt, "payer" | "priceWei" | "verdict" | "ch
   const epochId = r.receipt_epoch;
   if (epochId === null) return null;
   const db = getDb();
-  const charge = db.prepare("SELECT list_hash, tx, status, hash_rule FROM charges WHERE epoch_id = ?").get(epochId) as
+  const l = ledgerOf(r);
+  const charge = db.prepare(`SELECT list_hash, tx, status, hash_rule FROM ${l.table} WHERE epoch_id = ?`).get(epochId) as
     | { list_hash: Hex; tx: Hex | null; status: string; hash_rule: string }
     | undefined;
   const leafRow = db
-    .prepare("SELECT payer, price_wei, verdict, charge_status, output_hash, salt, leaf FROM charge_leaves WHERE epoch_id = ? AND job_id = ?")
-    .get(epochId, r.id) as LeafRow | undefined;
+    .prepare("SELECT payer, price_wei, verdict, charge_status, output_hash, salt, leaf FROM charge_leaves WHERE epoch_id = ? AND job_id = ? AND contract = ?")
+    .get(epochId, r.id, l.key) as LeafRow | undefined;
   if (!charge || charge.status !== "done" || charge.hash_rule !== JOBS_HASH_RULE || !isHex32(charge.tx) || !leafRow || !isHex32(leafRow.salt)) {
     console.error(`[sparecycle] job ${r.id}: receipt epoch ${epochId} has no confirmed v2 charge with its leaf`);
     throw new ApiError(500, "receipt-unavailable", "the scheduler's records for this receipt are incomplete");
   }
-  const tree = buildTree((db.prepare("SELECT leaf FROM charge_leaves WHERE epoch_id = ?").all(epochId) as { leaf: Hex }[]).map((l) => l.leaf));
+  const tree = buildTree((db.prepare("SELECT leaf FROM charge_leaves WHERE epoch_id = ? AND contract = ?").all(epochId, l.key) as { leaf: Hex }[]).map((x) => x.leaf));
   const payer = getAddress(leafRow.payer);
   const outputHash = isHex32(leafRow.output_hash) ? (leafRow.output_hash.toLowerCase() as Hex) : null;
   const salt = leafRow.salt.toLowerCase() as Hex;
@@ -180,7 +197,8 @@ export function jobReceipt(id: string, viewer: Viewer): JobReceipt | FreeReceipt
   expireStaleJobs();
   const r = getDb()
     .prepare(
-      `SELECT id, status, payer, price_wei, charge_status, charged_epoch, output_hash, read_secret_hash, api_key_id, settled_at, receipt_epoch
+      `SELECT id, status, payer, price_wei, charge_status, charged_epoch, output_hash, read_secret_hash, api_key_id, settled_at, receipt_epoch,
+         pay_contract, pay_asset, spare_price, spare_wei
        FROM jobs WHERE id = ?`,
     )
     .get(id) as Row | undefined;
@@ -196,19 +214,34 @@ export function jobReceipt(id: string, viewer: Viewer): JobReceipt | FreeReceipt
   if (!(r.status in LEAF_VERDICT)) {
     throw new ApiError(409, "no-verdict", `the job is ${r.status}; its receipt appears as soon as the two results are compared`);
   }
-  const contract = paymentsAddress();
+  const v2 = v2Address();
+  const onV2 = r.pay_contract === "v2";
+  const contract = onV2 ? v2 : paymentsAddress();
   if (!contract) throw new ApiError(503, "payments-off", "paid jobs are not enabled on this scheduler");
 
   const seal = sealed(r);
   const verdict = seal?.verdict ?? (r.status as LeafVerdict);
   const chargeStatus = seal?.chargeStatus ?? chargeStatusOf(r.status, r.charge_status);
+  const spareJob = onV2 && r.pay_asset === "spare";
   // Field order = the order of the saved file.
   return {
     format: RECEIPT_FORMAT,
-    version: RECEIPT_VERSION,
+    version: v2 ? RECEIPT_VERSION_V2 : RECEIPT_VERSION,
     state: seal ? "sealed" : "provisional",
     chainId: targetChain.id,
     paymentsContract: contract,
+    ...(v2
+      ? {
+          payment: {
+            contract: onV2 ? ("v2" as const) : ("v1" as const),
+            asset: spareJob ? ("spare" as const) : ("eth" as const),
+            spare:
+              spareJob && seal && chargeStatus === "charged" && r.spare_price && r.spare_wei
+                ? { priceWeiPer1e18Spare: r.spare_price, spareWei: r.spare_wei }
+                : null,
+          },
+        }
+      : {}),
     jobId: r.id as Hex,
     payer: seal?.payer ?? getAddress(r.payer!),
     priceWei: seal?.priceWei ?? r.price_wei,

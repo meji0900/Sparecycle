@@ -40,6 +40,7 @@ Server-side, read at runtime (no rebuild needed). A flag is on only when set to 
 | `TOKEN_SLASHING` | off | At each epoch close, attributes faults from re-check rounds and prepares slash proposals; serves `GET /api/v1/slashing` and `/api/v1/slashing/:id` | `SparecycleNodeStake` deployed (else proposals stay `incomplete`); audit; F2; community nodes |
 | `TOKEN_STAKE_GATE` | off | Leases jobs only to owners with `stakedOf(owner) >= minStakePerNode x active nodes` | `SparecycleNodeStake` deployed. **Turned on without it, no node gets a lease** (the gate fails closed) |
 | `TOKEN_HOLDER_PAGE` | off | Serves `/token/holders` and links to it from `/token` and `/proof` | Nothing (it shows `[NOT LIVE YET]` for every part that is not deployed) |
+| `TOKEN_PAYMENTS_V2` | off | Paid jobs can also be paid and charged on `SparecycleJobPaymentsV2`: new deposits go there, V1 balances stay usable; credits first; SPARE-paid jobs at 0% discount; the per-epoch SPARE price and one V2 charge per epoch are **sent from the scheduler key** (like the V1 charge); receipts and invoices version 2 (`docs/contracts-v2.md`) | `TOKEN_JOB_PAYMENTS_V2_ADDRESS` set (else it stays off); V2, HolderPool and Burner deployed; the Safe's first SPARE reference price for SPARE payments |
 
 With `TOKEN_BURNS`, `TOKEN_HOLDERS` or `TOKEN_SLASHING` on, the operator reads the prepared payloads at
 `GET /api/v1/admin/token-payloads` (`Authorization: Bearer $SCHEDULER_ADMIN_TOKEN`). They are not public: a prepared

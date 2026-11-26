@@ -64,6 +64,15 @@
 // spend-only credits, a V2 charge spends them, and the next close posts the next root without posting the first again.
 // Without E2E_HOLDERS none of this runs and the default run is unchanged.
 //
+// With E2E_V2=1 (E2E_V2=1 npm run e2e:local) the run also covers SparecycleJobPaymentsV2 behind TOKEN_PAYMENTS_V2
+// (src/server/payments-v2.ts; contracts NOT deployed anywhere but this anvil): SparecycleBurner + V2 + SparecycleHolderPool
+// on the reward contract with the deployed defaults (0% SPARE discount, split 350 / 0 / 150, 4% slippage), a mock SPARE,
+// a mock swap adapter and a mock Uniswap v4 StateView (the pool price); the treasury Safe (a local key) sets the first
+// SPARE reference price; 9d: an ETH-paid and a SPARE-paid job signed for V2 next to the V1 paid job; at the close the
+// scheduler posts the epoch's SPARE price and charges V2 once with chargeWithSpare (V1 is charged with charge, as
+// before); both V2 receipts (version 2) verify against V2's events. Without E2E_V2 none of this runs.
+// E2E_HOLDERS and E2E_V2 each deploy their own V2 stack, so they run one at a time.
+//
 // The anvil keys below are the well-known public anvil/hardhat dev keys. They are for this local test only and
 // must never be used anywhere else.
 import { spawn, spawnSync } from "node:child_process";
@@ -116,9 +125,17 @@ const treasury = privateKeyToAccount(generatePrivateKey()).address; // stands in
 const PRICE_WEI_PER_UNIT = 1_000_000_000n; // 1 gwei per work unit in this test
 /** E2E_X402=1: also run the x402 pay-per-job path (see the header). */
 const X402 = process.env.E2E_X402 === "1";
+const V2 = process.env.E2E_V2 === "1";
+/** V2 test price: 0.0001 ETH per SPARE (wei per 1e18 SPARE units); the mock pool's sqrtPriceX96 for it is 100 x 2^96. */
+const V2_SPARE_PRICE = 10n ** 14n;
+const V2_SQRT_PRICE = 100n * (1n << 96n);
 const X402_PRICE_PER_UNIT = 10n; // mock-token units per work unit in this test
 /** E2E_HOLDERS=1: also run the holder pool path (see the header). */
 const HOLDERS = process.env.E2E_HOLDERS === "1";
+if (V2 && HOLDERS) {
+  console.error("E2E_V2 and E2E_HOLDERS each deploy their own V2 stack: run them one at a time.");
+  process.exit(2);
+}
 
 const RUN_ID = new Date().toISOString().replace(/[:.]/g, "-");
 const RUN_DIR = join(ROOT, "data", `e2e-${RUN_ID}`);
@@ -172,7 +189,7 @@ function cleanup() {
   cleaned = true;
   for (const { child } of children.reverse()) killTree(child);
   // The app copy holds a full src/ tree; never leave it behind for lint / tsc to pick up. Forge output is scratch.
-  for (const dir of [APP_DIR, join(RUN_DIR, "forge-out"), join(RUN_DIR, "forge-cache"), join(RUN_DIR, "sweep-mocks"), join(RUN_DIR, "auth-mocks")]) {
+  for (const dir of [APP_DIR, join(RUN_DIR, "forge-out"), join(RUN_DIR, "forge-cache"), join(RUN_DIR, "sweep-mocks"), join(RUN_DIR, "auth-mocks"), join(RUN_DIR, "v2-mocks")]) {
     try {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
     } catch {
@@ -321,6 +338,27 @@ contract SweepMockHook {
 }
 `;
 
+// E2E_V2: a Uniswap v4 StateView stand-in that answers getSlot0 / getLiquidity for any pool id. Local anvil only.
+const V2_MOCKS_SOL = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
+
+contract E2EMockStateView {
+    uint160 public immutable sqrtPriceX96;
+
+    constructor(uint160 s) {
+        sqrtPriceX96 = s;
+    }
+
+    function getSlot0(bytes32) external view returns (uint160, int24, uint24, uint24) {
+        return (sqrtPriceX96, 0, 0, 0);
+    }
+
+    function getLiquidity(bytes32) external pure returns (uint128) {
+        return 1e24;
+    }
+}
+`;
+
 // A minimal ERC-1271 smart wallet for the sign-in test: valid when the owner EOA signed the hash. Local anvil only.
 const AUTH_MOCKS_SOL = `// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
@@ -382,7 +420,7 @@ async function main() {
           "src/SparecycleNodeStake.sol",
           "test/mocks/StakeMocks.sol",
           ...(X402 ? ["src/SparecycleX402Escrow.sol", "test/mocks/MockEIP3009.sol"] : []),
-          ...(HOLDERS ? ["src/SparecycleJobPaymentsV2.sol", "src/SparecycleBurner.sol", "src/SparecycleHolderPool.sol", "test/mocks/V2Mocks.sol"] : []),
+          ...(HOLDERS || V2 ? ["src/SparecycleJobPaymentsV2.sol", "src/SparecycleBurner.sol", "src/SparecycleHolderPool.sol", "test/mocks/V2Mocks.sol"] : []),
         ],
         { cwd: join(ROOT, "contracts"), encoding: "utf8" },
       );
@@ -479,6 +517,49 @@ async function main() {
   });
   const nodeStake = nodeStakeDeploy.contractAddress;
   check("SparecycleNodeStake deployed on a mock SPARE (minimum 0, cooldown 3 epochs)", Boolean(spareMock && nodeStake), `${nodeStake} (SPARE mock ${spareMock})`);
+  // E2E_V2: Burner -> V2 -> HolderPool with predicted addresses (as contracts/script/DryRunDeployV2.s.sol), a mock SPARE,
+  // a mock adapter filling at the test price, and a mock StateView for the scheduler's price read. The V2 treasury Safe is
+  // a local key (its own address, so V1's treasury checks are unchanged).
+  const v2 = {};
+  if (V2) {
+    v2.treasury = privateKeyToAccount(generatePrivateKey());
+    await pub.request({ method: "anvil_setBalance", params: [v2.treasury.address, "0xde0b6b3a7640000"] });
+    v2.spareArt = artifact(forgeOut, "V2Mocks.sol", "MockSpare");
+    v2.spare = await deploy(v2.spareArt, []);
+    v2.adapter = await deploy(artifact(forgeOut, "V2Mocks.sol", "MockSwapAdapter"), [v2.spare, V2_SPARE_PRICE]);
+    await pub.request({ method: "anvil_setBalance", params: [v2.adapter, "0x8ac7230489e80000"] }); // 10 ETH for SPARE sales
+    const mockDir = join(RUN_DIR, "v2-mocks");
+    mkdirSync(join(mockDir, "src"), { recursive: true });
+    writeFileSync(join(mockDir, "src", "V2E2EMocks.sol"), V2_MOCKS_SOL);
+    const mb = spawnSync(FORGE, ["build", "--root", mockDir], { cwd: mockDir, encoding: "utf8" });
+    check("V2: mock StateView compiled", mb.status === 0, (mb.stderr || "").trim().split("\n").slice(-1)[0]);
+    v2.stateView = await deploy(artifact(join(mockDir, "out"), "V2E2EMocks.sol", "E2EMockStateView"), [V2_SQRT_PRICE]);
+    const { getContractAddress } = await import("viem");
+    const n = BigInt(await pub.getTransactionCount({ address: admin.address }));
+    const v2At = getContractAddress({ from: admin.address, nonce: n + 1n });
+    const poolAt = getContractAddress({ from: admin.address, nonce: n + 2n });
+    v2.burner = await deploy(artifact(forgeOut, "SparecycleBurner.sol", "SparecycleBurner"), [rewards, v2.treasury.address, v2.spare, v2.adapter, v2At, true, parseEther("0.01")]);
+    v2.pay = await deploy(artifact(forgeOut, "SparecycleJobPaymentsV2.sol", "SparecycleJobPaymentsV2"), [rewards, v2.treasury.address, v2.burner, poolAt, v2.spare, v2.adapter, parseEther("1")]);
+    v2.pool = await deploy(artifact(forgeOut, "SparecycleHolderPool.sol", "SparecycleHolderPool"), [rewards, v2.pay, v2.treasury.address]);
+    check(
+      "V2: Burner, SparecycleJobPaymentsV2 and HolderPool deployed at the predicted addresses on the reward contract",
+      v2.pay?.toLowerCase() === v2At.toLowerCase() && v2.pool?.toLowerCase() === poolAt.toLowerCase(),
+      `${v2.burner} ${v2.pay} ${v2.pool}`,
+    );
+    const { jobPaymentsV2Abi } = await srcImport("contracts/jobPaymentsV2.ts");
+    v2.abi = jobPaymentsV2Abi;
+    v2.read = (functionName, args = []) => pub.readContract({ address: v2.pay, abi: jobPaymentsV2Abi, functionName, args });
+    const split = await v2.read("currentSplit");
+    check(
+      "V2: deployed with the owner's decisions: split 350 / 0 / 150, 0% SPARE discount, 4% slippage",
+      split.join() === "350,0,150" && (await v2.read("SPARE_DISCOUNT_BPS")) === 0 && (await v2.read("maxSwapSlippageBps")) === 400,
+      split.join(),
+    );
+    // The treasury Safe sets the first SPARE reference price (until then SPARE payments are closed).
+    const hash = await wallet(v2.treasury).writeContract({ address: v2.pay, abi: jobPaymentsV2Abi, functionName: "setReferenceSparePrice", args: [V2_SPARE_PRICE] });
+    await pub.waitForTransactionReceipt({ hash });
+    check("V2: the Safe set the reference SPARE price", (await v2.read("referenceSparePrice")) === V2_SPARE_PRICE);
+  }
   check("scheduler = anvil account 1", (await read("scheduler")).toLowerCase() === scheduler.address.toLowerCase());
   check("epoch length 30 s", (await read("epochLength")) === BigInt(EPOCH_LENGTH));
   // TS leaf == Solidity leaf
@@ -593,6 +674,7 @@ async function main() {
         // GET /api/v1/staking reads the local stake contract and scans its events from its deploy block (step 17c).
         TOKEN_NODE_STAKE_ADDRESS: nodeStake,
         TOKEN_NODE_STAKE_START_BLOCK: nodeStakeDeploy.blockNumber.toString(),
+        ...(V2 ? { TOKEN_PAYMENTS_V2: "on", TOKEN_JOB_PAYMENTS_V2_ADDRESS: v2.pay, TOKEN_V4_STATE_VIEW_ADDRESS: v2.stateView } : {}),
         ...(X402
           ? {
               X402_ENABLED: "1",
@@ -884,6 +966,59 @@ async function main() {
   );
   const treasuryBefore = await pub.getBalance({ address: treasury });
 
+  // ---- SparecycleJobPaymentsV2 (E2E_V2=1 only): an ETH-paid and a SPARE-paid job on V2, next to the V1 job above ----
+  if (V2) {
+    step("9d. V2 payments (E2E_V2=1): an ETH-paid and a SPARE-paid job signed for V2");
+    const { spareForWei } = await srcImport("lib/job-payment.ts");
+    v2.spareForWei = spareForWei;
+    v2.ethCustomer = privateKeyToAccount(generatePrivateKey());
+    v2.spareCustomer = privateKeyToAccount(generatePrivateKey());
+    for (const a of [v2.ethCustomer, v2.spareCustomer]) await pub.request({ method: "anvil_setBalance", params: [a.address, "0xde0b6b3a7640000"] });
+    const send = async (who, address, abi, functionName, args = [], value) => {
+      const hash = await wallet(who).writeContract({ address, abi, functionName, args, value });
+      return pub.waitForTransactionReceipt({ hash });
+    };
+    await send(v2.ethCustomer, v2.pay, v2.abi, "deposit", [], parseEther("0.01"));
+    v2.spareDeposit = parseEther("1000");
+    await send(v2.spareCustomer, v2.spare, v2.spareArt.abi, "mint", [v2.spareCustomer.address, v2.spareDeposit]);
+    await send(v2.spareCustomer, v2.spare, v2.spareArt.abi, "approve", [v2.pay, v2.spareDeposit]);
+    await send(v2.spareCustomer, v2.pay, v2.abi, "depositSpare", [v2.spareDeposit]);
+    const a0 = (await api("GET", "/payments/account?address=" + v2.spareCustomer.address)).data;
+    check(
+      "V2: the account answer carries a v2 block (SPARE open at the reference price, 0% discount)",
+      a0.v2?.contract?.toLowerCase() === v2.pay.toLowerCase() && a0.v2.spare.balance === v2.spareDeposit.toString() && a0.v2.spare.open === true &&
+        a0.v2.spare.priceWeiPer1e18Spare === V2_SPARE_PRICE.toString() && a0.v2.spare.discountBps === 0 && a0.balance === "0",
+      JSON.stringify(a0.v2),
+    );
+    const signFor = async (who, request, priceWei, asset) => {
+      const issued = Math.floor(Date.now() / 1000);
+      const message = jobPaymentMessage({ chainId: 31337, contract: v2.pay, requestHash: jobRequestHash(request), priceWei, issued, asset });
+      return { payer: who.address, issued, priceWei: priceWei.toString(), signature: await who.signMessage({ message }), contract: v2.pay, ...(asset ? { asset } : {}) };
+    };
+    v2.ethReq = { kind: "text", params: { model: "qwen2.5-1.5b", prompt: "A V2 ETH-paid job.", system: "Be brief.", maxTokens: 16 } };
+    v2.spareReq = { kind: "text", params: { model: "qwen2.5-1.5b", prompt: "A V2 SPARE-paid job.", system: "Be brief.", maxTokens: 16 } };
+    v2.ethPrice = jobPriceWei(v2.ethReq, PRICE_WEI_PER_UNIT);
+    v2.sparePrice = jobPriceWei(v2.spareReq, PRICE_WEI_PER_UNIT);
+    const ej = await api("POST", "/jobs", { request: v2.ethReq, payment: await signFor(v2.ethCustomer, v2.ethReq, v2.ethPrice) });
+    check("V2: an ETH job signed for V2 is accepted and charged on V2", ej.status === 201 && ej.data.contract === "v2" && ej.data.asset === "eth", JSON.stringify(ej.data));
+    const sj = await api("POST", "/jobs", { request: v2.spareReq, payment: await signFor(v2.spareCustomer, v2.spareReq, v2.sparePrice, "spare") });
+    check("V2: a SPARE job is accepted and paid from the SPARE balance", sj.status === 201 && sj.data.contract === "v2" && sj.data.asset === "spare", JSON.stringify(sj.data));
+    v2.ethJob = ej.data.id;
+    v2.spareJob = sj.data.id;
+    secrets[v2.ethJob] = ej.data.readSecret;
+    secrets[v2.spareJob] = sj.data.readSecret;
+    const a1 = (await api("GET", "/payments/account?address=" + v2.spareCustomer.address)).data;
+    check("V2: the SPARE job is held in SPARE at the reference price", a1.v2.spare.held === spareForWei(v2.sparePrice, V2_SPARE_PRICE).toString(), JSON.stringify(a1.v2.spare));
+    await waitFor("V2 jobs agreed", async () => {
+      const r = await Promise.all([v2.ethJob, v2.spareJob].map((id) => api("GET", "/jobs/" + id)));
+      if (r.some((x) => ["disagreed", "expired", "rejected"].includes(x.data.status))) throw new Error("a V2 job did not agree");
+      return r.every((x) => x.data.status === "agreed");
+    }, { timeoutMs: 120_000, intervalMs: 1000 });
+    const inv = (await invoiceOf(v2.spareJob)).data;
+    check("V2: the SPARE job's invoice says V2, SPARE, pending", inv.version === 2 && inv.contract === "v2" && inv.asset === "spare" && inv.chargeStatus === "pending", JSON.stringify(inv));
+    v2.treasuryBefore = await pub.getBalance({ address: v2.treasury.address });
+  }
+
   // ---- x402 pay-per-job (E2E_X402=1 only) ----
   const xl = X402 ? await srcImport("lib/x402.ts") : null;
   const { x402EscrowAbi } = X402 ? await srcImport("contracts/x402Escrow.ts") : {};
@@ -1029,6 +1164,8 @@ async function main() {
   const chargedTotal = paidPrice + teamPrice;
   const toTreasury = (chargedTotal * 500n) / 10_000n; // 5% of the epoch's charged batch, rounded down
   expectedPot += chargedTotal - toTreasury;
+  // E2E_V2: V2's charge of the same epoch adds 95% of its ETH leg and 95% of its SPARE leg's ETH value.
+  if (V2) expectedPot += v2.ethPrice - (v2.ethPrice * 500n) / 10_000n + (v2.sparePrice - (v2.sparePrice * 500n) / 10_000n);
   check("pot = 1 ETH fund + 0.25 ETH escrow + 1 wei unaccounted + 95% of the paid and team jobs", e0.pot === expectedPot, String(e0.pot));
   const charges = (await api("GET", "/epochs/0/charges")).data;
   check(
@@ -1080,6 +1217,65 @@ async function main() {
   check("an unreachable RPC is reported as unreachable, never as verified", deadRpc.outcome === "unreachable");
   const acct2 = (await api("GET", "/payments/account?address=" + customer.address)).data;
   check("customer balance reduced by the price, nothing held", BigInt(acct2.balance) === parseEther("0.01") - paidPrice && acct2.held === "0", JSON.stringify(acct2));
+  if (V2) {
+    step("11b. V2 settlement (E2E_V2=1): the SPARE price posted, one chargeWithSpare, receipts version 2");
+    const viemV = await import("viem");
+    const posted = await pub.getContractEvents({ address: v2.pay, abi: v2.abi, eventName: "SparePricePosted", fromBlock: 0n });
+    check(
+      "V2: the scheduler posted epoch 0's SPARE price once, from the pool (mock StateView), accepted",
+      posted.length === 1 && posted[0].args.epochId === 0n && posted[0].args.price === V2_SPARE_PRICE && posted[0].args.accepted === true,
+      JSON.stringify(posted.map((p) => ({ e: String(p.args.epochId), price: String(p.args.price), ok: p.args.accepted }))),
+    );
+    const c2 = charges.v2;
+    check("V2: the epoch's charges answer has a v2 block, done, chargeWithSpare, two leaves", c2?.status === "done" && c2.method === "chargeWithSpare" && c2.leaves?.length === 2, JSON.stringify(c2));
+    const rcpt = await pub.getTransactionReceipt({ hash: c2.tx });
+    const evs = viemV.parseEventLogs({ abi: v2.abi, logs: rcpt.logs.filter((l) => l.address.toLowerCase() === v2.pay.toLowerCase()) });
+    const named = (n) => evs.filter((e) => e.eventName === n);
+    const spareWei = v2.spareForWei(v2.sparePrice, V2_SPARE_PRICE);
+    check(
+      "V2: one Charged (the published V2 jobs root), CustomerCharged for the ETH job, CustomerChargedSpare for the SPARE job",
+      named("Charged").length === 1 && named("Charged")[0].args.listHash === c2.listHash && buildTree(c2.leaves).root === c2.listHash &&
+        named("CustomerCharged")[0]?.args.customer.toLowerCase() === v2.ethCustomer.address.toLowerCase() && named("CustomerCharged")[0].args.amount === v2.ethPrice &&
+        named("CustomerChargedSpare")[0]?.args.ethValue === v2.sparePrice && named("CustomerChargedSpare")[0].args.spareAmount === spareWei,
+      evs.map((e) => e.eventName).join(),
+    );
+    const sc = named("SpareCharged")[0]?.args;
+    check(
+      "V2: the SPARE was sold (nothing burned at burner part 0) and the pot got 95% with no reserve or cover",
+      sc && sc.spareBurned === 0n && sc.spareSold === spareWei && sc.shortfallCovered === 0n && sc.toPot === v2.sparePrice - (v2.sparePrice * 500n) / 10_000n &&
+        named("Distributed")[0]?.args.toBurner === 0n && named("Distributed")[0].args.fromReserve === 0n,
+      JSON.stringify(sc, (_k, v) => (typeof v === "bigint" ? v.toString() : v)),
+    );
+    const hp = (v2.ethPrice * 150n) / 10_000n;
+    const ethOut = (spareWei * V2_SPARE_PRICE) / 10n ** 18n;
+    const toTreasuryV2 = (v2.ethPrice * 500n) / 10_000n - hp + (ethOut - (v2.sparePrice - (v2.sparePrice * 500n) / 10_000n));
+    check(
+      "V2: treasury 350 bps of the ETH leg plus the sale's surplus, holder pool 150 bps, burner nothing",
+      (await pub.getBalance({ address: v2.treasury.address })) - v2.treasuryBefore === toTreasuryV2 && (await pub.getBalance({ address: v2.pool })) === hp &&
+        (await pub.getBalance({ address: v2.burner })) === 0n,
+    );
+    check(
+      "V2: balances: the ETH customer paid the price, the SPARE customer the price in SPARE",
+      (await v2.read("balanceOf", [v2.ethCustomer.address])) === parseEther("0.01") - v2.ethPrice &&
+        (await v2.read("spareBalanceOf", [v2.spareCustomer.address])) === v2.spareDeposit - spareWei,
+    );
+    const v2Opts = { ...verifyOpts, paymentsContractV2: v2.pay };
+    const rs = (await receiptOf(v2.spareJob)).data;
+    const re = (await receiptOf(v2.ethJob)).data;
+    check(
+      "V2: receipts are version 2: SPARE (price and amount) and ETH, sealed in V2's root",
+      rs.version === 2 && rs.state === "sealed" && rs.payment?.asset === "spare" && rs.payment.spare?.spareWei === spareWei.toString() &&
+        rs.payment.spare.priceWeiPer1e18Spare === V2_SPARE_PRICE.toString() && rs.anchor?.listHash === c2.listHash && re.version === 2 && re.payment?.asset === "eth",
+      JSON.stringify(rs.payment),
+    );
+    const vs = await verifyReceipt(rs, v2Opts);
+    const ve = await verifyReceipt(re, v2Opts);
+    check("V2: both V2 receipts verify against V2's events on the local chain", vs.outcome === "verified" && ve.outcome === "verified", JSON.stringify([vs.checks, ve.checks]));
+    const vsNoV2 = await verifyReceipt(rs, verifyOpts);
+    check("V2: a site without V2 configured refuses the V2 receipt", vsNoV2.outcome === "failed");
+    const v1rc = (await receiptOf(paid.data.id)).data;
+    check("V2: the V1 job's receipt is version 2 with contract v1, charged on V1, and verifies", v1rc.version === 2 && v1rc.payment?.contract === "v1" && (await verifyReceipt(v1rc, v2Opts)).outcome === "verified");
+  }
   const inv1 = (await invoiceOf(paid.data.id)).data;
   check("invoice: charged in epoch 0, charge tx linked", inv1.chargeStatus === "charged" && inv1.chargedEpoch === 0 && inv1.links?.chargeTx?.hash === charges.tx, JSON.stringify(inv1));
   check("scheduler read the same pot", tree.potAtClose === expectedPot.toString(), `${tree.potAtClose}`);
@@ -1139,7 +1335,7 @@ async function main() {
   nextProc = await startNext("next-restart", { SCHEDULER_AUTOCLOSE: "1", OUTPUT_AUTH: "enforce" });
   const afterRestart = (await api("GET", "/epochs")).data.epochs;
   check("state survived the restart (epoch 0 posted, epoch 1 open)", afterRestart.find((e) => e.id === 0)?.status === "posted" && afterRestart.find((e) => e.id === 1)?.status === "open");
-  check("jobs survived the restart", (await api("GET", "/jobs?limit=20")).data.jobs.filter((j) => j.status === "agreed").length === 6 + (X402 ? 1 : 0)); // 3 + 1 free from the rate-limit step + 1 paid + 1 team (+ the x402 job)
+  check("jobs survived the restart", (await api("GET", "/jobs?limit=20")).data.jobs.filter((j) => j.status === "agreed").length === 6 + (X402 ? 1 : 0) + (V2 ? 2 : 0)); // 3 + 1 free from the rate-limit step + 1 paid + 1 team (+ the x402 job, + the two V2 jobs)
   await pub.request({ method: "evm_increaseTime", params: [EPOCH_LENGTH * 2] });
   await pub.request({ method: "evm_mine", params: [] });
   await waitFor("autoclose to post epoch 1", async () => (await api("GET", "/epochs")).data.epochs.find((e) => e.id === 1)?.status === "posted", {

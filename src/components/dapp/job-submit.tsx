@@ -20,6 +20,7 @@ import { JobInvoicePanel } from "./job-invoice";
 import { JobReceiptPanel } from "./job-receipt";
 import { JobLifecycle } from "./job-lifecycle";
 import { OutputPrivacyNotice, outputLockText, SignInToView } from "./private-output";
+import { PayFrom } from "./pay-from";
 import { RadioCard, Row } from "./ui";
 import { nowMs, submitFailureText, useJobSubmit } from "./use-job-submit";
 import { WalletButton } from "./wallet-button";
@@ -131,13 +132,15 @@ export function JobSubmit({ rateLimit, side }: { rateLimit: number | null; side?
   const [failure, setFailure] = useState<ApiFailure | null>(null);
   const [mine, setMine] = useState<Submitted[]>([]);
   // Paid jobs: present only inside JobAccountProvider (config.jobPayments set). Without it the form is free-only.
-  const { acct, paidOn, weiPerUnit, stage, busy, submit: send } = useJobSubmit();
+  const { acct, paidOn, weiPerUnit, stage, busy, submit: send, route, asset, setAsset, spareChoice } = useJobSubmit();
   const [pay, setPay] = useState<Pay>(paidOn && rateLimit === 0 ? "paid" : "free");
   const paid = paidOn && pay === "paid";
   const [signError, setSignError] = useState<string | null>(null);
   const closed = rateLimit === 0 && !paid;
   const quote = paidOn ? quoteJob(buildRequest(form), weiPerUnit) : null;
-  const available = acct?.account ? BigInt(acct.account.available) : null;
+  // The balance this job would be paid from (V1 only: the V1 balance; with V2: see payRoute).
+  const payFrom = paidOn ? route(quote?.wei ?? null) : null;
+  const available = payFrom ? payFrom.available : acct?.account ? BigInt(acct.account.available) : null;
   const short = paid && quote !== null && available !== null && available < quote.wei;
 
   useEffect(() => {
@@ -229,7 +232,7 @@ export function JobSubmit({ rateLimit, side }: { rateLimit: number | null; side?
               {!acct?.isConnected ? (
                 <span className="text-muted">Connect a wallet</span>
               ) : acct.account ? (
-                <Eth wei={acct.account.available} />
+                <Eth wei={available ?? acct.account.available} />
               ) : acct.failure ? (
                 <span className="text-muted">{accountFailureText(acct.failure).title}</span>
               ) : (
@@ -237,6 +240,7 @@ export function JobSubmit({ rateLimit, side }: { rateLimit: number | null; side?
               )}
             </Row>
           </dl>
+          <PayFrom name="pay-asset" v2={acct?.account?.v2} route={payFrom} priceWei={quote?.wei ?? null} asset={asset} setAsset={setAsset} spareChoice={spareChoice} />
           <div className="space-y-3 border-t border-line px-5 py-3.5 text-xs leading-relaxed text-muted">
             {!acct?.isConnected ? (
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
