@@ -122,9 +122,9 @@ describe("token-feature addresses can be set by env (server start or build)", ()
     };
   };
 
-  test("unset: every value is null (not live)", () => {
+  test("unset: every value is null (not live), except NodeStake, deployed 26 Nov 2026 (ADDR.nodeStake)", () => {
     const r = load({});
-    assert.deepEqual(r.c, { nodeStake: null, holderPool: null, burner: null, jobPaymentsV2: null });
+    assert.deepEqual(r.c, { nodeStake: "0x6565874F5c281c618DcFb5DF52c7E554ae8a866B", holderPool: null, burner: null, jobPaymentsV2: null });
     assert.equal(r.s, null);
   });
 

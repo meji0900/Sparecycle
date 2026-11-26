@@ -50,8 +50,8 @@ describe("section 10 defaults", () => {
 });
 
 describe("addresses of the token features", () => {
-  test("nothing is deployed: every token contract, the v4 infrastructure and the start block are null", () => {
-    assert.deepEqual(TOKEN_CONTRACTS, { nodeStake: null, holderPool: null, burner: null, jobPaymentsV2: null });
+  test("only NodeStake is deployed (26 Nov 2026); the other token contracts, the v4 infrastructure and the start block are null", () => {
+    assert.deepEqual(TOKEN_CONTRACTS, { nodeStake: ADDR.nodeStake, holderPool: null, burner: null, jobPaymentsV2: null });
     assert.deepEqual([UNISWAP_V4.poolManager, UNISWAP_V4.stateView, UNISWAP_V4.universalRouter, UNISWAP_V4.spareEthPoolKey], [null, null, null, null]);
     assert.equal(SAFE_MULTISEND_CALL_ONLY, null);
     assert.equal(SPARE_START_BLOCK, null);
@@ -66,8 +66,9 @@ describe("addresses of the token features", () => {
     assert.equal(getAddress(BURN_SINKS.dead), BURN_SINKS.dead);
   });
 
-  test("/docs/contracts is unchanged: no token-feature row", () => {
-    assert.ok(!ADDRESS_ROWS.some((r) => /NodeStake|HolderPool|Burner|JobPaymentsV2|PoolManager|StateView|Universal Router/i.test(`${r.name} ${r.id}`)));
+  test("/docs/contracts: SparecycleNodeStake is the only token-feature row (the others are not deployed)", () => {
+    const rows = ADDRESS_ROWS.filter((r) => /NodeStake|HolderPool|Burner|JobPaymentsV2|PoolManager|StateView|Universal Router/i.test(`${r.name} ${r.id}`));
+    assert.deepEqual(rows.map((r) => [r.id, r.address]), [["node-stake", ADDR.nodeStake]]);
   });
 
   test("SPARE only, never CYCLE (N16)", () => {

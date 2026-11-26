@@ -210,7 +210,7 @@ describe("plans per charged epoch (scratch DB, chain stubbed)", () => {
     assert.ok(rows.every((r) => /^0x[0-9a-f]{64}$/.test(r.txHash)), "no burn row without a transaction hash");
     assert.equal(rows.reduce((s, r) => s + r.spareBurned, 0n), 1_234n);
     assert.equal(burner, "not-live");
-    assert.equal(stakeLive, false);
+    assert.equal(stakeLive, true, "SparecycleNodeStake is deployed (26 Nov 2026)");
   });
 
   test("the 'burn' method batches the swap (SPARE to the Safe) and burn(minOut + what the Safe holds) through MultiSend", async () => {

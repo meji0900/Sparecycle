@@ -34,6 +34,19 @@ export const KIND_LABEL: Record<ChangelogKind, string> = {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    id: "node-stake-contract",
+    title: "Node staking contract on Robinhood Chain",
+    date: "2026-11-26",
+    kind: "contract",
+    summary:
+      "SparecycleNodeStake is live. Node owners can stake SPARE if they want to; the minimum stake is zero, so running a node still needs no token. A slash is proposed by the scheduler only after repeated faults against two other owners' results, can be appealed, is decided by the treasury Safe, takes at most 10% of a stake per proposal and is burned. The source is verified (exact match). Internal review only, not externally audited, and the scheduler does not use stakes yet.",
+    evidence: [
+      { label: "Deploy transaction", tx: "0xf1fa83398ae88ef8bec041dfe8c90e5088993e17ef6d879b1f35106884622321" },
+      { label: "Verified source (Sourcify)", url: sourcifyUrl(ADDR.nodeStake) },
+      { label: "Contract on Blockscout", url: explorerAddressUrl(ADDR.nodeStake) },
+    ],
+  },
+  {
     id: "run-a-model",
     title: "Run a model: a public catalog, checked by two machines",
     date: "2026-11-26",

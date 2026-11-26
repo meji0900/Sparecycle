@@ -17,6 +17,12 @@ export const ADDR = {
   rewards: "0x68A0569130551154FC1aABD71d99f65681c58Fe9",
   /** SparecycleJobPayments: customers' prepaid balances for paid jobs. No owner, no admin. */
   payments: "0x420716931E5Ff2a984840C6E95837d826a8BE7eB",
+  /**
+   * SparecycleNodeStake: voluntary SPARE stake per node owner; slashes are proposed by the scheduler and decided by the
+   * treasury Safe. Deployed 26 Nov 2026 (tx 0xf1fa8339…2321, block 123,623,184) with a minimum stake of 0. Internal
+   * review only, not externally audited.
+   */
+  nodeStake: "0x6565874F5c281c618DcFb5DF52c7E554ae8a866B",
   /** Treasury Safe (Safe 1.5.0, 2 of 3): 5% of every charge, and since 25 Nov 2026 the reward contract's owner. */
   treasurySafe: "0xb262E4436aD6760F91e987f14e2fAc5D6550c71B",
   /** The SafeL2 1.5.0 singleton the treasury Safe proxy delegates to (storage slot 0 of the proxy, read 26 Nov 2026). */
@@ -74,6 +80,10 @@ export const VERIFICATION = {
     blockscout: { status: "verified", checkedOn: "26 Nov 2026" },
     sourcify: { status: "exact_match", checkedOn: "26 Nov 2026", verifiedAt: "2026-11-24T10:00:50Z" },
   },
+  nodeStake: {
+    blockscout: null,
+    sourcify: { status: "exact_match", checkedOn: "26 Nov 2026", verifiedAt: "2026-11-26T13:40:00Z" },
+  },
   treasurySafe: {
     blockscout: {
       status: "standard-proxy",
@@ -123,6 +133,16 @@ export const ADDRESS_ROWS: AddressRow[] = [
     kind: "contract",
     by: "sparecycle",
     source: VERIFICATION.payments,
+  },
+  {
+    id: "node-stake",
+    name: "SparecycleNodeStake",
+    role: "Voluntary SPARE stake per node owner. A slash is proposed by the scheduler only after repeated faults against two other owners' results, can be appealed, is decided by the treasury Safe, takes at most 10% per proposal and is burned. Minimum stake 0: running a node needs no token. Internal review only, not externally audited.",
+    address: ADDR.nodeStake,
+    network: "mainnet",
+    kind: "contract",
+    by: "sparecycle",
+    source: VERIFICATION.nodeStake,
   },
   {
     id: "treasury-safe",
@@ -323,8 +343,8 @@ export const TOKEN_CONTRACTS: {
   burner: Address | null;
   jobPaymentsV2: Address | null;
 } = {
-  /** SparecycleNodeStake: SPARE stake per owner wallet, slash proposals (brief §3). Not deployed. */
-  nodeStake: tokenEnvAddress("TOKEN_NODE_STAKE_ADDRESS"),
+  /** SparecycleNodeStake: SPARE stake per owner wallet, slash proposals (brief §3). Deployed 26 Nov 2026 (ADDR.nodeStake). */
+  nodeStake: tokenEnvAddress("TOKEN_NODE_STAKE_ADDRESS") ?? getAddress(ADDR.nodeStake),
   /** SparecycleHolderPool: per-epoch Merkle root of holder shares, mode choice (brief §6.2). Not deployed. */
   holderPool: tokenEnvAddress("TOKEN_HOLDER_POOL_ADDRESS"),
   /** SparecycleBurner: phase 2b burn path (brief §4). Not deployed; phase 2a is run by the treasury Safe. */

@@ -80,8 +80,15 @@ describe("flag off (the default)", () => {
 });
 
 describe("flag on", () => {
-  test("SparecycleNodeStake not deployed (today): every read fails, so no node gets a lease (fail closed)", async () => {
+  test("the stake read fails (RPC down, or a contract that is not live): no node gets a lease (fail closed)", async () => {
     process.env.TOKEN_STAKE_GATE = "on";
+    // SparecycleNodeStake is deployed (26 Nov 2026), so a failing read is simulated instead of hitting the chain.
+    mock.method(tokenChain, "stakedOf", async () => {
+      throw new NotLiveError("SparecycleNodeStake");
+    });
+    mock.method(tokenChain, "minStakePerNode", async () => {
+      throw new Error("rpc unreachable");
+    });
     await assert.rejects(tokenChain.stakedOf("0x0000000000000000000000000000000000000001"), NotLiveError);
     const [a, b] = await Promise.all([mkNode(), mkNode()]);
     await textJob("gated");

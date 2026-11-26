@@ -69,7 +69,7 @@ describe("every figure has a source", () => {
     for (const s of model.sections.slice(0, 3)) assert.equal(s.live, false, s.id);
     // Undeployed contracts in the exclusion list show the placeholder, never an invented address.
     const nulls = model.exclusions.filter((e) => e.address === null);
-    assert.ok(nulls.length >= 4);
+    assert.ok(nulls.length >= 3, "HolderPool, Burner and PaymentsV2 are not deployed (NodeStake is, 26 Nov 2026)");
     assert.ok(nulls.every((e) => "notLive" in e && e.notLive === NOT_LIVE_YET));
     assert.ok(model.exclusions.some((e) => e.address === ADDR.treasurySafe));
     assert.equal(model.block?.href, `https://robinhoodchain.blockscout.com/block/123604662`);

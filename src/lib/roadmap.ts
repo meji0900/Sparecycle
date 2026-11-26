@@ -44,7 +44,7 @@ export const ROADMAP: RoadmapItem[] = [
     title: "Node staking with partial slashing",
     status: "in-progress",
     summary:
-      "Node owners can stake SPARE. A part of a stake is burned only after repeated faults proven against two other owners' results, with an appeal window, and never for a single mismatch. The scheduler proposes, the treasury Safe decides; it is not trustless. The minimum stake starts at zero, so running a node still needs no token.",
+      "The staking contract is live with a minimum stake of zero. Next: staking from the node page, and the scheduler reading stakes and proposing slashes. A part of a stake is burned only after repeated faults proven against two other owners' results, with an appeal window, and never for a single mismatch. The scheduler proposes, the treasury Safe decides; it is not trustless.",
   },
 ];
 
