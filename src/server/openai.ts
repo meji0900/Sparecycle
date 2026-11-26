@@ -7,11 +7,14 @@
 //   GET  /v1/models                    the two models, nothing else
 //
 // Async by default: a create answers 202 with the OpenAI object shape and empty `choices` / `data` plus a `sparecycle`
-// block (job id, status, price, poll path). A poll answers 200 with the same shape, filled once two nodes agreed. The
+// block (job id, status, price, poll path, receipt_url: the job's receipt, readable with the same key once the two results
+// are compared). A poll answers 200 with the same shape, filled once two nodes agreed. The
 // three final "not charged" outcomes (results did not match, no verdict within the TTL, safety checker) are 422
 // errors of type `not_charged`, only on a poll or a `Prefer: wait` create, never a made-up answer. `Prefer: wait=<s>`
 // (RFC 7240) holds a create or poll up to API_MAX_WAIT_SECONDS. `Idempotency-Key` makes a retried create return the
-// first job. Nothing is streamed (`stream: true` -> 400): no byte of output exists before two nodes agree.
+// first job. Nothing is streamed (`stream: true` -> 400): no byte of output exists before two nodes agree. When no pair
+// of machines with different owners can take the model (./capacity), a create answers 503 `no_node_pair` at once and
+// nothing is queued, held or charged.
 //
 // Never invents numbers: no `usage` (the scheduler has no token counts), `finish_reason` is always "stop" with
 // `sparecycle.finish_reason_reported: false`, and text decoding is greedy on the nodes whatever `temperature` says.
@@ -88,6 +91,7 @@ const FROM_API: Record<string, [number, string, string]> = {
   "key-daily-cap": [429, "key_daily_cap_reached", "rate_limit_error"],
   "rate-limited": [429, "rate_limited", "rate_limit_error"],
   "queue-full": [503, "queue_full", "server_error"],
+  "no-node-pair": [503, "no_node_pair", "server_error"],
   "payments-off": [503, "payments_off", "server_error"],
   "api-keys-off": [503, "api_keys_off", "server_error"],
 };
@@ -112,10 +116,12 @@ export function toOpenAIError(e: unknown): OpenAIError {
     const field = typeof e.extra?.field === "string" ? e.extra.field : null;
     const headers: Record<string, string> = {};
     if (code === "key_daily_cap_reached") headers["x-should-retry"] = "false"; // it can't succeed before the UTC reset
+    // No pair now: an SDK's quick automatic retries would not find one either; the caller decides when to try again.
+    if (code === "no_node_pair") headers["x-should-retry"] = "false";
     if (status === 401) headers["www-authenticate"] = 'Bearer realm="sparecycle"';
     if (typeof e.extra?.retryAfter === "number") headers["retry-after"] = String(e.extra.retryAfter);
     const err = new OpenAIError(status, code, type, e.message, field ? (PARAM_OF[field] ?? field) : null, headers);
-    if (code === "key_daily_cap_reached" || code === "insufficient_balance") {
+    if (code === "key_daily_cap_reached" || code === "insufficient_balance" || code === "no_node_pair") {
       err.sparecycle = Object.fromEntries(
         Object.entries(e.extra ?? {}).map(([k, v]) => [k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`), v]),
       );
@@ -444,7 +450,7 @@ export function jobIdFrom(raw: string, prefix: "chatcmpl-" | "img-"): string {
  * A final outcome that was never charged, as a 422 `not_charged` error (brief 2.7); null for any other status.
  * 422 is not in the OpenAI SDKs' retry list, so a client does not resubmit by itself.
  */
-export function notCharged(job: Pick<KeyJob, "id" | "status" | "note">): OpenAIError | null {
+export function notCharged(job: Pick<KeyJob, "id" | "status" | "note">, req?: Request): OpenAIError | null {
   const outcome: Partial<Record<JobStatus, [string, string]>> = {
     disagreed: ["results_did_not_match", "The results of the two nodes did not match, so there is no answer. Nothing was charged for this job."],
     expired:
@@ -456,11 +462,25 @@ export function notCharged(job: Pick<KeyJob, "id" | "status" | "note">): OpenAIE
   const hit = outcome[job.status];
   if (!hit) return null;
   const err = new OpenAIError(422, hit[0], "not_charged", hit[1], null, { "x-should-retry": "false" });
-  err.sparecycle = { job_id: job.id, status: job.status, charged: false, note: job.note };
+  // The receipt also proves the job was not charged (its leaf says released once the epoch's charge is on-chain).
+  err.sparecycle = { job_id: job.id, status: job.status, charged: false, note: job.note, ...(req ? { receipt_url: receiptUrl(req, job.id) } : {}) };
   return err;
 }
 
-function sparecycleOf(job: KeyJob, poll: string) {
+/** https://<host> of a request (x-forwarded-proto behind the hosting proxy). */
+function originOf(req: Request) {
+  const proto = (req.headers.get("x-forwarded-proto") ?? new URL(req.url).protocol.replace(/:$/, "")).split(",")[0].trim() || "https";
+  return `${proto}://${requestHost(req)}`;
+}
+
+/**
+ * Absolute URL of a job's receipt (GET /api/v1/jobs/:id/receipt): readable with the API key that submitted the job, the
+ * paying wallet's session or the job's read secret. 409 no-verdict until the two results are compared; provisional from the
+ * verdict on, sealed once the epoch's charge that commits it is on-chain (checkable in the browser, src/lib/job-receipt.ts).
+ */
+export const receiptUrl = (req: Request, jobId: string) => `${originOf(req)}/api/v1/jobs/${jobId}/receipt`;
+
+function sparecycleOf(req: Request, job: KeyJob, poll: string) {
   return {
     job_id: job.id,
     status: job.status,
@@ -469,11 +489,12 @@ function sparecycleOf(job: KeyJob, poll: string) {
     charge_status: job.chargeStatus,
     settled_at: job.settledAt,
     poll,
+    receipt_url: receiptUrl(req, job.id),
   };
 }
 
 /** chat.completion object of a key's text job: empty `choices` until agreed. */
-export function chatObject(job: KeyJob) {
+export function chatObject(req: Request, job: KeyJob) {
   const done = job.status === "agreed" && job.output;
   return {
     id: chatId(job.id),
@@ -490,15 +511,12 @@ export function chatObject(job: KeyJob) {
           },
         ]
       : [],
-    sparecycle: { ...sparecycleOf(job, chatPoll(job.id)), decoding: "greedy", finish_reason_reported: false },
+    sparecycle: { ...sparecycleOf(req, job, chatPoll(job.id)), decoding: "greedy", finish_reason_reported: false },
   };
 }
 
 /** Absolute URL of a job's gated result (needs the same Bearer key). */
-function resultUrl(req: Request, jobId: string) {
-  const proto = (req.headers.get("x-forwarded-proto") ?? new URL(req.url).protocol.replace(/:$/, "")).split(",")[0].trim() || "https";
-  return `${proto}://${requestHost(req)}/api/v1/jobs/${jobId}/result`;
-}
+const resultUrl = (req: Request, jobId: string) => `${originOf(req)}/api/v1/jobs/${jobId}/result`;
 
 /** images response of a key's image job: empty `data` until agreed. */
 export function imagesObject(req: Request, job: KeyJob, format: ImageFormat) {
@@ -508,13 +526,13 @@ export function imagesObject(req: Request, job: KeyJob, format: ImageFormat) {
     data: done ? [format === "url" ? { url: resultUrl(req, job.id) } : { b64_json: Buffer.from(job.output!.body).toString("base64") }] : [],
     output_format: "png",
     size: job.width && job.height ? `${job.width}x${job.height}` : undefined,
-    sparecycle: { ...sparecycleOf(job, imagePoll(job.id)), id: imageId(job.id), response_format: format },
+    sparecycle: { ...sparecycleOf(req, job, imagePoll(job.id)), id: imageId(job.id), response_format: format },
   };
 }
 
 /** 200 with the finished object, 202 while it runs (create only), or the 422 not_charged error. */
-function answer(job: KeyJob, body: unknown, create: boolean, headers: Record<string, string>): Response {
-  const nc = notCharged(job);
+function answer(req: Request, job: KeyJob, body: unknown, create: boolean, headers: Record<string, string>): Response {
+  const nc = notCharged(job, req);
   if (nc) {
     nc.headers = { ...nc.headers, ...headers };
     return errorJson(nc);
@@ -546,7 +564,7 @@ async function created(req: Request, key: KeyViewer, jobId: string, replayed: bo
       headers["preference-applied"] = `wait=${wait}`;
     }
     const job = keyJob(jobId, key, { withOutput: true });
-    return answer(job, render(job), true, headers);
+    return answer(req, job, render(job), true, headers);
   } catch {
     const row = getDb().prepare("SELECT created_at, price_wei, model, kind, work_units FROM jobs WHERE id = ?").get(jobId) as {
       created_at: number;
@@ -581,7 +599,7 @@ export async function createChat(req: Request): Promise<Response> {
   const body = await bodyOf(req);
   const request = chatRequest(body.json);
   const { jobId, replayed } = await submitForKey(key, request, { surface: "chat", ip: clientIp(req), idempotencyKey: idem, bodyText: body.text });
-  return created(req, key, jobId, replayed, chatObject);
+  return created(req, key, jobId, replayed, (job) => chatObject(req, job));
 }
 
 /** GET /v1/chat/completions/chatcmpl-<jobId> */
@@ -597,7 +615,7 @@ export async function pollChat(req: Request, rawId: string): Promise<Response> {
     headers["preference-applied"] = `wait=${wait}`;
   }
   job = keyJob(jobId, key, { withOutput: true });
-  return answer(job, chatObject(job), false, headers);
+  return answer(req, job, chatObject(req, job), false, headers);
 }
 
 /** POST /v1/images/generations */
@@ -623,7 +641,7 @@ export async function pollImage(req: Request, rawId: string): Promise<Response> 
     headers["preference-applied"] = `wait=${wait}`;
   }
   job = keyJob(jobId, key, { withOutput: true });
-  return answer(job, imagesObject(req, job, formatOf(jobId)), false, headers);
+  return answer(req, job, imagesObject(req, job, formatOf(jobId)), false, headers);
 }
 
 /** GET /v1/models — exactly the two live models. `created` is left out: no release date is published for them. */

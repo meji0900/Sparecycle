@@ -101,7 +101,12 @@ console.log(res.status, await res.json()); // keep id and readSecret`;
       <DocsHeader eyebrow="Get started" title="Your first job">
         <p>
           A job is a Stable Diffusion 1.5 image or a Qwen2.5-1.5B text answer. Two GPUs with different owners run it and the
-          scheduler compares their results. You are charged only when the two results match.
+          scheduler compares their results. You are charged only when the two results match. Today every node is project-run, so
+          both owner wallets belong to the project; prices, limits and live capacity are on{" "}
+          <Link href="/models" className="link">
+            Models
+          </Link>
+          .
         </p>
         <p>Two ways in: the playground in your browser, or the API with curl. Both start with a free trial.</p>
       </DocsHeader>
@@ -132,11 +137,21 @@ console.log(res.status, await res.json()); // keep id and readSecret`;
               <span className="num text-text">{eth(jobPriceWei(TEXT, unit))}</span>.
             </p>
           </Step>
-          <Step n={3} title="Submit in the playground">
+          <Step n={3} title="Pick a model and submit in the playground">
             <p>
-              Open the <Link href="/playground" className="link">playground</Link>, describe the image, pick a shape and quality.
-              The exact price is shown before you pay. A paid job asks your wallet to sign a message: no gas, nothing moves
-              on-chain yet. The price is held from your available balance until the job ends.
+              Open the <Link href="/playground" className="link">playground</Link> and pick a model: Stable Diffusion 1.5 for an
+              image (describe it, pick a shape and quality) or Qwen2.5-1.5B for a short text answer (write the prompt, pick a length,
+              add instructions if you like). Each model shows whether a pair of machines is ready now. The exact price is shown before
+              you pay.
+            </p>
+            <p>
+              Paying from your balance needs no API key: your wallet signs one message per job (no gas, nothing moves on-chain yet),
+              and the job goes into the same queue as API jobs, with the same re-checks, charge and receipt. The price is held from
+              your available balance until the job ends.
+            </p>
+            <p>
+              If no two machines with different owners can take the model right now, the job is refused at once with &quot;No pair of
+              machines can take this job right now&quot; (<C>503 no-node-pair</C>): nothing is queued, held or charged. Try again later.
             </p>
           </Step>
           <Step n={4} title="Follow its status">
@@ -168,9 +183,10 @@ console.log(res.status, await res.json()); // keep id and readSecret`;
           </Step>
           <Step n={6} title="Keep the receipt (paid jobs)">
             <p>
-              A paid job shows a receipt under its invoice as soon as the two results are compared. Once the epoch&apos;s charge is
-              on-chain the receipt is sealed: save it as a JSON file and choose Verify to check it against the chain yourself, through
-              Robinhood Chain&apos;s public RPC rather than Sparecycle. See{" "}
+              A paid job shows a receipt under its invoice as soon as the two results are compared; the Verify button next to the
+              result, and the Verify link under it in Your jobs, lead to it. Once the epoch&apos;s charge is on-chain the receipt is
+              sealed: save it as a JSON file and choose &quot;Verify in this browser&quot; to check it against the chain yourself,
+              through Robinhood Chain&apos;s public RPC rather than Sparecycle. A free trial job is not charged and has no receipt. See{" "}
               <Link href="/docs/billing#receipts" className="link">
                 job receipts
               </Link>
@@ -195,7 +211,9 @@ console.log(res.status, await res.json()); // keep id and readSecret`;
             <CodeBlock label="Terminal" code={status} />
             <p>
               Repeat until <C>status</C> is <C>agreed</C>, <C>disagreed</C>, <C>rejected</C> or <C>expired</C>. A first job can
-              wait a minute or two while the project&apos;s own GPUs start. A paid job also has a <C>round</C>: <C>0</C> for its
+              wait a minute or two while the project&apos;s own GPUs start. When no pair can be reached at all, the submit itself
+              answers <C>503 no-node-pair</C> and no job is created; <C>curl -s {`${api}/catalog`}</C> shows each model&apos;s live
+              capacity. A paid job also has a <C>round</C>: <C>0</C> for its
               first pair, <C>1</C> or <C>2</C> while it is checked again on another pair (<C>maxRounds</C> is {MAX_ROUNDS}; a free
               job has <C>maxRounds</C> 1).
             </p>

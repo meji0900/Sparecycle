@@ -26,8 +26,10 @@ export function json(body: unknown, status = 200, headers: Record<string, string
   });
 }
 
+/** The JSON error. A numeric `retryAfter` (seconds) in `extra` is also sent as a Retry-After header. */
 export function errorResponse(status: number, code: string, message: string, extra?: Record<string, unknown>) {
-  return json({ error: code, message, ...extra }, status);
+  const retry = typeof extra?.retryAfter === "number" && extra.retryAfter >= 0 ? { "retry-after": String(Math.ceil(extra.retryAfter)) } : undefined;
+  return json({ error: code, message, ...extra }, status, retry);
 }
 
 /** ApiError -> its JSON error, anything else -> 500 internal-error (logged, not returned). */

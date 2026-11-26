@@ -36,16 +36,37 @@ export default function OpenAiDocs() {
           <Link href="/docs/api/keys" className="link">
             API key
           </Link>
-          . Two models only: <C>qwen2.5-1.5b</C> for chat and <C>sd15</C> for images. Every job runs on two independent nodes and you get an answer only when
-          both agree; if they don&apos;t, you get an error that says nothing was charged, never a made-up answer.
+          . Two models only: <C>qwen2.5-1.5b</C> for chat and <C>sd15</C> for images (prices, limits and live capacity on{" "}
+          <Link href="/models" className="link">
+            Models
+          </Link>
+          ). Every job runs on two nodes with different owner wallets and you get an answer only when both agree; if they don&apos;t, you get an error that
+          says nothing was charged, never a made-up answer. Today every node is project-run, so both wallets belong to the project.
         </p>
       }
     >
       <DocSection id="async" title="Async by default: create, then poll">
         <p>
           A create call answers <C>202</C> right away with the usual OpenAI object and an empty <C>choices</C> (chat) or <C>data</C> (images), plus a{" "}
-          <C>sparecycle</C> block: <C>job_id</C>, <C>status</C>, <C>price_wei</C> and the <C>poll</C> path. Poll that path until <C>choices</C> /{" "}
-          <C>data</C> is filled. For chat, the SDKs&apos; <C>chat.completions.retrieve(id)</C> is the poll.
+          <C>sparecycle</C> block: <C>job_id</C>, <C>status</C>, <C>price_wei</C>, the <C>poll</C> path and <C>receipt_url</C>. Poll that path until{" "}
+          <C>choices</C> / <C>data</C> is filled. For chat, the SDKs&apos; <C>chat.completions.retrieve(id)</C> is the poll.
+        </p>
+        <p>
+          <C>sparecycle.receipt_url</C> is the job&apos;s receipt (<C>GET /api/v1/jobs/&lt;job_id&gt;/receipt</C>, read with the same key). It answers{" "}
+          <C>409</C> until the two results are compared, then a provisional receipt with both nodes&apos; signed results, sealed once the epoch&apos;s
+          charge is on-chain. Check it against the chain on the{" "}
+          <Link href="/jobs#check-receipt" className="link">
+            Jobs page
+          </Link>{" "}
+          or with <C>src/lib/job-receipt.ts</C>. See{" "}
+          <Link href="/docs/billing" className="link">
+            Billing
+          </Link>
+          .
+        </p>
+        <p>
+          If no two nodes with different owners can take the model right now, neither online nor through the project&apos;s GPU pool, a create answers{" "}
+          <C>503 no_node_pair</C> at once: nothing is queued, held or charged. <C>GET /v1/catalog</C> (no key) shows each model&apos;s live capacity.
         </p>
         <p>
           To wait instead, send <C>Prefer: wait=&lt;seconds&gt;</C> (RFC 7240) on a create or poll: the server holds the request until the job has a verdict
@@ -238,7 +259,8 @@ curl -s ${base}/models -H "Authorization: Bearer $SPARECYCLE_API_KEY"`}
           ]}
         />
         <p>
-          Any other model name answers <C>404 model_not_found</C>. <C>GET /v1/models</C> lists exactly the two models. The price is the same as on{" "}
+          Any other model name answers <C>404 model_not_found</C>. <C>GET /v1/models</C> lists exactly the two models (with a key);{" "}
+          <C>GET /v1/catalog</C> lists them without a key, with the price per unit, the limits and live capacity. The price is the same as on{" "}
           <Link href="/jobs" className="link">
             Submit a job
           </Link>
@@ -278,6 +300,15 @@ curl -s ${base}/models -H "Authorization: Bearer $SPARECYCLE_API_KEY"`}
             ["429", <C key="c">key_daily_cap_reached</C>, "rate_limit_error", <>the key&apos;s cap for today (UTC) is used up; answered with <C>x-should-retry: false</C></>],
             ["429", <C key="c">rate_limited</C>, "rate_limit_error", "more paid jobs per hour from one wallet than allowed"],
             ["503", <C key="c">queue_full</C>, "server_error", "the job queue is full; nothing was queued"],
+            [
+              "503",
+              <C key="c">no_node_pair</C>,
+              "server_error",
+              <>
+                no two nodes with different owners can take the model now, neither online nor through the GPU pool; nothing was queued, held or charged.
+                Answered with <C>x-should-retry: false</C>, and <C>Retry-After</C> when the pool is waiting to try again
+              </>,
+            ],
             ["422", <C key="c">results_did_not_match</C>, "not_charged", "the two nodes' results differ (poll only)"],
             ["422", <C key="c">job_expired</C>, "not_charged", "no verdict within the job time limit, or the key was disabled before the job ran (poll only)"],
             ["422", <C key="c">content_rejected</C>, "not_charged", "a node's safety checker rejected the image (poll only)"],
@@ -285,7 +316,8 @@ curl -s ${base}/models -H "Authorization: Bearer $SPARECYCLE_API_KEY"`}
         />
         <p>
           The three <C>422 not_charged</C> outcomes come only from a poll (or a create with <C>Prefer: wait</C>), never as a fake completion. 422 is not in
-          the SDKs&apos; retry list, so a client does not resubmit on its own. Nothing is charged for these jobs.
+          the SDKs&apos; retry list, so a client does not resubmit on its own. Nothing is charged for these jobs; their <C>sparecycle</C> block still carries{" "}
+          <C>receipt_url</C>, whose receipt shows the job as not charged.
         </p>
       </DocSection>
     </ApiDocPage>

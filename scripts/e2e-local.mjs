@@ -33,9 +33,15 @@
 //     free job's mismatch ends disagreed with no re-check. A paid text job mismatches on two corrupting nodes, waits in
 //     round 1 (they are excluded) with the price still held, then agrees on the honest pair once it restarts; that
 //     epoch's payout tree holds only the honest pair's owners and the charge list only that job
+// 9c. serverless mode: GET /v1/catalog without a key (exactly MODELS, the live price, a pair online), /v1/models still
+//     key-only; the playground's wallet flow: the customer signs in (sc_session) and pays an SD 1.5 and a Qwen job from
+//     its balance with the playground's own request builder; both agree, are charged in the next epoch's v2 jobs root
+//     exactly like API jobs, and their receipts (read with the session) are sealed and verify against the Charged event
 // 10. private outputs (OUTPUT_AUTH=enforce, nodes stopped): the 401/403/404/409/200 route matrix with read secrets and
 //     wallet sign-in (EOA and an ERC-1271 smart wallet), the retired /output URL (410), and no /api/v1/jobs/* response
 //     ever carrying a `public` cache directive
+// 10b. capacity guard with the nodes gone: 503 no-node-pair on POST /api/v1/jobs (free and wallet-paid) and, with an API
+//     key, on POST /v1/chat/completions (OpenAI shape, no_node_pair); nothing queued and nothing held
 // 11. PASS / FAIL summary; every process started here is stopped, even on failure
 //
 // The anvil keys below are the well-known public anvil/hardhat dev keys. They are for this local test only and
@@ -1115,6 +1121,89 @@ async function main() {
     check("customer balance: only J2's price was taken, nothing for J1", balBefore - balAfter === j2Price, `${balBefore - balAfter} wei`);
   }
 
+  step("16c. serverless mode: the public catalog, and the playground's wallet flow (signed in, paid from the prepaid balance)");
+  {
+    // The two corrupting nodes still running from 16b stop; the honest pair (A and B) takes the playground jobs.
+    for (const name of ["node-c1", "node-c2"]) killTree(children.find((c) => c.name === name)?.child);
+    await sleep(10_000);
+    const { MODEL_IDS } = await srcImport("lib/protocol.ts");
+    const catRes = await fetch(`${SITE}/v1/catalog`, { signal: AbortSignal.timeout(60_000) });
+    const cat = await catRes.json();
+    check(
+      "GET /v1/catalog (the /v1 rewrite) without a key: exactly the models in MODELS, the live price per unit, a pair online for each",
+      catRes.status === 200 &&
+        JSON.stringify(cat.models.map((m) => m.id)) === JSON.stringify(MODEL_IDS) &&
+        cat.models.every((m) => m.price.priceWeiPerUnit === PRICE_WEI_PER_UNIT.toString() && m.capacity.pair === "online" && m.capacity.ready >= 2 && m.limits && m.license && m.source),
+      JSON.stringify(cat.models?.map((m) => [m.id, m.capacity])),
+    );
+    const modelsNoKey = await fetch(`${SITE}/v1/models`, { signal: AbortSignal.timeout(60_000) });
+    check("GET /v1/models without a key stays OpenAI-shaped and key-only (401 invalid_api_key)", modelsNoKey.status === 401 && (await modelsNoKey.json()).error?.code === "invalid_api_key");
+
+    // The playground: a signed-in wallet (sc_session) picks each catalog model and pays from its balance with a per-job
+    // signature, through the same POST /api/v1/jobs (submitJob) as the API. The requests are built by the playground's code.
+    const { imageJobRequest, textJobRequest } = await srcImport("lib/playground-request.ts");
+    const n = await api("GET", "/auth/nonce");
+    const siwe = createSiweMessage({
+      address: customer.address,
+      chainId: n.data.chainId,
+      domain: new URL(SITE).host,
+      uri: `${SITE}/playground`,
+      nonce: n.data.nonce,
+      version: "1",
+      statement: n.data.statement,
+      issuedAt: new Date(),
+      expirationTime: new Date(n.data.expiresAt * 1000),
+    });
+    const signedIn = await api("POST", "/auth/verify", { message: siwe, signature: await customer.signMessage({ message: siwe }) });
+    const cookie = /^sc_session=([^;]+)/.exec(signedIn.headers.get("set-cookie") ?? "")?.[1];
+    check("the playground wallet signs in (EIP-4361, sc_session)", signedIn.status === 200 && !!cookie);
+    const session = { cookie: `sc_session=${cookie}` };
+    const playReqs = [
+      imageJobRequest({ prompt: "a playground lighthouse at dawn", negative: "", width: 256, height: 256, steps: 10, guidance: 7.5, seed: null }),
+      textJobRequest({ prompt: "Explain a work unit in one sentence.", system: "", maxTokens: 128 }),
+    ];
+    const play = [];
+    for (const r of playReqs) {
+      const price = jobPriceWei(proto.parseJobRequest(r), PRICE_WEI_PER_UNIT);
+      const res = await api("POST", "/jobs", { request: r, payment: await signPayment(customer, r, price) }, session);
+      check(`playground ${r.params.model}: accepted at the quoted price, paid from the balance`, res.status === 201 && res.data.priceWei === price.toString(), res.data.error ?? "");
+      play.push({ id: res.data.id, price, model: r.params.model });
+    }
+    await waitFor("both playground jobs agreed", async () => {
+      const views = await Promise.all(play.map((p) => api("GET", `/jobs/${p.id}`)));
+      if (views.some((v) => ["disagreed", "expired", "rejected"].includes(v.data.status))) throw new Error(`playground job failed: ${JSON.stringify(views.map((v) => v.data.status))}`);
+      return views.every((v) => v.data.status === "agreed");
+    }, { timeoutMs: 120_000, intervalMs: 1000 });
+    for (const p of play) {
+      const out = await api("GET", `/jobs/${p.id}/result`, undefined, session);
+      const rc = await api("GET", `/jobs/${p.id}/receipt`, undefined, session);
+      check(
+        `playground ${p.model}: the session reads the result and the provisional receipt (two node signatures)`,
+        out.status === 200 && rc.status === 200 && rc.data.state === "provisional" && rc.data.nodes?.length === 2 && rc.data.payer?.toLowerCase() === customer.address.toLowerCase(),
+        JSON.stringify({ out: out.status, rc: rc.status, state: rc.data?.state }),
+      );
+    }
+    const F = (await api("GET", `/jobs/${play[0].id}`)).data.epochId;
+    await pub.request({ method: "evm_increaseTime", params: [EPOCH_LENGTH * 2] });
+    await pub.request({ method: "evm_mine", params: [] });
+    await waitFor(`autoclose to post epoch ${F}`, async () => (await api("GET", "/epochs")).data.epochs.find((e) => e.id === F)?.status === "posted", {
+      timeoutMs: 90_000,
+      intervalMs: 2000,
+    });
+    const chargesF = (await api("GET", `/epochs/${F}/charges`)).data;
+    const mine = chargesF.customers?.find((x) => x.customer.toLowerCase() === customer.address.toLowerCase());
+    check(
+      `the playground jobs are in epoch ${F}'s charge exactly like API jobs: a v2 jobs root, the customer's total = both prices`,
+      chargesF.status === "done" && chargesF.hashRule === "v2-jobs-merkle" && mine?.amountWei === (play[0].price + play[1].price).toString(),
+      JSON.stringify({ status: chargesF.status, customers: chargesF.customers }),
+    );
+    for (const p of play) {
+      const rc = (await api("GET", `/jobs/${p.id}/receipt`, undefined, session)).data;
+      const v = await verifyReceipt(rc, verifyOpts);
+      check(`playground ${p.model}: the receipt is sealed, charged, and verifies against the Charged event (src/lib/job-receipt.ts)`, rc.state === "sealed" && rc.chargeStatus === "charged" && v.outcome === "verified", JSON.stringify(v.checks));
+    }
+  }
+
   step("17. private outputs (OUTPUT_AUTH=enforce; nodes stopped so a new job stays queued)");
   for (const n of children.filter((c) => c.name.startsWith("node-"))) killTree(n.child);
   check("status reports outputAuth = enforce", (await api("GET", "/status")).data.outputAuth === "enforce");
@@ -1201,6 +1290,54 @@ async function main() {
   check("ERC-1271 wallet session reads the job it paid -> 200", scwRead.status === 200 && scwRead.type.startsWith("text/plain"));
   const out = await api("POST", "/auth/logout", undefined, payerIn.headers);
   check("logout clears the cookie; the old session -> 401", out.status === 200 && /Max-Age=0/.test(out.headers.get("set-cookie") ?? "") && (await api("GET", `/jobs/${paidId}/result`, undefined, payerIn.headers)).status === 401);
+
+  step("17b. capacity guard: no pair of nodes can be reached -> 503 no-node-pair, nothing queued, held or charged");
+  {
+    // The nodes are stopped; mark them as last seen long ago (test-only DB write) instead of waiting out the 2-minute window.
+    const { DatabaseSync: Db } = await import("node:sqlite");
+    const d = new Db(dbPath);
+    d.exec("PRAGMA busy_timeout = 5000");
+    d.prepare("UPDATE nodes SET last_seen = 0").run();
+    const jobRows = () => d.prepare("SELECT COUNT(*) AS n FROM jobs").get().n;
+    const cat = (await api("GET", "/catalog")).data;
+    check("the catalog says it: no pair reachable for either model (no GPU pool in this test)", cat.models.every((m) => m.capacity.pair === null && m.capacity.ready === 0), JSON.stringify(cat.models.map((m) => m.capacity)));
+    const jobs0 = jobRows();
+    const held0 = (await api("GET", "/payments/account?address=" + customer.address)).data.held;
+    const freeNo = await api("POST", "/jobs", { kind: "text", params: { model: "qwen2.5-1.5b", prompt: "nobody can take this", maxTokens: 16 } }, { "x-forwarded-for": "10.77.0.9" });
+    check(
+      "free job -> 503 no-node-pair in the scheduler's error shape, private",
+      freeNo.status === 503 && freeNo.data.error === "no-node-pair" && freeNo.data.model === "qwen2.5-1.5b" && /Nothing was queued, held or charged/.test(freeNo.data.message) && isPrivate(freeNo),
+      JSON.stringify(freeNo.data),
+    );
+    const noReq = { kind: "image", params: { model: "sd15", prompt: "a paid lighthouse nobody can draw", width: 256, height: 256, steps: 10 } };
+    const paidNo = await api("POST", "/jobs", { request: noReq, payment: await signPayment(customer, noReq, jobPriceWei(noReq, PRICE_WEI_PER_UNIT)) });
+    check("wallet-paid job (the playground's path) -> 503 no-node-pair", paidNo.status === 503 && paidNo.data.error === "no-node-pair", JSON.stringify(paidNo.data));
+    // An API key of the same wallet: the OpenAI-compatible create answers in the OpenAI error shape.
+    const keySession = await signInAs(customer.address, customer);
+    const pending = await api("POST", "/keys", { label: "e2e", dailyCapWei: parseEther("0.001").toString() }, keySession.headers);
+    const activated = await api(
+      "POST",
+      `/keys/${pending.data.keyId}/activate`,
+      { signature: await customer.signMessage({ message: pending.data.linkMessage }) },
+      keySession.headers,
+    );
+    check("an API key of the customer's wallet is active", activated.status === 200 && /^sck_/.test(activated.data.key ?? ""), activated.data.error ?? "");
+    const oai = await fetch(`${SITE}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${activated.data.key}` },
+      body: JSON.stringify({ model: "qwen2.5-1.5b", messages: [{ role: "user", content: "Say hi" }], max_tokens: 16 }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    const ob = await oai.json();
+    check(
+      "POST /v1/chat/completions -> 503, OpenAI error shape, code no_node_pair, x-should-retry false",
+      oai.status === 503 && ob.error?.code === "no_node_pair" && ob.error?.type === "server_error" && oai.headers.get("x-should-retry") === "false",
+      JSON.stringify(ob),
+    );
+    const held1 = (await api("GET", "/payments/account?address=" + customer.address)).data.held;
+    check("nothing queued and nothing held by the refused jobs", jobRows() === jobs0 && held1 === held0, `jobs ${jobs0} -> ${jobRows()}, held ${held0} -> ${held1}`);
+    d.close();
+  }
 
   const leaky = jobsCacheHeaders.filter((h) => /public|immutable/i.test(h.cc));
   check(`no /api/v1/jobs/* response carried a public cache directive (${jobsCacheHeaders.length} responses)`, leaky.length === 0, leaky.map((h) => `${h.method} ${h.path} ${h.cc}`).join(", "));

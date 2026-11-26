@@ -29,8 +29,9 @@ export default function DocsIndex() {
     <>
       <DocsHeader title="Docs">
         <p>
-          Two guides you can follow by copy and paste, and the reference behind them. When a feature ships, these pages change
-          the same day and the <Link href={DOCS_LINKS.changelog} className="link">changelog</Link> says what changed.
+          Two guides you can follow by copy and paste, and the reference behind them. The models you can run, their prices, limits
+          and live capacity are on <Link href={DOCS_LINKS.models} className="link">Models</Link>. When a feature ships, these pages
+          change the same day and the <Link href={DOCS_LINKS.changelog} className="link">changelog</Link> says what changed.
         </p>
       </DocsHeader>
 
@@ -65,6 +66,7 @@ export default function DocsIndex() {
           {(
             [
               [DOCS_LINKS.openapi, "API description (OpenAPI 3.1, JSON)", false],
+              [DOCS_LINKS.catalog, "Model catalog with prices and live capacity (JSON, no key)", false],
               [DOCS_LINKS.feed, "Changelog feed (RSS)", false],
               [explorerAddressUrl(ADDR.rewards), "SparecycleRewards on Blockscout", true],
               [explorerAddressUrl(ADDR.payments), "SparecycleJobPayments on Blockscout", true],

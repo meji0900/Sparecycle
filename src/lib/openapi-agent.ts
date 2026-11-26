@@ -152,7 +152,7 @@ export const agentApiPaths = {
         404: oaiErr("`model_not_found`."),
         422: notCharged,
         429: oaiErr("`key_daily_cap_reached` or `rate_limited`."),
-        503: oaiErr("`queue_full`, `payments_off`, `api_keys_off`."),
+        503: oaiErr("`no_node_pair` (no two machines with different owners can take the model now, neither online nor through the GPU pool; nothing queued, held or charged; `x-should-retry: false`, `Retry-After` when known), `queue_full`, `payments_off`, `api_keys_off`."),
       },
     },
   },
@@ -187,7 +187,7 @@ export const agentApiPaths = {
         404: oaiErr("`model_not_found`."),
         422: notCharged,
         429: oaiErr("`key_daily_cap_reached` or `rate_limited`."),
-        503: oaiErr("`queue_full`."),
+        503: oaiErr("`no_node_pair` (nothing queued, held or charged), `queue_full`, `payments_off`, `api_keys_off`."),
       },
     },
   },
@@ -230,7 +230,7 @@ export const agentApiPaths = {
     post: {
       summary: "MCP server (Streamable HTTP, stateless, JSON answers)",
       description:
-        "One JSON-RPC 2.0 message per POST. Tools: submit_job, get_job_status, get_job_result, get_balance. Protocol 2026-07-28 (per-request _meta, server/discover) and the initialize-based 2025-11-25, 2025-06-18 and 2025-03-26.",
+        "One JSON-RPC 2.0 message per POST. Tools: submit_job, get_job_status, get_job_result, get_balance; submit_job and get_job_status return receipt_url, get_job_result adds a JSON block with it after the answer, and submit_job fails with no_node_pair when no pair can take the model. Protocol 2026-07-28 (per-request _meta, server/discover) and the initialize-based 2025-11-25, 2025-06-18 and 2025-03-26.",
       tags: ["MCP"],
       security: apiKey,
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["jsonrpc"], properties: { jsonrpc: { const: "2.0" } } } } } },
@@ -262,6 +262,12 @@ const sparecycleBlock = {
     charge_status: { type: ["string", "null"] },
     settled_at: { type: ["integer", "null"] },
     poll: { type: "string" },
+    receipt_url: {
+      type: "string",
+      format: "uri",
+      description:
+        "GET this job's receipt (same API key): 409 until the two results are compared, then provisional, sealed once the epoch's charge is on-chain. Check it in the browser against the Charged event (src/lib/job-receipt.ts).",
+    },
   },
 } as const;
 

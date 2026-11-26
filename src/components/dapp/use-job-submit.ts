@@ -18,6 +18,17 @@ export const nowMs = () => Date.now();
 
 /** Why POST /api/v1/jobs failed, in words. `limit` is the free jobs per hour per address (null = unknown). */
 export function failureText(f: ApiFailure, limit: number | null): { title: string; body: string } {
+  // The scheduler's own 503 answers first: apiDown() counts every 5xx as "not reachable".
+  if (f.kind === "http" && f.status === 503 && f.code === "queue-full") {
+    return { title: "The job queue is full", body: "The scheduler is not accepting new jobs right now. Your form is kept; try again later." };
+  }
+  if (f.kind === "http" && f.status === 503 && f.code === "no-node-pair") {
+    const retry = typeof f.extra.retryAfter === "number" ? f.extra.retryAfter : null;
+    return {
+      title: "No pair of machines can take this job right now",
+      body: `Every job runs on two machines with different owners, and two such machines are not available for this model at the moment. Nothing was queued, held or charged. Your form is kept; ${retry !== null ? `try again in ${durationLabel(retry)}.` : "try again in a few minutes."}`,
+    };
+  }
   if (f.kind === "unreachable" || apiDown(f)) {
     return { title: "Scheduler API not reachable", body: "Nothing was submitted. Your form is kept; try again in a moment." };
   }
@@ -28,7 +39,6 @@ export function failureText(f: ApiFailure, limit: number | null): { title: strin
       body: `${f.message ? `${f.message[0].toUpperCase()}${f.message.slice(1)}.` : limit !== null ? `At most ${limit} jobs per hour from one address.` : ""}${retry !== null ? ` Try again in ${durationLabel(retry)}.` : " Try again later."} Your form is kept.`,
     };
   }
-  if (f.status === 503 && f.code === "queue-full") return { title: "The job queue is full", body: "The scheduler is not accepting new jobs right now. Your form is kept; try again later." };
   if (f.status === 400) return { title: "Check the form", body: f.message ? `${f.message[0].toUpperCase()}${f.message.slice(1)}.` : "The scheduler rejected the job spec." };
   return { title: "The job was not submitted", body: `${f.status} ${f.code ?? ""} ${f.message ?? ""}`.trim() };
 }

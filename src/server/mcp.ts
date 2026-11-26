@@ -20,7 +20,7 @@ import { serverEnv } from "./env";
 import { clientIp, PRIVATE_HEADERS, readBody } from "./http";
 import { keyJob, type KeyJob } from "./jobs";
 import { limitBucket, takeHourly } from "./limits";
-import { imageRequest, notCharged, OpenAIError, priceOf, submitForKey, textRequest, toOpenAIError } from "./openai";
+import { imageRequest, notCharged, OpenAIError, priceOf, receiptUrl, submitForKey, textRequest, toOpenAIError } from "./openai";
 import { accountJson } from "./payments";
 
 /** Protocol revisions served. The first modern one is the newest; legacy ones use the initialize handshake. */
@@ -37,9 +37,11 @@ const MAX_BODY_BYTES = 64 * 1024;
 
 export const SERVER_INFO = { name: "sparecycle", title: "Sparecycle", version: "0.1.0" } as const;
 const INSTRUCTIONS =
-  "Sparecycle runs Qwen2.5-1.5B text jobs and Stable Diffusion 1.5 image jobs on two independent GPU nodes and returns a result only when both agree. " +
+  "Sparecycle runs Qwen2.5-1.5B text jobs and Stable Diffusion 1.5 image jobs on two GPU nodes with different owner wallets and returns a result only when both agree. " +
   "Jobs are asynchronous: submit_job returns a job_id; call get_job_status until status is agreed, then get_job_result. " +
   "A job is charged to the API key's wallet balance only when the two nodes agree; results_did_not_match, job_expired and content_rejected are never charged. " +
+  "Every job has a receipt (receipt_url, read with the same API key) that can be checked against the on-chain charge. " +
+  "When no two machines with different owners can take a model, submit_job fails with no_node_pair and nothing is queued or charged. " +
   "Text decoding is always greedy. This server cannot withdraw funds or manage keys.";
 
 // JSON-RPC and MCP error codes.
@@ -74,7 +76,7 @@ export const MCP_TOOLS = [
     name: "submit_job",
     title: "Submit a job",
     description:
-      "Queue one paid job: a short text answer from qwen2.5-1.5b (kind text) or one PNG from sd15 (kind image). Two independent nodes run it; " +
+      "Queue one paid job: a short text answer from qwen2.5-1.5b (kind text) or one PNG from sd15 (kind image). Two nodes with different owner wallets run it; " +
       "the price (price_wei) is charged to the API key's wallet balance only if their results agree. Returns job_id at once; poll get_job_status, then get_job_result. " +
       "Counts against the key's daily cap (UTC day).",
     inputSchema: {
@@ -96,8 +98,8 @@ export const MCP_TOOLS = [
     },
     outputSchema: {
       type: "object",
-      properties: { job_id: { type: "string" }, status: { type: "string" }, price_wei: { type: "string" } },
-      required: ["job_id", "status", "price_wei"],
+      properties: { job_id: { type: "string" }, status: { type: "string" }, price_wei: { type: "string" }, receipt_url: { type: "string" } },
+      required: ["job_id", "status", "price_wei", "receipt_url"],
     },
     annotations: { title: "Submit a job", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
@@ -117,8 +119,9 @@ export const MCP_TOOLS = [
         settled_at: nullable("integer"),
         charge_status: nullable("string"),
         price_wei: nullable("string"),
+        receipt_url: { type: "string" },
       },
-      required: ["job_id", "kind", "status", "settled_at", "charge_status", "price_wei"],
+      required: ["job_id", "kind", "status", "settled_at", "charge_status", "price_wei", "receipt_url"],
     },
     annotations: { title: "Job status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -126,7 +129,8 @@ export const MCP_TOOLS = [
     name: "get_job_result",
     title: "Job result",
     description:
-      "The agreed result of a job this API key submitted: text content, or an image (PNG, base64). Before agreement it says the job is not ready. " +
+      "The agreed result of a job this API key submitted: text content, or an image (PNG, base64), followed by a JSON text block with job_id and receipt_url. " +
+      "Before agreement it says the job is not ready. " +
       "A job the nodes did not agree on returns a tool error with code results_did_not_match, job_expired or content_rejected; nothing was charged for it.",
     inputSchema: jobIdInput,
     annotations: { title: "Job result", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -199,32 +203,43 @@ async function submitTool(req: Request, key: KeyViewer, args: Obj): Promise<Tool
     throw new OpenAIError(400, "invalid_request", "invalid_request_error", 'kind must be "text" or "image"', "kind");
   }
   const sub = await submitForKey(key, request, { surface: "mcp", ip: clientIp(req), idempotencyKey: null, bodyText: JSON.stringify(args) });
-  return ok({ job_id: sub.jobId, status: "queued", price_wei: priceOf(request) });
+  return ok({ job_id: sub.jobId, status: "queued", price_wei: priceOf(request), receipt_url: receiptUrl(req, sub.jobId) });
 }
 
-function statusTool(key: KeyViewer, args: Obj): ToolResult {
+function statusTool(req: Request, key: KeyViewer, args: Obj): ToolResult {
   const job = keyJob(jobIdArg(args), key);
-  return ok({ job_id: job.id, kind: job.kind, status: job.status, settled_at: job.settledAt, charge_status: job.chargeStatus, price_wei: job.priceWei });
+  return ok({
+    job_id: job.id,
+    kind: job.kind,
+    status: job.status,
+    settled_at: job.settledAt,
+    charge_status: job.chargeStatus,
+    price_wei: job.priceWei,
+    receipt_url: receiptUrl(req, job.id),
+  });
 }
 
-function resultTool(key: KeyViewer, args: Obj): ToolResult {
+function resultTool(req: Request, key: KeyViewer, args: Obj): ToolResult {
   const job: KeyJob = keyJob(jobIdArg(args), key, { withOutput: true });
+  const receipt_url = receiptUrl(req, job.id);
   const nc = notCharged(job);
-  if (nc) return toolError(nc.code, nc.type, nc.message, { job_id: job.id, status: job.status, charged: false });
+  if (nc) return toolError(nc.code, nc.type, nc.message, { job_id: job.id, status: job.status, charged: false, receipt_url });
   if (job.status !== "agreed" || !job.output) {
     return {
       content: [
         {
           type: "text",
-          text: JSON.stringify({ job_id: job.id, status: job.status, ready: false, message: "Not finished yet: call get_job_status again in a few seconds." }),
+          text: JSON.stringify({ job_id: job.id, status: job.status, ready: false, message: "Not finished yet: call get_job_status again in a few seconds.", receipt_url }),
         },
       ],
     };
   }
+  // The answer first (as before), then the receipt link of this job in its own block.
+  const receipt = { type: "text", text: JSON.stringify({ sparecycle: { job_id: job.id, status: job.status, receipt_url } }) };
   if (job.kind === "image") {
-    return { content: [{ type: "image", data: Buffer.from(job.output.body).toString("base64"), mimeType: "image/png" }] };
+    return { content: [{ type: "image", data: Buffer.from(job.output.body).toString("base64"), mimeType: "image/png" }, receipt] };
   }
-  return { content: [{ type: "text", text: Buffer.from(job.output.body).toString("utf8") }] };
+  return { content: [{ type: "text", text: Buffer.from(job.output.body).toString("utf8") }, receipt] };
 }
 
 async function balanceTool(key: KeyViewer, args: Obj): Promise<ToolResult> {
@@ -254,8 +269,8 @@ async function balanceTool(key: KeyViewer, args: Obj): Promise<ToolResult> {
 export async function callTool(req: Request, key: KeyViewer, name: string, args: Obj): Promise<ToolResult> {
   try {
     if (name === "submit_job") return await submitTool(req, key, args);
-    if (name === "get_job_status") return statusTool(key, args);
-    if (name === "get_job_result") return resultTool(key, args);
+    if (name === "get_job_status") return statusTool(req, key, args);
+    if (name === "get_job_result") return resultTool(req, key, args);
     return await balanceTool(key, args);
   } catch (e) {
     const err = toOpenAIError(e);

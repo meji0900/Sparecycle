@@ -4,7 +4,7 @@ import { agentApiJobsNote } from "./openapi-agent";
 import type { OpenApiModule } from "./openapi";
 import { JOB_PAYMENT_WINDOW_SECONDS } from "./job-payment";
 import { JOBS_HASH_RULE, JOBS_LEAF_RULE, LEAF_CHARGE_STATUS, LEAF_VERDICT } from "./job-receipt";
-import { JOB_STATUSES, LIMITS } from "./protocol";
+import { JOB_STATUSES, LIMITS, MODEL_IDS } from "./protocol";
 import { POLICY } from "@/server/env";
 
 type Obj = Record<string, unknown>;
@@ -25,6 +25,7 @@ export const coreApi: OpenApiModule = {
   tags: [
     { name: "Jobs", description: "Submit a job, follow its status, read its result." },
     { name: "Epochs", description: "Six-hour payout periods: payout trees, Merkle proofs and charge lists." },
+    { name: "Models", description: "The public model catalog: what runs, what it costs per work unit, the limits and live capacity. No key." },
     { name: "Network", description: "Scheduler status, nodes and health." },
     { name: "Payments", description: "Prepaid balances in the SparecycleJobPayments contract." },
     { name: "Sign-in", description: "Gasless wallet sign-in (EIP-4361) to read results of jobs the wallet paid for." },
@@ -164,7 +165,9 @@ export const coreApi: OpenApiModule = {
           "402": error("insufficient-balance (with available and priceWei)."),
           "409": error("price-changed (with priceWei) or payment-used."),
           "429": error("rate-limited (with retryAfter, unix seconds)."),
-          "503": error("queue-full, or payments-off when paid jobs are not enabled."),
+          "503": error(
+            "no-node-pair (with model, and retryAfter in seconds when the GPU pool is waiting to try again): no two machines with different owners can take this model now, neither online nor through the GPU pool. Nothing is queued, held, counted against a limit or charged. Also queue-full, or payments-off when paid jobs are not enabled.",
+          ),
         },
       },
     },
@@ -267,6 +270,23 @@ export const coreApi: OpenApiModule = {
         deprecated: true,
         tags: ["Jobs"],
         responses: { "410": { description: "Gone." } },
+      },
+    },
+    "/catalog": {
+      get: {
+        operationId: "getCatalog",
+        summary: "The model catalog: price per unit, how units are counted, limits and live capacity (no key)",
+        description: [
+          "Exactly the models the scheduler runs (MODELS in src/lib/protocol.ts), also served at /v1/catalog. /models (OpenAI list shape) stays behind an API key.",
+          "",
+          "price.priceWeiPerUnit is the price every job is quoted at right now; price.units says how a job's work units are counted; limits are the accepted request ranges.",
+          "",
+          "capacity.ready: machines online now that can run the model. capacity.standby: stopped project-run machines the GPU pool starts when a job waits. capacity.pair: \"online\" (two machines with different owners are online), \"pool\" (the GPU pool can bring a pair up, a minute or two), or null: no pair can be reached now, and creating a job of this model answers 503 no-node-pair (nothing queued, held or charged).",
+          "",
+          "network.operators is \"project-run\" until a node of an outside owner passes the GPU gate and takes part in an agreed job.",
+        ].join("\n"),
+        tags: ["Models"],
+        responses: { "200": json(ref("Catalog"), "The catalog, read live (Cache-Control: no-store).") },
       },
     },
     "/nodes": {
@@ -846,6 +866,74 @@ export const coreApi: OpenApiModule = {
               ready: { type: "boolean", description: "canWithdraw on the contract: withdraw() would succeed now." },
             },
           }),
+        },
+      },
+      CatalogModel: {
+        type: "object",
+        required: ["id", "kind", "label", "license", "source", "price", "limits", "capacity"],
+        properties: {
+          id: { enum: [...MODEL_IDS] },
+          kind: { enum: ["image", "text"] },
+          name: { type: "string" },
+          label: { type: "string" },
+          summary: { type: "string" },
+          license: { type: "string" },
+          source: { type: "string", description: "Hugging Face repository of the weights." },
+          sourceUrl: { type: "string", format: "uri" },
+          endpoint: { enum: ["/v1/chat/completions", "/v1/images/generations"] },
+          output: { enum: ["image/png", "text/plain"] },
+          backends: { type: "array", items: { enum: ["cuda", "vulkan", "cpu"] } },
+          vramMb: { type: "integer" },
+          price: {
+            type: "object",
+            properties: {
+              priceWeiPerUnit: ref("Wei"),
+              units: { type: "string", description: "How work units are counted, in words." },
+              example: { type: "object", properties: { label: { type: "string" }, units: { type: "integer" }, priceWei: ref("Wei") } },
+            },
+          },
+          limits: { type: "object", additionalProperties: { type: "object", additionalProperties: { type: "number" } } },
+          notes: { type: "array", items: { type: "string" } },
+          capacity: {
+            type: "object",
+            properties: {
+              ready: { type: "integer" },
+              standby: { type: "integer" },
+              pair: { enum: ["online", "pool", null] },
+              pairReachable: { type: "boolean" },
+              retryAfter: nullable({ type: "integer" }),
+            },
+          },
+        },
+      },
+      Catalog: {
+        type: "object",
+        required: ["object", "models", "pricing", "network"],
+        properties: {
+          object: { const: "catalog" },
+          generatedAt: { type: "integer" },
+          pricing: {
+            type: "object",
+            properties: {
+              currency: { const: "ETH" },
+              priceWeiPerUnit: ref("Wei"),
+              paidJobs: { type: "boolean" },
+              freeJobsPerHour: { type: "integer" },
+              charged: { type: "string" },
+            },
+          },
+          network: {
+            type: "object",
+            properties: {
+              operators: { enum: ["project-run", "mixed"] },
+              note: { type: "string" },
+              pool: {
+                type: "object",
+                properties: { configured: { type: "boolean" }, canStart: { type: "boolean" }, retryAfter: nullable({ type: "integer" }) },
+              },
+            },
+          },
+          models: { type: "array", items: ref("CatalogModel") },
         },
       },
       SignInNonce: {

@@ -79,7 +79,8 @@ export default function ApiPage() {
               "Read secret",
               <>
                 Returned once by <C>POST /jobs</C> as <C>readSecret</C>; the scheduler stores only its hash. Send it as{" "}
-                <C>Authorization: Bearer &lt;readSecret&gt;</C> to read that job&apos;s result, invoice and receipt.
+                <C>Authorization: Bearer &lt;readSecret&gt;</C> to read that job&apos;s result, invoice and receipt. Answers of the OpenAI-compatible
+                routes and MCP carry the receipt path as <C>receipt_url</C>, read with the same API key.
               </>,
             ],
             [
@@ -111,6 +112,38 @@ export default function ApiPage() {
             ["Operator token", "Bearer SCHEDULER_ADMIN_TOKEN, for the operator only. The endpoints answer 503 when none is configured."],
           ]}
         />
+      </DocsSection>
+
+      <DocsSection id="catalog" title="Models, prices and capacity">
+        <p>
+          <C>GET /catalog</C> (also <C>/v1/catalog</C>) needs no key. It lists exactly the models the scheduler runs, each with its label, kind, license and
+          source, the live price per work unit, how units are counted, the request limits and live capacity: how many machines are ready now, how many are
+          on standby in the project&apos;s GPU pool, and whether a pair with different owners can be reached. The{" "}
+          <Link href="/models" className="link">
+            Models
+          </Link>{" "}
+          page shows the same answer. The OpenAI-shaped <C>/v1/models</C> stays behind an API key.
+        </p>
+        <Defs
+          items={[
+            [
+              <C key="c">capacity.pair</C>,
+              <>
+                <C>&quot;online&quot;</C>: two machines with different owners are online. <C>&quot;pool&quot;</C>: none are, but the GPU pool can start a
+                pair (the first job takes a minute or two). <C>null</C>: no pair can be reached now, and creating a job of this model answers{" "}
+                <C>503 no-node-pair</C> (<C>no_node_pair</C> on <C>/v1</C> and MCP) with nothing queued, held or charged.
+              </>,
+            ],
+            [
+              <C key="c">network.operators</C>,
+              <>
+                <C>&quot;project-run&quot;</C> until a node of an outside owner passes the GPU gate and takes part in an agreed job. Today every node is run by the project: both owner wallets of a job then
+                belong to the project.
+              </>,
+            ],
+          ]}
+        />
+        <CodeBlock label="Terminal" code={`curl -s ${origin}/v1/catalog`} />
       </DocsSection>
 
       <DocsSection id="endpoints" title="Endpoints">
@@ -158,6 +191,14 @@ export default function ApiPage() {
             ["Paid jobs", "Limited per paying wallet per hour, to protect the queue. Payment itself is the main guard."],
             ["Result reads", "Rate limited per viewer: per job for a read secret, per wallet for a session, otherwise per IP address."],
             ["Queue", `At most ${POLICY.maxOpenJobs} open jobs at once; beyond that, 503 queue-full.`],
+            [
+              "No pair of nodes",
+              <>
+                A job is created only when two nodes with different owners can take its model, online now or through the project&apos;s GPU pool.
+                Otherwise <C>503 no-node-pair</C> with <C>model</C> (and <C>retryAfter</C> plus a <C>Retry-After</C> header while the pool waits to try
+                again): nothing is queued, held, counted against a limit or charged.
+              </>,
+            ],
             ["Job lifetime", `A job without a verdict after ${POLICY.jobTtlSeconds / 3600} hours expires and is not charged.`],
           ]}
         />

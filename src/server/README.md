@@ -43,6 +43,7 @@ exceed `reserved`, there is no withdraw of the pot and no second post. Say so wh
 | `VAST_API_KEY` | secret | unset | Bootstrap GPU pool (gpu-pool.ts): Vast.ai key used to start and stop the pool instances |
 | `GPU_POOL_INSTANCE_IDS` | | unset | Vast instance ids of the pool, comma-separated (two, linked to two different owners). Optional owner group per entry, `id:a,id:b,id:b`, to add a spare machine for an owner: a start counts when machines of two groups come up |
 | `GPU_POOL_ALWAYS_ON` | | unset | Pool instance ids that are never stopped (also listed in `GPU_POOL_INSTANCE_IDS`). Their owner group then needs no spare started: a start brings up only the other owner's machine. A declined start of one that is already running still counts |
+| `GPU_POOL_GROUP_OWNERS` | | unset | Optional owner wallet of each pool owner group, `a:0x…,b:0x…` (group names from `GPU_POOL_INSTANCE_IDS`). A group whose owner already has a node online that can take the waiting jobs is not started, so a start wakes only the machines of the missing owner group. Unset: only an always-on machine covers a group (as before) |
 | `GPU_POOL_IDLE_MINUTES` | | 10 | Pool instances stop after this many minutes without open jobs |
 | `JOB_RATE_LIMIT` | | `5` | Accepted job submissions per IP per hour (`0` closes submissions) |
 | `OUTPUT_AUTH` | | `off` | `enforce` = an output is served only to the job's read secret or a session of the paying wallet; the old `/output` URL answers 410. `off` = served to anyone (still `private, no-store`). See `docs/private-outputs.md` |
@@ -153,6 +154,27 @@ PaaS proxies do). IPs are stored only as salted hashes.
   - The payer: public job views carry `round` and `maxRounds` (no node identities), the invoice too; the price stays
     held (`heldFor`) until a final verdict, and is charged only after a final `agreed`. The dapp shows "Re-checking on
     another pair (round N of 3)".
+- **Capacity guard** (`src/server/capacity.ts`, next-update brief §2, N24). Every create (`POST jobs` free, wallet-paid or
+  key-paid; `POST /v1/chat/completions`, `POST /v1/images/generations`; MCP `submit_job`) first checks that a pair can take
+  the model: two nodes that are online (polled within 2 minutes, or holding a live lease), not paused, past the GPU gate
+  and able to run it, with different owners and GPUs on the same backend and dev flag. When none is online, the GPU pool
+  counts while it can start (configured, not backing off after a start where fewer than two owners came up): the ready
+  nodes plus every registered offline project-run node that could run the model must form a pair (a stopped pool machine
+  of the other owner counts), or, before any project node has registered, the pool must have two owner groups.
+  Otherwise the create answers `503 no-node-pair` (`{ error, message, model, retryAfter? }`, a `Retry-After` header while
+  the pool backs off; `no_node_pair` with `x-should-retry: false` in the OpenAI shape and as an MCP tool error) before the
+  payment is checked: nothing is queued, held, counted against a rate limit or key cap, or charged. This applies to free
+  jobs too. The pool's own trigger (`gpu-pool.ts`) uses the same pair rule: it starts when open jobs of a model have no
+  pair online (two owners online with one of them paused no longer counts as covered).
+- **Catalog** (`src/server/catalog.ts`, `src/lib/catalog.ts`, `GET catalog`, also `/v1/catalog`, no key). Exactly the
+  models in `MODELS` with label, kind, license, source, the live price per work unit (`priceWeiPerUnit()`, "0" when paid
+  jobs are off), how units are counted, an example job and its price, `LIMITS`, and capacity per model: `ready`,
+  `standby` (offline project GPUs the pool starts, counted like the home page), `pair` (`online` | `pool` | null) and
+  `retryAfter`. `network.operators` is `project-run` until a node of an outside owner passes the GPU gate and takes part in an agreed job (N17). A model
+  added to `MODELS` without a `CATALOG_INFO` entry is a type error and fails `src/server/serverless.test.ts`.
+- **Receipt links.** The `sparecycle` block of chat and image answers (create, poll and the 422 `not_charged` errors)
+  carries `receipt_url` (`https://<host>/api/v1/jobs/<id>/receipt`, read with the same key); MCP `submit_job` and
+  `get_job_status` return it, and `get_job_result` adds a JSON text block with it after the answer.
 - Prompts stay in the DB and are never returned; public views carry `promptHash =
   sha256("sparecycle-prompt|" + jobId + "|" + prompt)`.
 - **Private outputs** (`docs/private-outputs.md`). Every job gets a read secret, returned once by `POST /jobs`
@@ -195,7 +217,7 @@ PaaS proxies do). IPs are stored only as salted hashes.
 
 ## Endpoints (`/api/v1`)
 
-Public: `GET health`, `GET status`, `GET epochs`, `GET epochs/:id/tree`, `GET epochs/:id/proof?account=`, `GET epochs/:id/charges`,
+Public: `GET health`, `GET status`, `GET catalog`, `GET epochs`, `GET epochs/:id/tree`, `GET epochs/:id/proof?account=`, `GET epochs/:id/charges`,
 `GET jobs?limit=`, `POST jobs`, `GET jobs/:id`, `GET nodes`.
 Viewer-dependent (always `Cache-Control: private, no-store`, `Vary: Authorization, Cookie`): `GET jobs/:id`,
 `GET jobs/:id/result` (read secret or payer session when `OUTPUT_AUTH=enforce`), `GET jobs/:id/output` (retired: 410
@@ -246,7 +268,11 @@ needed) keep exit 0, a run with errors (RPC, unexpected reverts) exits 1.
   real funds; it stops everything it started.
   With `OUTPUT_AUTH=enforce` after the restart it also runs the private-output route matrix (401/403/404/409/200, read
   secrets, EOA and ERC-1271 wallet sign-in, old `/output` -> 410) and checks that no `/api/v1/jobs/*` response
-  carried a `public` cache directive.
+  carried a `public` cache directive. Serverless mode: `/v1/catalog` without a key (and `/v1/models` still 401), the
+  playground's wallet flow (signed in, an SD 1.5 and a Qwen job paid from the balance with the playground's own request
+  builder, charged in the next epoch's v2 jobs root, receipts sealed and verified against the `Charged` event), and the
+  capacity guard with the nodes gone (`503 no-node-pair` on `POST jobs` free and paid and on `/v1/chat/completions`,
+  nothing queued or held).
 - `npm run test:private-outputs` (`scripts/test-private-outputs.mjs`): in-process route and unit tests of private
   outputs (no chain, no GPU, scratch DB under `data/`): the enforce matrix, sign-in (nonce reuse, domain, chain,
   forged signature, expired session, logout), team wallets, legacy jobs, the rate limit and node isolation.

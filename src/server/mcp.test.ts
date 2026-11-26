@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import { PNG } from "pngjs";
-import { setupAgentApi } from "./test-support/agent-api";
+import { setupAgentApi, SITE } from "./test-support/agent-api";
 
 let h: Awaited<ReturnType<typeof setupAgentApi>>;
 let c: Awaited<ReturnType<Awaited<ReturnType<typeof setupAgentApi>>["customer"]>>;
@@ -152,6 +152,7 @@ describe("tools", () => {
     assert.match(sub.job_id, /^0x[0-9a-f]{64}$/);
     assert.equal(sub.status, "queued");
     assert.match(sub.price_wei, /^\d+$/);
+    assert.equal(sub.receipt_url, `${SITE}/api/v1/jobs/${sub.job_id}/receipt`);
     assert.deepEqual(JSON.parse(textOf(s)), sub);
     const row = h.m.db.getDb().prepare("SELECT api_key_id, payer FROM jobs WHERE id = ?").get(sub.job_id) as { api_key_id: string; payer: string };
     assert.equal(row.api_key_id, c.keyId);
@@ -165,8 +166,17 @@ describe("tools", () => {
     assert.equal(st.body!.result.structuredContent.status, "agreed");
     assert.equal(st.body!.result.structuredContent.charge_status, "pending");
     assert.ok(st.body!.result.structuredContent.settled_at > 0);
+    assert.equal(st.body!.result.structuredContent.receipt_url, sub.receipt_url);
     const r = await call("get_job_result", { job_id: sub.job_id });
-    assert.deepEqual(r.body!.result.content, [{ type: "text", text: "Teal." }]);
+    // The answer first, then the job's receipt link in its own JSON block.
+    assert.deepEqual(r.body!.result.content, [
+      { type: "text", text: "Teal." },
+      { type: "text", text: JSON.stringify({ sparecycle: { job_id: sub.job_id, status: "agreed", receipt_url: sub.receipt_url } }) },
+    ]);
+    // The link works with the same key: the provisional receipt of the agreed job.
+    const rc = await h.m.routes.receipt.GET(h.req(`/api/v1/jobs/${sub.job_id}/receipt`, { headers: h.bearer(c.key) }), h.ctx(sub.job_id));
+    assert.equal(rc.status, 200);
+    assert.equal((await rc.json()).state, "provisional");
   });
 
   test("image results arrive as image content (PNG, base64)", async () => {
@@ -177,6 +187,7 @@ describe("tools", () => {
     const item = r.body!.result.content[0];
     assert.equal(item.type, "image");
     assert.equal(item.mimeType, "image/png");
+    assert.equal(JSON.parse(r.body!.result.content[1].text).sparecycle.receipt_url, `${SITE}/api/v1/jobs/${jobId}/receipt`);
     const png = PNG.sync.read(Buffer.from(item.data, "base64"));
     assert.equal(png.width, 256);
     assert.equal(png.height, 320);
@@ -209,6 +220,7 @@ describe("tools", () => {
     const e = JSON.parse(textOf(r)).error;
     assert.equal(e.code, "results_did_not_match");
     assert.equal(e.type, "not_charged");
+    assert.equal(e.receipt_url, `${SITE}/api/v1/jobs/${jobId}/receipt`);
     assert.equal(e.charged, false);
 
     const tight = await h.customer(10n ** 15n, "1");

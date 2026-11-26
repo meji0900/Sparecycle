@@ -73,6 +73,9 @@ export const DOCS_PAGES: DocsNavItem[] = DOCS_NAV.flatMap((s) => s.items);
 /** Machine-readable and changelog links shown on the docs index and in the footer. */
 export const DOCS_LINKS = {
   openapi: "/api/v1/openapi.json",
+  /** The public model catalog: a page, and the same data as JSON (no key). */
+  models: "/models",
+  catalog: "/api/v1/catalog",
   changelog: "/changelog",
   feed: "/changelog.xml",
   roadmap: "/roadmap",

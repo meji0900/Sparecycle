@@ -158,11 +158,13 @@ describe("registerNode with the GPU allowlist", () => {
 
 // ---- leasing ----------------------------------------------------------------------------------------
 describe("tryLease never leases job tasks to non-eligible nodes", () => {
+  // The job is queued before enforce is on: with enforce on, the capacity guard (./capacity) already refuses a job that
+  // no eligible pair can take (503 no-node-pair, tested in ./serverless.test.ts). Here the queued job tests tryLease.
   test("allowlist enforce: an untested node gets no job, and is not counted as the compatible peer", async () => {
-    process.env.GPU_ALLOWLIST_MODE = "enforce";
     const untested = await register({ gpu: "NVIDIA GeForce RTX 5090", old: true });
     const a = await register({ gpu: "NVIDIA GeForce RTX 3060", old: true });
     await textJob();
+    process.env.GPU_ALLOWLIST_MODE = "enforce";
     assert.equal(await lease(untested.node.address), null, "untested node: no job");
     assert.equal(await lease(a.node.address), null, "the only peer is untested, so the first task is not handed out");
     const b = await register({ gpu: "NVIDIA GeForce RTX 4060", old: true });
@@ -183,16 +185,16 @@ describe("tryLease never leases job tasks to non-eligible nodes", () => {
   test("a blocked node registered in observe mode gets nothing once enforce is on", async () => {
     const blocked = await register({ gpu: "llvmpipe (LLVM 15) (Vulkan)", backend: "vulkan", old: true });
     await register({ gpu: "AMD Radeon RX 7600 (Vulkan)", backend: "vulkan", old: true });
-    process.env.GPU_ALLOWLIST_MODE = "enforce";
     await textJob();
+    process.env.GPU_ALLOWLIST_MODE = "enforce";
     assert.equal(await lease(blocked.node.address), null);
   });
 
   test("challenge enforce: a pending-challenge node gets no job and does not count as the peer", async () => {
-    process.env.CHALLENGE_MODE = "enforce";
     const pending = await register({ gpu: "NVIDIA GeForce RTX 3060" });
     const ready = await register({ gpu: "NVIDIA GeForce RTX 4060", old: true });
     await textJob();
+    process.env.CHALLENGE_MODE = "enforce";
     assert.equal(jobEligible(pending.node.address), false);
     assert.equal(await lease(pending.node.address), null);
     assert.equal(await lease(ready.node.address), null, "only peer is pending-challenge");

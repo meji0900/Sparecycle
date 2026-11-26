@@ -18,7 +18,8 @@ import { getDb, nowSec, randomHex, tx } from "./db";
 import { POLICY, serverEnv } from "./env";
 import { AUTH_REQUIRED, ApiError } from "./http";
 import { ipSalt, limitBucket, takeHourly } from "./limits";
-import { poolNudge } from "./gpu-pool";
+import { poolNudge, poolStartInfo } from "./gpu-pool";
+import { assertPairReachable } from "./capacity";
 import { abandonStuckRounds, insertRoundTasks } from "./rounds";
 import { maxRoundsFor } from "@/lib/rounds";
 import { isLowBalance, jobPriceWei } from "@/lib/job-payment";
@@ -104,6 +105,9 @@ type Payer = { payer: Address; priceWei: bigint; balance: bigint; withdrawAmount
  * A paid job's answer (wallet- or key-paid) also carries `available` (wei the payer can still spend on new jobs, this
  * job's price already held) and `lowBalance` (fewer than LOW_CREDIT_JOBS jobs at this price left), like the dapp's
  * low-credit banner.
+ * Capacity guard (./capacity, N24): when no pair of machines with different owners can take the model, neither online nor
+ * through the GPU pool, every kind of job (free, wallet-paid, key-paid) is refused with 503 no-node-pair before anything is
+ * held, counted against a limit or queued.
  */
 export async function submitJob(
   body: unknown,
@@ -124,6 +128,8 @@ export async function submitJob(
     if (e instanceof SpecError) throw new ApiError(400, "invalid-job", e.message, { field: e.field });
     throw e;
   }
+  // Before the payment check and the transaction: a refused job holds nothing and uses up no rate limit or key cap.
+  assertPairReachable(needs(req).model, poolStartInfo());
   let paid: Payer | null = null;
   if (paidRequest) {
     const p: Payment & { balance: bigint; withdrawAmount: bigint } = await verifyPayment(rawRequest, b.payment, jobPriceWei(req, priceWeiPerUnit()));
