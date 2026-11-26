@@ -44,6 +44,7 @@ export async function setupAgentApi() {
     openai: await import("../openai"),
     mcp: await import("../mcp"),
     proto: await import("@/lib/protocol"),
+    rounds: await import("@/lib/rounds"),
     chain: await import("@/lib/chain"),
     libKeys: await import("@/lib/api-keys"),
     routes: {
@@ -154,6 +155,16 @@ export async function setupAgentApi() {
   /** Cancels the open tasks of every job except `id`, so the next polls pick that job. */
   const only = (id: string) => m.db.getDb().prepare("UPDATE tasks SET status = 'cancelled' WHERE job_id != ? AND status IN ('open','leased')").run(id);
 
+  /**
+   * Puts job `id` (still unleased) in its last re-check round (../rounds), so a mismatch on these two nodes is final:
+   * the harness has only two nodes, and a paid job's earlier round would send it to another pair instead.
+   */
+  const lastRound = (id: string) => {
+    const last = m.rounds.MAX_ROUNDS - 1;
+    m.db.getDb().prepare("UPDATE jobs SET round = ? WHERE id = ?").run(last, id);
+    m.db.getDb().prepare("UPDATE tasks SET round = ? WHERE job_id = ?").run(last, id);
+  };
+
   /** Runs job `id` on both nodes: equal outputs agree, different ones disagree. */
   async function run(id: string, a: { text?: string; shade?: number; nsfw?: boolean } = {}, b = a) {
     only(id);
@@ -230,5 +241,5 @@ export async function setupAgentApi() {
     rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   };
 
-  return { m, chain, logs, nodeA, nodeB, work, run, only, req, ctx, bearer, json, assertPrivate, signIn, makeKey, customer, cleanup, payments, png };
+  return { m, chain, logs, nodeA, nodeB, work, run, only, lastRound, req, ctx, bearer, json, assertPrivate, signIn, makeKey, customer, cleanup, payments, png };
 }

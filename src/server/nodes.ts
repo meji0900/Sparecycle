@@ -13,7 +13,10 @@
 //     src/server/challenge.ts). A due challenge is handed out before any new job task;
 //   - Idle Guard: a node that reported a pause (POST /nodes/heartbeat, node client 0.4.0+) gets nothing at all (no job,
 //     no challenge, no held lease back) and is not counted as the compatible peer. This is the owner's machine state,
-//     kept apart from the GPU gate above. A node that never reported (older client) counts as active.
+//     kept apart from the GPU gate above. A node that never reported (older client) counts as active;
+//   - re-check rounds (src/server/rounds.ts): only the tasks of a job's current round are handed out, the two tasks of a
+//     round follow every rule above among themselves, and a node whose node key, owner wallet or GPU UUID held a lease or
+//     sent a result in an earlier round of the job gets neither task of a later round, nor counts as its peer.
 import { getAddress, isAddress, verifyMessage, type Address, type Hex } from "viem";
 import { publicClient, targetChain } from "@/lib/chain";
 import { isNodeState, NODE_STATES, type NodeState, type PublicNodeState } from "@/lib/node-state";
@@ -41,6 +44,7 @@ import { ensureEpoch } from "./epochs";
 import { expireStaleJobs } from "./jobs";
 import { challengeable, eligibilityParams, eligibleSql, jobEligible, nextChallenge, type ChallengeState } from "./challenge";
 import { classifyDevice, GPU_SUPPORT_URL, gpuStatusOf, sanitizeDeviceInfo, type GpuStatus } from "./gpu-allowlist";
+import { earlierRoundSql } from "./rounds";
 
 export type NodeRow = {
   node_key: Address;
@@ -317,19 +321,23 @@ export function tryLease(node: NodeRow, epochId: number): Assignment | null {
     models.forEach((m, i) => (params[`m${i}`] = m));
     const cand = db
       .prepare(
-        `SELECT t.id, t.job_id, j.spec, j.status FROM tasks t JOIN jobs j ON j.id = t.job_id
+        `SELECT t.id, t.job_id, t.round, j.spec, j.status FROM tasks t JOIN jobs j ON j.id = t.job_id
          WHERE j.status IN ('queued','running','checking')
            AND j.model IN (${models.map((_, i) => `$m${i}`).join(",")})
+           AND t.round = j.round
            AND (t.status = 'open' OR (t.status = 'leased' AND t.lease_expires < $now))
-           -- the sibling task, if held or done, must be on another node / owner / GPU and on the same backend class
+           -- the sibling task of this round, if held or done, must be on another node / owner / GPU and on the same
+           -- backend class
            AND NOT EXISTS (
-             SELECT 1 FROM tasks o WHERE o.job_id = t.job_id AND o.id != t.id
+             SELECT 1 FROM tasks o WHERE o.job_id = t.job_id AND o.round = t.round AND o.id != t.id
                AND (o.status = 'done' OR (o.status = 'leased' AND o.lease_expires >= $now))
                AND (o.node_key = $node OR o.owner = $owner OR o.gpu_uuid = $gpu
                     OR COALESCE(o.backend, 'cuda') != $backend OR COALESCE(o.dev, 0) != $dev))
-           -- first task of a job: only when a compatible peer is online to take the second one
+           -- re-check rounds: this node key, owner wallet and GPU took no part in an earlier round of the job
+           AND NOT EXISTS (${earlierRoundSql("t.job_id", "j.round", { key: "$node", owner: "$owner", gpu: "$gpu" })})
+           -- first task of a round: only when a compatible peer (not excluded either) is online to take the second one
            AND (
-             EXISTS (SELECT 1 FROM tasks o WHERE o.job_id = t.job_id AND o.id != t.id
+             EXISTS (SELECT 1 FROM tasks o WHERE o.job_id = t.job_id AND o.round = t.round AND o.id != t.id
                        AND (o.status = 'done' OR (o.status = 'leased' AND o.lease_expires >= $now)))
              OR EXISTS (SELECT 1 FROM nodes p
                        WHERE p.backend = $backend AND p.dev = $dev AND (p.dev = 0 OR $allowDev = 1)
@@ -338,17 +346,24 @@ export function tryLease(node: NodeRow, epochId: number): Assignment | null {
                          AND ${activeSql("p")}
                          AND ${eligibleSql("p")}
                          AND p.caps LIKE '%"' || j.kind || ':' || j.model || '"%'
-                         AND p.vram_mb >= ${VRAM_CASE})
+                         AND p.vram_mb >= ${VRAM_CASE}
+                         AND NOT EXISTS (${earlierRoundSql("t.job_id", "j.round", { key: "p.node_key", owner: "p.owner", gpu: "p.gpu_uuid" })}))
            )
          ORDER BY j.created_at ASC, t.slot ASC LIMIT 1`,
       )
-      .get(params) as { id: string; job_id: string; spec: string; status: JobStatus } | undefined;
+      .get(params) as { id: string; job_id: string; round: number; spec: string; status: JobStatus } | undefined;
     if (!cand || !SERVABLE.includes(cand.status)) return null;
     const expires = now + POLICY.taskLeaseSeconds;
     db.prepare(
       `UPDATE tasks SET status = 'leased', node_key = ?, owner = ?, gpu_uuid = ?, backend = ?, dev = ?, epoch = ?, leased_at = ?,
          lease_expires = ?, attempts = attempts + 1 WHERE id = ?`,
     ).run(node.node_key, node.owner, node.gpu_uuid, backend, node.dev ? 1 : 0, epochId, now, expires, cand.id);
+    // Every lease is kept: a later round excludes this node even if it lets the lease expire and another node finishes.
+    db.prepare(
+      "INSERT INTO job_leases (job_id, round, task_id, node_key, owner, gpu_uuid, leased_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(cand.job_id, cand.round, cand.id, node.node_key, node.owner, node.gpu_uuid, now);
+    // The round's first lease starts its pickup clock (./rounds: abandoned ROUND_MAX_SECONDS later without a verdict).
+    db.prepare("UPDATE jobs SET round_started_at = COALESCE(round_started_at, ?) WHERE id = ?").run(now, cand.job_id);
     db.prepare("UPDATE jobs SET status = 'running' WHERE id = ? AND status = 'queued'").run(cand.job_id);
     return {
       taskId: cand.id,
@@ -403,7 +418,7 @@ export function listNodes(epochId: number | null) {
     .prepare(
       `SELECT n.*,
          (SELECT COUNT(*) FROM tasks t WHERE t.node_key = n.node_key AND t.status = 'leased' AND t.lease_expires >= ?) AS live_leases,
-         (SELECT COUNT(*) FROM results r JOIN jobs j ON j.id = r.job_id
+         (SELECT COUNT(*) FROM results r JOIN jobs j ON j.id = r.job_id AND r.round = j.round
             WHERE r.node_key = n.node_key AND j.status = 'agreed' AND j.epoch_id = ?) AS epoch_agreed
        FROM nodes n ORDER BY n.registered_at ASC`,
     )

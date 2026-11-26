@@ -189,6 +189,7 @@ least every 60 s while paused (the scheduler counts a node as online for 120 s a
 | `SPARECYCLE_SIMULATE_PAUSE` | unset | `busy` or `hot`: report that pause without reading the GPU, on any backend (local testing only) |
 | `SPARECYCLE_GPU_UUID` | `nvidia-smi` UUID (cuda), else sha256(hostname, CPU, device, backend) | overrides the device id (local testing only) |
 | `SPARECYCLE_VRAM_MB` | `8192` | dev runner only: reported VRAM |
+| `SPARECYCLE_DEV_CORRUPT` | unset | dev runner only: `1` returns wrong job outputs on purpose, to test re-checks on a new pair (GPU challenges stay correct) |
 
 ## Dev runner (local tests only)
 

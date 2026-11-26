@@ -10,6 +10,7 @@ import { useJobInvoice } from "@/lib/dapp/invoice";
 import { useJobOutput } from "@/lib/dapp/job-output";
 import { TERMINAL } from "@/lib/dapp/jobs";
 import { chargeWords } from "@/lib/dapp/paid-jobs";
+import { recheckLabel } from "@/lib/rounds";
 import { useApiGet, useNow } from "@/lib/dapp/use-api";
 import { cn } from "@/lib/utils";
 import { JobInvoicePanel } from "./job-invoice";
@@ -165,6 +166,9 @@ export function PlaygroundResult({
   const seed = typeof job?.params?.seed === "number" ? job.params.seed : (item?.usedSeed ?? item?.seed ?? null);
   const failKind = status === "disagreed" || status === "expired" || status === "rejected" ? status : null;
   const gone = !job && fail && fail.kind === "http" && fail.code === "unknown-job";
+  // A paid job checked again on another pair after a mismatch or a pair that never finished (round 0 = the first pair).
+  const round = job?.round ?? 0;
+  const recheck = pending ? recheckLabel(round, job?.maxRounds) : null;
 
   let tag: { tone: Tone; label: string } | null = null;
   if (sending) tag = { tone: "neutral", label: sending === "sign" ? "Waiting for signature" : "Sending" };
@@ -172,6 +176,7 @@ export function PlaygroundResult({
   else if (gone) tag = { tone: "off", label: "Not found" };
   else if (status === "agreed") tag = { tone: "live", label: "Done" };
   else if (failKind) tag = { tone: failKind === "rejected" ? "error" : "warn", label: FAIL[failKind].tag };
+  else if (recheck) tag = { tone: "neutral", label: recheck };
   else tag = { tone: "neutral", label: STEPS[stepOf(status)].title };
 
   let body: ReactNode;
@@ -226,7 +231,7 @@ export function PlaygroundResult({
   } else if (failKind) {
     body = (
       <Frame width={w} height={h}>
-        <FrameMessage title={FAIL[failKind].title}>
+        <FrameMessage title={failKind === "disagreed" && round > 0 ? `No pair of GPUs agreed (${round + 1} pairs tried)` : FAIL[failKind].title}>
           <p>{FAIL[failKind].body}</p>
           {paid ? <p className="mt-2 text-text">This was a paid job and it was not charged: paid jobs are charged only when both GPUs agree.</p> : null}
         </FrameMessage>
@@ -237,11 +242,21 @@ export function PlaygroundResult({
     body = (
       <Frame width={w} height={h}>
         <FrameMessage
-          title={step === 0 ? "Waiting for two GPUs" : step === 1 ? "Two GPUs are drawing your image" : "Comparing the two images"}
+          title={
+            recheck ?? (step === 0 ? "Waiting for two GPUs" : step === 1 ? "Two GPUs are drawing your image" : "Comparing the two images")
+          }
         >
+          {recheck ? (
+            <p>
+              The first {round === 1 ? "pair" : `${round} pairs`} of GPUs did not agree or did not finish, so two other GPUs with different
+              owners make the image again. The price stays held, and you are charged only if a pair agrees.
+            </p>
+          ) : null}
           <p>
             {step === 0
-              ? "The first job after a quiet period can take 1 to 2 minutes while GPUs start. After that, an image takes seconds."
+              ? recheck
+                ? "It starts as soon as two such GPUs are free."
+                : "The first job after a quiet period can take 1 to 2 minutes while GPUs start. After that, an image takes seconds."
               : step === 1
                 ? "Both use the same prompt and seed, so their images should match."
                 : "You see the image only if both GPUs made the same one."}

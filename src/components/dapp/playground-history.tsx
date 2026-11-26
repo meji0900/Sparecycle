@@ -134,7 +134,9 @@ function Tile({
             : item.paid
               ? "Sign in to view"
               : "Private"
-      : (TILE_LABEL[item.status ?? "queued"] ?? "Queued");
+      : job && !TERMINAL.includes(job.status) && (job.round ?? 0) > 0
+        ? "Re-checking"
+        : (TILE_LABEL[item.status ?? "queued"] ?? "Queued");
   return (
     <li className="min-w-0">
       <button

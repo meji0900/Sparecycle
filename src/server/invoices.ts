@@ -9,6 +9,7 @@
 import { explorerTx } from "@/lib/chain";
 import { protocolCutWei, TREASURY_BPS } from "@/lib/job-payment";
 import type { JobStatus } from "@/lib/protocol";
+import { maxRoundsFor } from "@/lib/rounds";
 import type { Viewer } from "./auth";
 import { getDb, nowSec } from "./db";
 import { AUTH_REQUIRED, ApiError } from "./http";
@@ -39,10 +40,11 @@ type Row = {
   epoch_status: string | null;
   epoch_posted_tx: string | null;
   charge_tx: string | null;
+  round: number;
 };
 
 const SELECT = `SELECT j.id, j.kind, j.model, j.status, j.created_at, j.settled_at, j.epoch_id, j.note, j.payer, j.price_wei,
-  j.charge_status, j.charged_epoch, j.output_hash, j.read_secret_hash, e.status AS epoch_status, e.posted_tx AS epoch_posted_tx,
+  j.charge_status, j.charged_epoch, j.output_hash, j.read_secret_hash, j.round, e.status AS epoch_status, e.posted_tx AS epoch_posted_tx,
   c.tx AS charge_tx
   FROM jobs j
   LEFT JOIN epochs e ON e.id = j.epoch_id
@@ -89,6 +91,13 @@ export function jobInvoice(id: string, viewer: Viewer) {
     createdAt: r.created_at,
     settledAt: r.settled_at,
     generatedAt: nowSec(),
+    /**
+     * Re-check round (./rounds): 0 = the first pair. While a paid job is checked again on another pair after a mismatch
+     * (or a pair that never finished) this is 1 or 2 and the price stays held; the verdict, charge and output hash are
+     * those of the final round only.
+     */
+    round: r.round,
+    maxRounds: maxRoundsFor(r.payer),
   };
   const payment = paymentKind(r.payer);
   if (payment === "free" || r.price_wei === null || !/^\d+$/.test(r.price_wei)) {

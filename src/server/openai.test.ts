@@ -119,6 +119,7 @@ describe("chat completions", () => {
   test("results did not match / no verdict in time -> 422 not_charged on poll, and nothing is charged", async () => {
     const res = await chat(hello());
     const body = await res.json();
+    h.lastRound(body.sparecycle.job_id); // a final mismatch (an earlier round would go to another pair)
     assert.equal(await h.run(body.sparecycle.job_id, { text: "one" }, { text: "two" }), "disagreed");
     const poll = await pollChat(body.id);
     assert.equal(poll.status, 422);

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { jobPriceWei, protocolCutWei } from "@/lib/job-payment";
 import { parseJobRequest } from "@/lib/protocol";
+import { jobTag } from "./jobs";
 import { chargeWords, quoteJob } from "./paid-jobs";
 
 const WEI_PER_UNIT = 500_000_000n;
@@ -44,6 +45,16 @@ describe("chargeWords: the status words of a paid job", () => {
     assert.equal(chargeWords({ chargeStatus: "unpaid", verdict: "agreed", chargedEpoch: null }).text, "Matched, but the balance was withdrawn before the charge.");
   });
 
+  test("re-check rounds: held while another pair checks; not charged after every pair failed to match", () => {
+    assert.match(chargeWords({ chargeStatus: "pending", verdict: null, chargedEpoch: null, round: 1 }).text, /another pair of GPUs checks the job again/);
+    assert.equal(chargeWords({ chargeStatus: "pending", verdict: null, chargedEpoch: null, round: 1 }).label, "Held");
+    assert.equal(
+      chargeWords({ chargeStatus: "released", verdict: "disagreed", chargedEpoch: null, round: 2 }).text,
+      "Not charged: no pair's two results matched (3 pairs tried).",
+    );
+    assert.equal(chargeWords({ chargeStatus: "released", verdict: "disagreed", chargedEpoch: null, round: 0 }).text, "Not charged: the two results did not match.");
+  });
+
   test("never 'refund' and never 'instant'", () => {
     for (const chargeStatus of ["pending", "charged", "released", "unpaid"] as const) {
       for (const verdict of [null, "agreed", "disagreed", "expired", "rejected"] as const) {
@@ -51,5 +62,15 @@ describe("chargeWords: the status words of a paid job", () => {
         assert.doesNotMatch(`${w.label} ${w.text}`, /refund|instant/i);
       }
     }
+  });
+});
+
+describe("jobTag: the status tag of a job", () => {
+  test("a job checked again on another pair says so while it waits or runs, with the round", () => {
+    assert.equal(jobTag({ status: "queued", round: 1, maxRounds: 3 }).label, "Re-checking on another pair (round 2 of 3)");
+    assert.equal(jobTag({ status: "running", round: 2, maxRounds: 3 }).label, "Re-checking on another pair (round 3 of 3)");
+    assert.equal(jobTag({ status: "running", round: 0, maxRounds: 3 }).label, "Running on two nodes");
+    assert.equal(jobTag({ status: "queued" }).label, "Queued", "older schedulers send no round");
+    assert.equal(jobTag({ status: "disagreed", round: 2, maxRounds: 3 }).label, "Disagreed, unpaid", "a settled job shows its verdict");
   });
 });

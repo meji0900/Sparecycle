@@ -9,6 +9,7 @@ import type { PaidInvoice } from "@/lib/dapp/api";
 import { downloadJson, sameHash, sha256OfFile, type InvoiceState } from "@/lib/dapp/invoice";
 import { chargeWords } from "@/lib/dapp/paid-jobs";
 import { formatTime } from "@/lib/format";
+import { recheckLabel } from "@/lib/rounds";
 import { cn } from "@/lib/utils";
 import { Eth } from "./job-balance";
 import { SignInToView } from "./private-output";
@@ -20,6 +21,16 @@ const VERDICT: Record<NonNullable<PaidInvoice["verdict"]>, string> = {
   expired: "Expired, no verdict in time",
   rejected: "Rejected by the safety check",
 };
+
+/** The Results row: the verdict, or that another pair is checking the job again, and on which pair it ended. */
+function resultsText(inv: PaidInvoice): string | null {
+  const round = inv.round ?? 0;
+  if (!inv.verdict) return recheckLabel(round, inv.maxRounds);
+  if (round === 0) return VERDICT[inv.verdict];
+  if (inv.verdict === "agreed") return `Matched on pair ${round + 1} (an earlier pair did not match or did not finish)`;
+  if (inv.verdict === "disagreed") return `Did not match on any of ${round + 1} pairs`;
+  return `${VERDICT[inv.verdict]} (pair ${round + 1})`;
+}
 
 /** A label with a one-line explanation under it (left column of a Row). */
 function Label({ children, hint }: { children: ReactNode; hint: ReactNode }) {
@@ -121,7 +132,7 @@ function InvoiceBody({ inv }: { inv: PaidInvoice }) {
         >
           {notCharged ? <span className="text-muted">None, not charged</span> : <Eth wei={inv.toPotWei} />}
         </Row>
-        <Row label="Results">{inv.verdict ? VERDICT[inv.verdict] : <span className="text-muted">Not compared yet</span>}</Row>
+        <Row label="Results">{resultsText(inv) ?? <span className="text-muted">Not compared yet</span>}</Row>
         <Row label="Charge">
           <span className="inline-block max-w-[320px] text-right">{words.text}</span>
         </Row>

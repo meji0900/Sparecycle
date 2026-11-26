@@ -7,6 +7,7 @@ import { MAINNET_CHAIN_ID } from "@/lib/addresses";
 import { config } from "@/lib/config";
 import { JOB_PAYMENT_WINDOW_SECONDS, jobPriceWei } from "@/lib/job-payment";
 import { workUnits, type JobRequest } from "@/lib/protocol";
+import { MAX_ROUNDS } from "@/lib/rounds";
 import { siteOrigin } from "@/lib/site";
 import { POLICY } from "@/server/env";
 
@@ -145,7 +146,11 @@ console.log(res.status, await res.json()); // keep id and readSecret`;
                 ["running", "The two nodes are working on it."],
                 ["checking", "One result is in; waiting for the second."],
                 ["agreed", "The results matched. A paid job is charged at the end of the epoch (every six hours)."],
-                ["disagreed", "The results did not match. Not charged, and neither node is paid for it."],
+                [
+                  "queued again (re-check)",
+                  `A paid job whose two results did not match, or whose two nodes did not finish, runs again on two other nodes with different owners and GPUs, up to ${MAX_ROUNDS} pairs in all. Its status goes back to queued and its round goes up; the site shows "Re-checking on another pair (round 2 of ${MAX_ROUNDS})". The price stays held.`,
+                ],
+                ["disagreed", "The results did not match (a paid job: on any pair it was tried on). Not charged, and no node is paid for it."],
                 ["rejected", "The image safety checker flagged it. Not charged."],
                 ["expired", `No verdict within ${ttlHours} hours. Not charged.`],
               ]}
@@ -179,7 +184,9 @@ console.log(res.status, await res.json()); // keep id and readSecret`;
             <CodeBlock label="Terminal" code={status} />
             <p>
               Repeat until <C>status</C> is <C>agreed</C>, <C>disagreed</C>, <C>rejected</C> or <C>expired</C>. A first job can
-              wait a minute or two while the project&apos;s own GPUs start.
+              wait a minute or two while the project&apos;s own GPUs start. A paid job also has a <C>round</C>: <C>0</C> for its
+              first pair, <C>1</C> or <C>2</C> while it is checked again on another pair (<C>maxRounds</C> is {MAX_ROUNDS}; a free
+              job has <C>maxRounds</C> 1).
             </p>
           </Step>
           <Step n={3} title="Read the result">

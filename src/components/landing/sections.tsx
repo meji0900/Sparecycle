@@ -313,7 +313,10 @@ const FAQ: [string, string][] = [
   ["What is Sparecycle?", "A small network that runs AI jobs on computers that would otherwise sit idle. Every job runs on two machines, and their owners are paid only if the results match."],
   ["Who pays the nodes?", "Customers, for checked jobs: 95% of each job's price goes to the node pot and 5% to the project treasury. The token's creator fees go to the team wallet, not to the pot."],
   ["What does a job cost?", "The price is shown before you pay. A 512×512 image at 15 steps is 0.0000012 ETH today. The free trial gives 5 images an hour with no wallet."],
-  ["What if the two machines disagree?", "Neither is paid for that job and you are not charged for it."],
+  [
+    "What if the two machines disagree?",
+    "Neither is paid for that job. A paid job then runs again on another pair of machines with different owners, up to three pairs in all. If no pair agrees, you are not charged.",
+  ],
   ["Is this a yield product?", "No. Nodes are paid for checked work that customers paid for. There is no fixed return, no APY, and nothing is paid for holding the token."],
   ["Do I need the token?", "No. Not to run a node and not to pay for a job."],
   ["Do you top up the pot?", "No. The team does not refill it. Test jobs the team pays for itself are labelled team-funded."],

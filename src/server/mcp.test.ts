@@ -202,6 +202,7 @@ describe("tools", () => {
   test("not-charged outcomes, the daily cap and the kill switch behave as in steps 1 and 2", async () => {
     const s = await call("submit_job", { kind: "text", model: "qwen2.5-1.5b", prompt: "disagree" });
     const jobId = s.body!.result.structuredContent.job_id;
+    h.lastRound(jobId); // a final mismatch (an earlier round would go to another pair)
     assert.equal(await h.run(jobId, { text: "a" }, { text: "b" }), "disagreed");
     const r = await call("get_job_result", { job_id: jobId });
     assert.equal(r.body!.result.isError, true);

@@ -19,6 +19,8 @@ import { POLICY, serverEnv } from "./env";
 import { AUTH_REQUIRED, ApiError } from "./http";
 import { ipSalt, limitBucket, takeHourly } from "./limits";
 import { poolNudge } from "./gpu-pool";
+import { abandonStuckRounds, insertRoundTasks } from "./rounds";
+import { maxRoundsFor } from "@/lib/rounds";
 import { isLowBalance, jobPriceWei } from "@/lib/job-payment";
 import { heldFor, paymentsAddress, priceWeiPerUnit, readAccount, teamWallets, verifyPayment, type Payment } from "./payments";
 
@@ -44,6 +46,8 @@ type JobRow = {
   charge_status: string | null;
   read_secret_hash: string | null;
   api_key_id: string | null;
+  /** Re-check round (0 = the first pair; see ./rounds). */
+  round: number;
 };
 
 /** Paid jobs per payer wallet per hour (queue protection; payment itself is the anti-abuse for paid jobs). */
@@ -51,26 +55,33 @@ export const PAID_JOBS_PER_HOUR = 120;
 /** Job status / result reads per API key per hour (OpenAI-compatible polls and MCP tools). */
 export const KEY_READS_PER_HOUR = 3_600;
 
-/** Marks jobs that never reached a verdict within the TTL as expired (unpaid) and cancels their tasks. */
+/**
+ * Marks jobs that never reached a verdict within the TTL as expired (unpaid) and cancels their tasks (the hard stop,
+ * whatever round a job is in), then abandons re-check rounds that got no verdict in time (./rounds).
+ */
 export function expireStaleJobs() {
-  const cutoff = nowSec() - POLICY.jobTtlSeconds;
+  const now = nowSec();
+  const cutoff = now - POLICY.jobTtlSeconds;
   tx((db) => {
     const stale = db
       .prepare("SELECT id FROM jobs WHERE status IN ('queued','running','checking') AND created_at < ?")
       .all(cutoff) as { id: string }[];
-    if (!stale.length) return;
-    const now = nowSec();
-    const upJob = db.prepare("UPDATE jobs SET status = 'expired', settled_at = ?, note = 'no verdict within the job TTL' WHERE id = ?");
-    const upTasks = db.prepare("UPDATE tasks SET status = 'cancelled' WHERE job_id = ? AND status IN ('open','leased')");
-    // An expired job may hold one node's result: drop that copy of the output too (hash and fingerprint stay).
-    const dropOutputs = db.prepare("UPDATE results SET output = NULL WHERE job_id = ?");
-    for (const { id } of stale) {
-      upJob.run(now, id);
-      upTasks.run(id);
-      dropOutputs.run(id);
-    }
-    releaseKeyHolds(); // an expired key-paid job gives its price back to the key's daily counter
+    if (stale.length) expire(db, stale, now);
+    abandonStuckRounds(db, now);
   });
+}
+
+function expire(db: DatabaseSync, stale: { id: string }[], now: number) {
+  const upJob = db.prepare("UPDATE jobs SET status = 'expired', settled_at = ?, note = 'no verdict within the job TTL' WHERE id = ?");
+  const upTasks = db.prepare("UPDATE tasks SET status = 'cancelled' WHERE job_id = ? AND status IN ('open','leased')");
+  // An expired job may hold one node's result: drop that copy of the output too (hash and fingerprint stay).
+  const dropOutputs = db.prepare("UPDATE results SET output = NULL WHERE job_id = ?");
+  for (const { id } of stale) {
+    upJob.run(now, id);
+    upTasks.run(id);
+    dropOutputs.run(id);
+  }
+  releaseKeyHolds(); // an expired key-paid job gives its price back to the key's daily counter
 }
 
 export type SubmitOptions = {
@@ -193,9 +204,7 @@ export async function submitJob(
       key?.keyId ?? null,
       key ? 1 : 0,
     );
-    const ins = db.prepare("INSERT INTO tasks (id, job_id, slot, status) VALUES (?, ?, ?, 'open')");
-    ins.run(randomHex(16), id, 0);
-    ins.run(randomHex(16), id, 1);
+    insertRoundTasks(db, id, 0);
     db.prepare(
       `INSERT INTO rate_limits (bucket, window_start, count) VALUES (?, ?, 1)
        ON CONFLICT(bucket, window_start) DO UPDATE SET count = count + 1`,
@@ -217,7 +226,7 @@ export async function submitJob(
 
 const SELECT_JOB = `SELECT j.id, j.kind, j.model, j.spec, j.prompt_hash, j.work_units, j.status, j.dev, j.created_at, j.settled_at,
   j.epoch_id, j.output_type, j.note, e.status AS epoch_status, e.reserved AS epoch_reserved, j.payer, j.price_wei, j.charge_status,
-  j.read_secret_hash, j.api_key_id
+  j.read_secret_hash, j.api_key_id, j.round
   FROM jobs j LEFT JOIN epochs e ON e.id = j.epoch_id`;
 
 function flags(r: JobRow) {
@@ -244,6 +253,10 @@ function publicJob(r: JobRow) {
     ...flags(r),
     // Who paid: "free" (trial, shares the pot like any job), "paid" (a customer's balance) or "team" (the team's own test job).
     payment: paymentKind(r.payer),
+    // Re-check rounds (./rounds): 0 = the first pair; 1 or 2 = checking again on another pair after a mismatch or a pair
+    // that never finished. maxRounds = 3 for paid and team jobs, 1 for free trial jobs. No node identities.
+    round: r.round,
+    maxRounds: maxRoundsFor(r.payer),
   };
 }
 
@@ -382,7 +395,7 @@ export function keyJob(id: string, key: KeyViewer, opts: { withOutput?: boolean 
       `SELECT id, kind, model, spec, status, created_at, settled_at, work_units, price_wei, charge_status, note, payer, api_key_id, output_type
        FROM jobs WHERE id = ?`,
     )
-    .get(id) as Omit<JobRow, "dev" | "prompt_hash" | "epoch_id" | "epoch_status" | "epoch_reserved" | "read_secret_hash"> | undefined;
+    .get(id) as Omit<JobRow, "dev" | "prompt_hash" | "epoch_id" | "epoch_status" | "epoch_reserved" | "read_secret_hash" | "round"> | undefined;
   if (!row) throw new ApiError(404, "unknown-job", "no job with this id");
   if (accessOf({ payer: row.payer, read_secret_hash: null, api_key_id: row.api_key_id }, { address: null, secret: null, key }) !== "key") {
     throw new ApiError(403, "forbidden", "this API key did not submit this job");

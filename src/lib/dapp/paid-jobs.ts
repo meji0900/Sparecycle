@@ -81,12 +81,20 @@ export const showPayment = (job: Pick<ApiJob, "payment">, paymentsOn: boolean) =
  * short tag; `text` the plain sentence (feature brief §3.2 step 3: held / charged in epoch N / not charged / matched,
  * but the balance was withdrawn before the charge). Never "refund": nothing was taken, so nothing is given back.
  */
-export function chargeWords(inv: Pick<PaidInvoice, "chargeStatus" | "verdict" | "chargedEpoch">): { tone: Tone; label: string; text: string } {
+export function chargeWords(
+  inv: Pick<PaidInvoice, "chargeStatus" | "verdict" | "chargedEpoch"> & Partial<Pick<PaidInvoice, "round">>,
+): { tone: Tone; label: string; text: string } {
   switch (inv.chargeStatus) {
     case "pending":
       return inv.verdict === "agreed"
         ? { tone: "neutral", label: "Held", text: "Held: the results matched, and the price is charged when the epoch closes." }
-        : { tone: "neutral", label: "Held", text: "Held from your balance until the two results are compared. Charged only if they match." };
+        : (inv.round ?? 0) > 0
+          ? {
+              tone: "neutral",
+              label: "Held",
+              text: "Held while another pair of GPUs checks the job again. Charged only if a pair's two results match.",
+            }
+          : { tone: "neutral", label: "Held", text: "Held from your balance until the two results are compared. Charged only if they match." };
     case "charged":
       return {
         tone: "live",
@@ -99,7 +107,9 @@ export function chargeWords(inv: Pick<PaidInvoice, "chargeStatus" | "verdict" | 
         label: "Not charged",
         text:
           inv.verdict === "disagreed"
-            ? "Not charged: the two results did not match."
+            ? (inv.round ?? 0) > 0
+              ? `Not charged: no pair's two results matched (${(inv.round ?? 0) + 1} pairs tried).`
+              : "Not charged: the two results did not match."
             : inv.verdict === "expired"
               ? "Not charged: the job expired without a verdict."
               : inv.verdict === "rejected"

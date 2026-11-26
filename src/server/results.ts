@@ -1,8 +1,8 @@
 // Node results: check the lease, recompute the output hash from the submitted PNG / text, verify the node's
-// EIP-712 receipt, fingerprint the output, and decide the job once both results are in:
+// EIP-712 receipt, fingerprint the output, and decide the job once both results of its current round are in:
 //   agreed    -> one output is kept for the submitter; the job is payable in the epoch open right now
-//   disagreed -> unpaid
-//   rejected  -> a node's SD 1.5 safety checker flagged the image (unpaid, no output)
+//   disagreed -> unpaid; a paid or team job with a round left (./rounds) goes back to the queue for another pair instead
+//   rejected  -> a node's SD 1.5 safety checker flagged the image (unpaid, no output, never retried)
 import { getAddress, type Address, type Hex } from "viem";
 import { targetChain } from "@/lib/chain";
 import { recoverReceiptSigner, sha256Hex, type JobSpec } from "@/lib/protocol";
@@ -11,6 +11,7 @@ import { POLICY, serverEnv } from "./env";
 import { ApiError } from "./http";
 import { currentEpochIdLocal } from "./epochs";
 import { decodePng, fingerprintsMatch, imageFingerprint, textFingerprint } from "./verify";
+import { canStartNextRound, logDisagreedRound, startNextRound } from "./rounds";
 
 type TaskRow = {
   id: string;
@@ -22,6 +23,7 @@ type TaskRow = {
   gpu_uuid: string | null;
   epoch: number | null;
   backend: string | null;
+  round: number;
 };
 
 const TEXT_TYPE = "text/plain; charset=utf-8";
@@ -97,16 +99,24 @@ export async function submitResult(nodeKey: Address, taskId: string, body: unkno
     throw new ApiError(401, "bad-receipt-signature", "receipt is not signed by this node key (EIP-712, domain Sparecycle v1)");
   }
 
-  const status = tx((db) => {
+  const settled = tx((db) => {
     // Re-check inside the transaction (the signature check above was async).
     const t = db.prepare("SELECT status, node_key FROM tasks WHERE id = ?").get(taskId) as { status: string; node_key: string };
     if (t.status !== "leased" || t.node_key !== nodeKey) throw new ApiError(409, "not-your-task", "this task is no longer leased to this node");
-    const j = db.prepare("SELECT status FROM jobs WHERE id = ?").get(job.id) as { status: string };
+    const j = db.prepare("SELECT status, round, payer, created_at FROM jobs WHERE id = ?").get(job.id) as {
+      status: string;
+      round: number;
+      payer: string | null;
+      created_at: number;
+    };
     if (!["running", "checking"].includes(j.status)) throw new ApiError(409, "job-closed", `job is ${j.status}; result not needed`);
+    // Never happens (a round's tasks are done or cancelled before the next round starts); kept as a guard.
+    if (j.round !== task.round) throw new ApiError(409, "job-closed", "this task belongs to an earlier round of the job; result not needed");
+    const round = j.round;
     const now = nowSec();
     db.prepare(
       `INSERT INTO results (task_id, job_id, node_key, owner, gpu_uuid, output_hash, fingerprint, gpu_ms, epoch, signature, nsfw, dev,
-         runner, output, output_type, received_at, backend) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         runner, output, output_type, received_at, backend, round) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       taskId,
       job.id,
@@ -125,14 +135,17 @@ export async function submitResult(nodeKey: Address, taskId: string, body: unkno
       outputType,
       now,
       task.backend ?? "cuda",
+      round,
     );
     db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(taskId);
 
+    // Only the current round's two results are compared (earlier rounds' results stay for audit).
     const results = db
       .prepare(
-        "SELECT task_id, node_key, owner, gpu_uuid, fingerprint, nsfw, dev, backend, output, output_type FROM results WHERE job_id = ? ORDER BY received_at, task_id",
+        `SELECT task_id, node_key, owner, gpu_uuid, fingerprint, nsfw, dev, backend, output, output_type FROM results
+         WHERE job_id = ? AND round = ? ORDER BY received_at, task_id`,
       )
-      .all(job.id) as {
+      .all(job.id, round) as {
       task_id: string;
       node_key: string;
       owner: string;
@@ -146,7 +159,7 @@ export async function submitResult(nodeKey: Address, taskId: string, body: unkno
     }[];
     if (results.length < 2) {
       db.prepare("UPDATE jobs SET status = 'checking' WHERE id = ?").run(job.id);
-      return "checking";
+      return { status: "checking" as const, round };
     }
     const [r0, r1] = results;
     const distinct =
@@ -171,6 +184,15 @@ export async function submitResult(nodeKey: Address, taskId: string, body: unkno
       verdict = "disagreed";
       note = "the two results do not match";
     }
+    if (verdict === "disagreed") {
+      logDisagreedRound(db, job.id, round, now);
+      // A paid or team job with a round left that still fits in its TTL: another pair checks it (./rounds).
+      const rj = { id: job.id, payer: j.payer, round, created_at: j.created_at };
+      if (canStartNextRound(rj, now)) {
+        return { status: "queued" as const, verdict, round: startNextRound(db, rj, "disagreed", now) };
+      }
+      if (round > 0) note = `${note} (checked on ${round + 1} pairs; none matched)`;
+    }
     // The kept output and its sha256 (the "output fingerprint" on the payer's invoice): equal to the sha256 of the
     // bytes GET /api/v1/jobs/:id/result serves.
     const agreed = verdict === "agreed";
@@ -190,9 +212,11 @@ export async function submitResult(nodeKey: Address, taskId: string, body: unkno
     if (verdict === "agreed") {
       db.prepare("UPDATE nodes SET agreed_jobs = agreed_jobs + 1 WHERE node_key IN (?, ?)").run(r0.node_key, r1.node_key);
     }
-    // Keep hashes and fingerprints for audit; drop the per-node copies of the output.
+    // Keep hashes and fingerprints for audit; drop the per-node copies of the output (every round's).
     db.prepare("UPDATE results SET output = NULL WHERE job_id = ?").run(job.id);
-    return verdict;
+    return { status: verdict, round };
   });
-  return { ok: true, jobId: job.id, status };
+  // `status` is the job's status after this result; when a mismatch sent the job to another pair it is "queued", with
+  // `verdict: "disagreed"` for this round and `round` = the new round.
+  return { ok: true, jobId: job.id, ...settled };
 }

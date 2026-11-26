@@ -124,6 +124,30 @@ PaaS proxies do). IPs are stored only as salted hashes.
 - Verdicts: `agreed` (one output kept, served at `/api/v1/jobs/:id/result`), `disagreed` (unpaid), `rejected`
   (a node's SD 1.5 safety checker flagged the image; unpaid, no output), `expired`. The per-node copies of the output
   (`results.output`) are dropped at the verdict and when a job expires; hashes and fingerprints stay for audit.
+- **Re-check rounds** (`src/server/rounds.ts`, feature brief #9, D16 / D17). Paid and team jobs only; free trial jobs
+  get one round. `jobs.round` (0 = the first pair), `MAX_ROUNDS = 3`, `PICKUP_TIMEOUT = 1800 s`; a round lasts at
+  most `PICKUP_TIMEOUT + taskLeaseSeconds = 2400 s` from its first lease (`jobs.round_started_at`).
+  - A `disagreed` verdict with `round + 1 < MAX_ROUNDS` and at least 2400 s of the 6 h TTL left sends the job back to
+    `queued` with `round + 1` and two new tasks (slots `2 × round` and `2 × round + 1`); the round's tasks and results
+    stay (`tasks.round`, `results.round`). `submitResult` compares only the current round's two results, and answers
+    the node `{ status: "queued", verdict: "disagreed", round }`.
+  - A round with a first lease and no verdict 2400 s later is abandoned (its open and leased tasks cancelled, a late
+    result gets `409 not-your-task`) and the next round starts, under the same limits; checked in `expireStaleJobs()`,
+    which runs on every poll and job read. A round never leased (no compatible pair online) waits and uses up nothing.
+    When no further round is allowed (last round, a free job, or less than 2400 s of the TTL left), a stuck round is
+    not abandoned and keeps running; `expireStaleJobs()` stays the hard stop at 6 h, whatever the round. `rejected` is
+    never retried.
+  - Exclusion in `tryLease`: a node whose node key, owner wallet or GPU UUID held a lease (`job_leases`, every lease is
+    logged, also one left to expire) or sent a result in an earlier round of the job gets no task of a later round and
+    does not count as the "compatible peer" for its first task. The two tasks of a round follow every other rule
+    (distinct node / owner / GPU, same backend, dev with dev, GPU gate, Idle Guard).
+  - Payouts and stats use only the final round: `agreedJobsOf` (epoch allocation), `nodes.agreed_jobs` and
+    `epochAgreedJobs` count the two results with `results.round = jobs.round`. Nodes of a failed round get nothing for it.
+  - `job_rounds` logs, per node, each round that ended `disagreed` (also a final one and a free job's) or `abandoned`,
+    for the GPU challenge / suspension logic later; nothing reads it yet.
+  - The payer: public job views carry `round` and `maxRounds` (no node identities), the invoice too; the price stays
+    held (`heldFor`) until a final verdict, and is charged only after a final `agreed`. The dapp shows "Re-checking on
+    another pair (round N of 3)".
 - Prompts stay in the DB and are never returned; public views carry `promptHash =
   sha256("sparecycle-prompt|" + jobId + "|" + prompt)`.
 - **Private outputs** (`docs/private-outputs.md`). Every job gets a read secret, returned once by `POST /jobs`

@@ -60,6 +60,36 @@ export function devImage(p: ImageParams): { png: Buffer; gpuMs: number; nsfw: bo
   return { png: buf, gpuMs: performance.now() - t0, nsfw: false };
 }
 
+/**
+ * SPARECYCLE_DEV_CORRUPT=1: a dev runner that returns WRONG outputs for job tasks, to test the scheduler's re-check
+ * rounds (a mismatch moves a paid job to another pair). Honoured only with --dev-runner, and never for GPU challenges
+ * (a corrupting dev node still passes its challenge and gets jobs). Its outputs are seeded by its own node key, so
+ * they match neither an honest dev output nor another corrupting node's.
+ */
+export const devCorrupt = (dev: boolean) => dev && process.env.SPARECYCLE_DEV_CORRUPT === "1";
+
+/** A wrong image for this node: per-pixel noise seeded by the node key (its dHash is random against any other). */
+export function corruptDevImage(p: ImageParams, nodeKey: string): { png: Buffer; gpuMs: number; nsfw: boolean } {
+  const t0 = performance.now();
+  const rand = prng(p.seed ^ seedOf(sha256Hex(`corrupt|${nodeKey.toLowerCase()}|${p.prompt}`)));
+  const png = new PNG({ width: p.width, height: p.height });
+  for (let o = 0; o < png.data.length; o += 4) {
+    png.data[o] = Math.floor(rand() * 256);
+    png.data[o + 1] = Math.floor(rand() * 256);
+    png.data[o + 2] = Math.floor(rand() * 256);
+    png.data[o + 3] = 255;
+  }
+  return { png: PNG.sync.write(png, { colorType: 6 }), gpuMs: performance.now() - t0, nsfw: false };
+}
+
+/** A wrong text for this node: random tokens seeded by the node key and the prompt. */
+export function corruptDevText(p: TextParams, nodeKey: string): { text: string; gpuMs: number; tokens: number | null; tokensPerSecond: number | null } {
+  const rand = prng(seedOf(sha256Hex(`corrupt|${nodeKey.toLowerCase()}|${p.system}\u0000${p.prompt}`)));
+  const n = Math.max(8, Math.floor(p.maxTokens / 2));
+  const tokens = Array.from({ length: n }, () => Math.floor(rand() * 0xffffffff).toString(36));
+  return { text: `[dev-runner CORRUPTED output of ${nodeKey.slice(0, 10)}] ${tokens.join(" ")}`, gpuMs: 1, tokens: null, tokensPerSecond: null };
+}
+
 const WORDS = ["spare", "cycle", "idle", "graphics", "card", "epoch", "check", "agree", "root", "proof", "leaf", "node"];
 
 /** Deterministic text from the prompt hash (roughly maxTokens / 2 words). */
