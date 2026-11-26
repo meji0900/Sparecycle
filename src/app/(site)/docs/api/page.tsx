@@ -5,6 +5,7 @@ import { CodeBlock } from "@/components/ui/code-block";
 import { DOCS_LINKS } from "@/lib/docs-nav";
 import { JOB_PAYMENT_WINDOW_SECONDS } from "@/lib/job-payment";
 import { listOperations, openApiDocument } from "@/lib/openapi";
+import { ADDR, explorerAddressUrl } from "@/lib/addresses";
 import { REPO_URL, repoFile, siteOrigin } from "@/lib/site";
 import { POLICY } from "@/server/env";
 
@@ -180,8 +181,8 @@ export default function ApiPage() {
 
       <DocsSection id="x402" title="x402 pay-per-job">
         <Note tone="warn" title="Internal review only — not externally audited">
-          A capped launch, switched on per scheduler (it is off unless the operator enables it). The escrow contract has had an
-          internal security review only. Check before you rely on it: a request to <C>POST /v1/chat/completions</C> without any{" "}
+          Live on Robinhood Chain since 26 Nov 2026 as a capped launch. The escrow contract has had an internal security
+          review only. Check before you rely on it: a request to <C>POST /v1/chat/completions</C> without any{" "}
           <C>Authorization</C> header answers <C>402</C> with a <C>PAYMENT-REQUIRED</C> header when x402 is on, and{" "}
           <C>401</C> when it is off.
         </Note>
@@ -228,10 +229,26 @@ export default function ApiPage() {
               </>,
             ],
             [
+              "Price",
+              <>
+                5 micro-USDG per work unit (USDG has 6 decimals): a 512 × 512 image at 20 steps is 3,200 units, 0.016 USDG; a
+                256-token answer is about 0.01 USDG. The price covers the scheduler&apos;s two transactions per job (funding,
+                then forward or refund).
+              </>,
+            ],
+            [
               "Limits",
               <>
-                The escrow caps each payment, the total held at once and what one wallet can pay per epoch. The treasury Safe can
-                change these limits, pause new payments and set the conversion address; it cannot move a held payment.
+                1 USDG per payment, 100 USDG held at once, 10 USDG per wallet per epoch. The treasury Safe can change these
+                limits, pause new payments and set the conversion address; it cannot move a held payment.
+              </>,
+            ],
+            [
+              "Contract",
+              <>
+                Escrow <Ext href={explorerAddressUrl(ADDR.x402Escrow)}>{ADDR.x402Escrow}</Ext> (source verified), asset USDG{" "}
+                <Ext href={explorerAddressUrl(ADDR.usdg)}>{ADDR.usdg}</Ext>. Every address is also in the{" "}
+                <Link href="/docs/contracts">contracts table</Link>.
               </>,
             ],
             [

@@ -34,6 +34,19 @@ export const KIND_LABEL: Record<ChangelogKind, string> = {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    id: "x402-pay-per-job",
+    title: "Pay per job over HTTP with x402 (USDG)",
+    date: "2026-11-26",
+    kind: "scheduler",
+    summary:
+      "An agent without an API key can now pay for a single job with x402: the API answers 402 with the price, the agent signs a USDG transfer to an escrow contract and sends the request again. The payment waits in the escrow until the two machines have compared their results: it goes on when they agree (95% for the node pot, converted to ETH by the treasury Safe, 5% to the treasury) and back to the payer when they don't. 5 micro-USDG per work unit, about 0.016 USDG for an image; capped at 1 USDG per job and 100 USDG held at once. The escrow's source is verified. Internal review only, not externally audited.",
+    evidence: [
+      { label: "Escrow deploy transaction", tx: "0xb3056068cf4b82ccaac2447c58b298fd6ea600f72f3ff6f785ed3685ae9110aa" },
+      { label: "Verified source (Sourcify)", url: sourcifyUrl(ADDR.x402Escrow) },
+      { label: "Docs: x402 pay-per-job", url: `${LIVE_SITE}/docs/api#x402` },
+    ],
+  },
+  {
     id: "node-stake-contract",
     title: "Node staking contract on Robinhood Chain",
     date: "2026-11-26",

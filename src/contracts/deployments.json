@@ -2,7 +2,8 @@
   "4663": {
     "SparecycleRewards": "0x68A0569130551154FC1aABD71d99f65681c58Fe9",
     "SparecycleJobPayments": "0x420716931E5Ff2a984840C6E95837d826a8BE7eB",
-    "SparecycleNodeStake": "0x6565874F5c281c618DcFb5DF52c7E554ae8a866B"
+    "SparecycleNodeStake": "0x6565874F5c281c618DcFb5DF52c7E554ae8a866B",
+    "SparecycleX402Escrow": "0xd7A11d725F411f96E02F04991B377953e7D7B7fB"
   },
   "31337": {
     "MockPonsFeeEscrow": "0x5FbDB2315678afecb367f032d93F642f64180aa3",

@@ -33,13 +33,6 @@ export const ROADMAP: RoadmapItem[] = [
       "Bench AMD, Intel and integrated GPUs on Vulkan against a reference pair, so those cards can be listed as supported once their results match.",
   },
   {
-    id: "x402-pay-per-job",
-    title: "Pay per job over HTTP (x402)",
-    status: "in-progress",
-    summary:
-      "An agent asks for a job, gets the price in an HTTP payment-required answer and pays in USDG in the retry. The payment waits in an escrow contract: it goes on when two machines agree and back to the payer when they don't. Built and tested, internal review only; it goes live once the escrow is deployed.",
-  },
-  {
     id: "node-staking",
     title: "Node staking with partial slashing",
     status: "in-progress",

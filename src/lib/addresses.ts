@@ -23,6 +23,15 @@ export const ADDR = {
    * review only, not externally audited.
    */
   nodeStake: "0x6565874F5c281c618DcFb5DF52c7E554ae8a866B",
+  /**
+   * SparecycleX402Escrow: x402 pay-per-job in USDG. Each payment is held per job, forwarded on agreement (95% to the
+   * treasury Safe for conversion to ETH, 5% to the treasury) or refunded. Owner: the treasury Safe. Deployed 26 Nov 2026
+   * (tx 0xb3056068…10aa, block 123,661,769) with caps of 1 USDG per job, 100 USDG held, 10 USDG per payer per epoch.
+   * Internal review only, not externally audited.
+   */
+  x402Escrow: "0xd7A11d725F411f96E02F04991B377953e7D7B7fB",
+  /** USDG (Global Dollar, Paxos), the x402 payment asset: 6 decimals, EIP-3009 signed transfers. Not Sparecycle's. */
+  usdg: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
   /** Treasury Safe (Safe 1.5.0, 2 of 3): 5% of every charge, and since 25 Nov 2026 the reward contract's owner. */
   treasurySafe: "0xb262E4436aD6760F91e987f14e2fAc5D6550c71B",
   /** The SafeL2 1.5.0 singleton the treasury Safe proxy delegates to (storage slot 0 of the proxy, read 26 Nov 2026). */
@@ -79,6 +88,10 @@ export const VERIFICATION = {
   payments: {
     blockscout: { status: "verified", checkedOn: "26 Nov 2026" },
     sourcify: { status: "exact_match", checkedOn: "26 Nov 2026", verifiedAt: "2026-11-24T10:00:50Z" },
+  },
+  x402Escrow: {
+    blockscout: null,
+    sourcify: { status: "exact_match", checkedOn: "26 Nov 2026", verifiedAt: "2026-11-26T16:44:00Z" },
   },
   nodeStake: {
     blockscout: { status: "verified", checkedOn: "26 Nov 2026" },
@@ -143,6 +156,16 @@ export const ADDRESS_ROWS: AddressRow[] = [
     kind: "contract",
     by: "sparecycle",
     source: VERIFICATION.nodeStake,
+  },
+  {
+    id: "x402-escrow",
+    name: "SparecycleX402Escrow",
+    role: "x402 pay-per-job in USDG: each payment is held for one job, forwarded when the two results match (95% to the treasury Safe, which converts it to ETH for the node pot, 5% to the treasury) or refunded in full. Anyone can refund after the 12-hour deadline. Caps: 1 USDG per job, 100 USDG held, 10 USDG per payer per epoch. Owner: the treasury Safe. Internal review only, not externally audited.",
+    address: ADDR.x402Escrow,
+    network: "mainnet",
+    kind: "contract",
+    by: "sparecycle",
+    source: VERIFICATION.x402Escrow,
   },
   {
     id: "treasury-safe",
