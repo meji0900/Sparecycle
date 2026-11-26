@@ -31,6 +31,11 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  // OpenAI-compatible base URL: SDK users set baseURL to https://<host>/v1 (src/server/openai.ts, /docs/api/openai).
+  // Every /v1 path is served by the matching /api/v1 route; unknown paths still get the JSON 404 of api/v1/[...path].
+  async rewrites() {
+    return [{ source: "/v1/:path*", destination: "/api/v1/:path*" }];
+  },
 };
 
 export default nextConfig;
