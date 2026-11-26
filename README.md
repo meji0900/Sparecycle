@@ -348,7 +348,7 @@ Until there are enough contributors, the project runs its own bootstrap pool of 
 - `PAID_TEST_OWNERS` lists project wallets that **are** paid, for an openly labelled team test of the payout path; they stay marked as Sparecycle nodes, with "paid test node".
 - Two project owners: `node scripts/pool-owners.mjs init` (keys in `.keys/`, unfunded).
 - Machine setup: rent with `--onstart-cmd "bash /root/pool-start.sh"`, run [scripts/gpu-pool-node.sh](scripts/gpu-pool-node.sh), sign the node key with `node scripts/pool-owners.mjs sign a|b <nodeKey>`, write `~/pool-node.env`, stop the machine. Then set `VAST_API_KEY` (typed in via `--stdin`), `GPU_POOL_INSTANCE_IDS` and `PROJECT_NODE_OWNERS` on Railway.
-- Risk: while stopped, the host GPU can be rented by someone else, so the machine may not be able to start. Vast then declines the start (`success:false`, "resources unavailable"). The pool cancels that queued start at once (so the machine cannot come up later unwatched), and if machines of fewer than two owners came up it stops the rest and tries again after 15 minutes. A spare machine per owner (`GPU_POOL_INSTANCE_IDS=id:a,id:b,id:b`) lets the pool run while one host is busy.
+- Risk: while stopped, the host GPU can be rented by someone else, so the machine may not be able to start. Vast then declines the start (`success:false`, "resources unavailable"). The pool cancels that queued start at once (so the machine cannot come up later unwatched), and if machines of fewer than two owners came up it stops the rest and tries again after 15 minutes. A spare machine per owner (`GPU_POOL_INSTANCE_IDS=id:a,id:b,id:b`) lets the pool run while one host is busy. When the spares of one owner are often rented out too, `GPU_POOL_ALWAYS_ON=<id>` keeps one machine of that owner running all the time (full hourly price, ~$1.6/day for an RTX 3060): the pool never stops it, and a start then only needs the other owner's machine.
 - Test without Vast/GPU: `node scripts/e2e-pool.mjs` (15/15, including busy hosts and a spare machine).
 
 ## Sweep bot
@@ -427,7 +427,7 @@ Full list with comments: [.env.example](.env.example). Server variables: [src/se
 | Sweep | `SWEEP_ENABLED`, `SWEEP_SIGNER_KEY`, `SWEEP_POOL_ID`, `SWEEP_AUTORUN_MINUTES`, `ALERT_WEBHOOK_URL` |
 | Support form | `SUPPORT_WEBHOOK_URL` (Discord or Slack incoming webhook; empty = the form on `/docs/support` is shown disabled) |
 | Backups | `DB_BACKUP_HOURS`, `DB_BACKUP_KEEP` |
-| GPU pool | `VAST_API_KEY`, `GPU_POOL_INSTANCE_IDS`, `GPU_POOL_IDLE_MINUTES`, `PROJECT_NODE_OWNERS`, `PAID_TEST_OWNERS` |
+| GPU pool | `VAST_API_KEY`, `GPU_POOL_INSTANCE_IDS`, `GPU_POOL_ALWAYS_ON`, `GPU_POOL_IDLE_MINUTES`, `PROJECT_NODE_OWNERS`, `PAID_TEST_OWNERS` |
 | Links | `NEXT_PUBLIC_TOS_URL`, `NEXT_PUBLIC_TOS_VERSION`, `NEXT_PUBLIC_PRIVACY_POLICY_URL`, `NEXT_PUBLIC_X_URL`, `NEXT_PUBLIC_DOCS_URL`, `NEXT_PUBLIC_TELEGRAM_URL` |
 
 **Product decisions for the CYCLE launch** (recorded in `contracts/mainnet.json`: pair **ETH**, creator tax **1%** / 100 bps, nodes paid in ETH):

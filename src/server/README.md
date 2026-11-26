@@ -42,6 +42,7 @@ exceed `reserved`, there is no withdraw of the pot and no second post. Say so wh
 | `CHALLENGE_COOLDOWN_HOURS` | | `6` | Hours without jobs after a failed challenge, before the next one (fractions allowed) |
 | `VAST_API_KEY` | secret | unset | Bootstrap GPU pool (gpu-pool.ts): Vast.ai key used to start and stop the pool instances |
 | `GPU_POOL_INSTANCE_IDS` | | unset | Vast instance ids of the pool, comma-separated (two, linked to two different owners). Optional owner group per entry, `id:a,id:b,id:b`, to add a spare machine for an owner: a start counts when machines of two groups come up |
+| `GPU_POOL_ALWAYS_ON` | | unset | Pool instance ids that are never stopped (also listed in `GPU_POOL_INSTANCE_IDS`). Their owner group then needs no spare started: a start brings up only the other owner's machine. A declined start of one that is already running still counts |
 | `GPU_POOL_IDLE_MINUTES` | | 10 | Pool instances stop after this many minutes without open jobs |
 | `JOB_RATE_LIMIT` | | `5` | Accepted job submissions per IP per hour (`0` closes submissions) |
 | `OUTPUT_AUTH` | | `off` | `enforce` = an output is served only to the job's read secret or a session of the paying wallet; the old `/output` URL answers 410. `off` = served to anyone (still `private, no-store`). See `docs/private-outputs.md` |

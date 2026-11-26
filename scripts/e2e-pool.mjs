@@ -17,7 +17,7 @@ const check = (name, ok, extra = "") => {
 };
 
 // ---- mock Vast API: PUT /api/v0/instances/:id/ {state}, GET /api/v0/instances/:id/?owner=me ----
-const status = { 11: "stopped", 22: "stopped", 33: "stopped" };
+const status = { 11: "stopped", 22: "stopped", 33: "stopped", 44: "running" };
 const calls = [];
 /** Instances whose host is busy: Vast declines their start (success:false) and queues it. */
 const busy = new Set();
@@ -168,6 +168,52 @@ try {
   check(
     "after the back-off it tries again and runs",
     c.filter((x) => x.state === "running").length === 3 && poolStatus().state === "running" && poolStatus().error === null,
+    JSON.stringify(c),
+  );
+
+  // ---- an always-on machine (44, owner B) stays up; the pool starts only what is missing and never stops it ----
+  process.env.GPU_POOL_INSTANCE_IDS = "11:a,22:b,33:b,44:b";
+  process.env.GPU_POOL_ALWAYS_ON = "44";
+  db.prepare("UPDATE jobs SET status = 'agreed'").run();
+  const tC = tB + 15 * 60 + 1 + 11 * 60;
+  mark = calls.length;
+  await poolTick(tC);
+  c = since(mark);
+  check(
+    "idle stop leaves the always-on machine running",
+    ["11", "22", "33"].every((id) => c.some((x) => x.id === id && x.state === "stopped")) &&
+      !c.some((x) => x.id === "44") &&
+      status[44] === "running" &&
+      poolStatus().state === "stopped",
+    JSON.stringify(c),
+  );
+  check("status counts the always-on machine without its id", poolStatus().alwaysOn === 1 && !JSON.stringify(poolStatus()).includes("44"));
+
+  // A new job: Vast declines the repeated start of 44 (its host is busy with it already), but 44 is running, so it
+  // counts for owner B; only owner A's machine is started and B's spares stay off.
+  db.prepare("UPDATE jobs SET status = 'queued'").run();
+  busy.add("44");
+  mark = calls.length;
+  await poolTick(tC + 60);
+  c = since(mark);
+  check(
+    "a declined but running always-on machine covers its owner; only the other owner is started",
+    c.some((x) => x.id === "11" && x.state === "running") &&
+      !c.some((x) => x.id === "22" || x.id === "33") &&
+      !c.some((x) => x.id === "44" && x.state === "stopped") &&
+      poolStatus().state === "running",
+    JSON.stringify(c),
+  );
+
+  // Owner A's host is busy: one owner alone cannot run a job, but the always-on machine is still never stopped.
+  busy.add("11");
+  status[11] = "stopped";
+  mark = calls.length;
+  await poolTick(tC + 60 + 6 * 60);
+  c = since(mark);
+  check(
+    "the back-off stop also leaves the always-on machine running",
+    c.some((x) => x.id === "11" && x.state === "stopped") && !c.some((x) => x.id === "44" && x.state === "stopped") && status[44] === "running",
     JSON.stringify(c),
   );
 } finally {

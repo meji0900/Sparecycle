@@ -8,6 +8,10 @@
 //                           job's two copies always go to two different owners). An entry may name its owner group,
 //                           "61906174:a,61906182:b,62000000:b": a spare machine for the same owner; a start succeeds
 //                           when machines of at least two groups come up. Entries without a group are their own group.
+//   GPU_POOL_ALWAYS_ON      "62633324": pool machines that are never stopped (one owner kept online all the time, so a
+//                           start needs only the other owner's machine). They still count for their group when the
+//                           pool starts; a declined or failed start of one is never cancelled. Must also be listed in
+//                           GPU_POOL_INSTANCE_IDS.
 //   GPU_POOL_IDLE_MINUTES   default 10
 //   VAST_API_URL            default https://console.vast.ai (tests point it at a mock)
 //
@@ -57,6 +61,14 @@ export const poolEnv = {
       .filter((m): m is RegExpExecArray => m !== null)
       .map((m) => ({ id: m[1], group: m[2] ?? `#${m[1]}` })),
   instanceIds: () => poolEnv.instances().map((i) => i.id),
+  /** Pool machines that are started like the others but never stopped (GPU_POOL_ALWAYS_ON). */
+  alwaysOn: () =>
+    new Set(
+      (str(process.env.GPU_POOL_ALWAYS_ON) ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => /^\d+$/.test(s)),
+    ),
   idleSeconds: () => {
     const n = Number(str(process.env.GPU_POOL_IDLE_MINUTES) ?? "10");
     return Number.isFinite(n) && n > 0 ? Math.round(n * 60) : 600;
@@ -115,14 +127,34 @@ async function startAll(now: number) {
   p.lastStartAt = now;
   try {
     const all = poolEnv.instances();
-    const results = await Promise.all(all.map(async (i) => ({ ...i, ok: await setState(i.id, "running") })));
+    const keep = poolEnv.alwaysOn();
+    // Always-on machines first: one that is already up counts even if Vast declines a repeated start.
+    const first = await Promise.all(
+      all
+        .filter((i) => keep.has(i.id))
+        .map(async (i) => {
+          let ok = await setState(i.id, "running").catch(() => false);
+          if (!ok) ok = (await actualStatus(i.id).catch(() => null)) === "running";
+          return { ...i, ok };
+        }),
+    );
+    // An owner group with an always-on machine up needs no spare started.
+    const covered = new Set(first.filter((r) => r.ok).map((r) => r.group));
+    const rest = await Promise.all(
+      all
+        .filter((i) => !keep.has(i.id) && !covered.has(i.group))
+        .map(async (i) => ({ ...i, ok: await setState(i.id, "running") })),
+    );
+    const results = [...first, ...rest];
     const declined = results.filter((r) => !r.ok);
-    // Cancel declined starts now, or Vast would bring them up later, outside the pool's watch.
-    await Promise.all(declined.map((r) => setState(r.id, "stopped").catch(() => false)));
+    // Cancel declined starts now, or Vast would bring them up later, outside the pool's watch (never an always-on one).
+    await Promise.all(declined.filter((r) => !keep.has(r.id)).map((r) => setState(r.id, "stopped").catch(() => false)));
     const groupsUp = new Set(results.filter((r) => r.ok).map((r) => r.group));
     if (groupsUp.size < 2 && new Set(all.map((i) => i.group)).size >= 2) {
-      // One owner alone cannot run a job: stop what did start and try again later.
-      await Promise.all(results.filter((r) => r.ok).map((r) => setState(r.id, "stopped").catch(() => false)));
+      // One owner alone cannot run a job: stop what did start (except always-on machines) and try again later.
+      await Promise.all(
+        results.filter((r) => r.ok && !keep.has(r.id)).map((r) => setState(r.id, "stopped").catch(() => false)),
+      );
       p.state = "stopped";
       p.lastStopAt = now;
       p.backoffUntil = now + START_BACKOFF_SECONDS;
@@ -148,7 +180,8 @@ async function stopAll(now: number) {
   const p = pool();
   p.state = "stopping";
   try {
-    await Promise.all(poolEnv.instanceIds().map((id) => setState(id, "stopped")));
+    const keep = poolEnv.alwaysOn();
+    await Promise.all(poolEnv.instanceIds().filter((id) => !keep.has(id)).map((id) => setState(id, "stopped")));
     p.state = "stopped";
     p.lastStopAt = now;
     p.error = null;
@@ -169,7 +202,9 @@ export async function poolTick(now = nowSec()) {
   try {
     if (p.state === "unknown") {
       // After a restart (or a failed call) ask Vast what is running, so an idle pool isn't left on.
-      const states = await Promise.all(poolEnv.instanceIds().map((id) => actualStatus(id).catch(() => null)));
+      const keep = poolEnv.alwaysOn();
+      const ids = poolEnv.instanceIds().filter((id) => !keep.has(id));
+      const states = await Promise.all(ids.map((id) => actualStatus(id).catch(() => null)));
       p.state = states.some((s) => s === "running" || s === "loading") ? "running" : states.every((s) => s !== null) ? "stopped" : "unknown";
     }
     const d = demand();
@@ -210,6 +245,7 @@ export function poolStatus() {
     configured: true as const,
     state: p.state,
     instances: poolEnv.instanceIds().length,
+    alwaysOn: poolEnv.instanceIds().filter((id) => poolEnv.alwaysOn().has(id)).length,
     idleMinutes: Math.round(poolEnv.idleSeconds() / 60),
     lastStartAt: p.lastStartAt,
     lastStopAt: p.lastStopAt,
