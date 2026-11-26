@@ -10,8 +10,9 @@
 //            job that reached a final charge status and is not yet in a confirmed jobs root: the jobs charged now,
 //            plus the jobs released (not charged) or left unpaid since the last confirmed charge, carried forward over
 //            epochs that charged nothing. Leaf and codes: src/lib/job-receipt.ts. Each payer's job receipt carries a
-//            proof against it (src/server/receipts.ts). /api/v1/epochs/{id}/charges serves each customer's total and
-//            the leaves (no job ids, payers per job or prices: D7). Charges stored before this kept hashRule "v1"
+//            proof against it (src/server/receipts.ts). Each leaf has a random salt that only the payer's receipt
+//            carries. /api/v1/epochs/{id}/charges serves each customer's total and the leaves (no job ids, payers per
+//            job, prices or salts: D7), which cannot be matched to jobs without the salt. Charges stored before this kept hashRule "v1"
 //            (listHash = keccak256 of the JSON list of charged jobs) and are served exactly as stored.
 //
 // Crash safety: the list and the tree are stored (status 'sending') before the transaction and the hash right after it
@@ -27,6 +28,7 @@ import {
   JOBS_LEAF_RULE,
   LEAF_CHARGE_STATUS,
   LEAF_VERDICT,
+  newLeafSalt,
   type JobLeafEntry,
   type LeafChargeStatus,
   type LeafVerdict,
@@ -198,12 +200,21 @@ function dropCharge(epochId: number, status: "sending" | "failed") {
 /**
  * The jobs-tree entries of a charge: the jobs charged now, plus every paid / team job whose final charge status is
  * released or unpaid and that no confirmed jobs root holds yet (since the last charge; on the first v2 charge this
- * also takes such jobs settled before receipts existed).
+ * also takes such jobs settled before receipts existed). Every leaf gets a fresh random salt (stored with the leaf,
+ * served only in the payer's receipt), so the published leaves cannot be matched to jobs from public data.
  */
 function jobsTreeEntries(list: ListEntry[], dueById: Map<string, DueJob>): JobLeafEntry[] {
   const entries: JobLeafEntry[] = list.map((e) => {
     const out = dueById.get(e.jobId)?.output_hash ?? null;
-    return { jobId: e.jobId as Hex, payer: getAddress(e.payer), priceWei: BigInt(e.priceWei), verdict: "agreed", chargeStatus: "charged", outputHash: isHex32(out) ? out : null };
+    return {
+      jobId: e.jobId as Hex,
+      payer: getAddress(e.payer),
+      priceWei: BigInt(e.priceWei),
+      verdict: "agreed",
+      chargeStatus: "charged",
+      outputHash: isHex32(out) ? out : null,
+      salt: newLeafSalt(),
+    };
   });
   const rows = getDb()
     .prepare(
@@ -224,6 +235,7 @@ function jobsTreeEntries(list: ListEntry[], dueById: Map<string, DueJob>): JobLe
       verdict,
       chargeStatus: r.charge_status,
       outputHash: verdict === "agreed" && isHex32(r.output_hash) ? r.output_hash : null,
+      salt: newLeafSalt(),
     });
   }
   return entries;
@@ -356,9 +368,9 @@ export async function chargeOpenEpoch(epochId: number): Promise<string> {
       "INSERT INTO charges (epoch_id, list_json, list_hash, total_wei, status, created_at, hash_rule) VALUES (?, ?, ?, ?, 'sending', ?, ?)",
     ).run(epochId, JSON.stringify(list), listHash, total.toString(), nowSec(), JOBS_HASH_RULE);
     const ins = db.prepare(
-      "INSERT INTO charge_leaves (epoch_id, job_id, payer, price_wei, verdict, charge_status, output_hash, leaf) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO charge_leaves (epoch_id, job_id, payer, price_wei, verdict, charge_status, output_hash, salt, leaf) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
-    for (const l of leaves) ins.run(epochId, l.jobId, l.payer, l.priceWei.toString(), l.verdict, l.chargeStatus, l.outputHash, l.leaf);
+    for (const l of leaves) ins.run(epochId, l.jobId, l.payer, l.priceWei.toString(), l.verdict, l.chargeStatus, l.outputHash, l.salt, l.leaf);
   });
   try {
     const { request } = await publicClient.simulateContract({

@@ -97,7 +97,7 @@ export const coreApi: OpenApiModule = {
         operationId: "getEpochCharges",
         summary: "What an epoch's charge committed: per-customer totals and the jobs-tree leaves (v2), or the per-job list (v1)",
         description: [
-          `hashRule "${JOBS_HASH_RULE}" (every charge since job receipts): listHash, the listHash of the Charged event of SparecycleJobPayments for that epoch, is the root of a Merkle tree over the paid and team jobs that reached a final charge status since the last confirmed charge (charged, released = not charged, unpaid). The answer lists each customer's total (equal to the CustomerCharged events) and the sorted leaves, so anyone can rebuild the root; it names no job ids, per-job payers or prices. A payer proves their own job with its receipt (GET /jobs/{id}/receipt).`,
+          `hashRule "${JOBS_HASH_RULE}" (every charge since job receipts): listHash, the listHash of the Charged event of SparecycleJobPayments for that epoch, is the root of a Merkle tree over the paid and team jobs that reached a final charge status since the last confirmed charge (charged, released = not charged, unpaid). The answer lists each customer's total (equal to the CustomerCharged events) and the sorted leaves, so anyone can rebuild the root; it names no job ids, per-job payers or prices, and each leaf includes a random salt that only the payer's receipt carries, so a leaf cannot be matched to a job from public data. A payer proves their own job with its receipt (GET /jobs/{id}/receipt).`,
           "",
           `Leaf: ${JOBS_LEAF_RULE}. Codes: verdict agreed ${LEAF_VERDICT.agreed}, disagreed ${LEAF_VERDICT.disagreed}, expired ${LEAF_VERDICT.expired}, rejected ${LEAF_VERDICT.rejected}; chargeStatus charged ${LEAF_CHARGE_STATUS.charged}, released ${LEAF_CHARGE_STATUS.released}, unpaid ${LEAF_CHARGE_STATUS.unpaid}.`,
           "",
@@ -233,7 +233,7 @@ export const coreApi: OpenApiModule = {
         operationId: "getJobReceipt",
         summary: "The payer's receipt of a paid or team job, checkable against the Charged event (a stub for a free trial job)",
         description: [
-          "Available from the verdict on. state is \"provisional\" until the charge that commits the job's leaf to a jobs root is confirmed on-chain, then \"sealed\": anchor then holds the leaf inputs, the leaf, the Merkle proof and the jobs root (the listHash of the Charged event of epochId, sent in chargeTx). nodes holds both nodes' EIP-712 receipts (domain Sparecycle v1: jobId, node, outputHash, gpuMs, epoch).",
+          "Available from the verdict on. state is \"provisional\" until the charge that commits the job's leaf to a jobs root is confirmed on-chain, then \"sealed\": anchor then holds the leaf inputs (with the leaf's random salt, served only here), the leaf, the Merkle proof and the jobs root (the listHash of the Charged event of epochId, sent in chargeTx). nodes holds both nodes' EIP-712 receipts (domain Sparecycle v1: jobId, node, outputHash, gpuMs, epoch).",
           "",
           "pending.reason of a provisional receipt: waiting-for-charge, charge-unconfirmed, no-anchor (the epoch close after the verdict charged nothing, so there is no Charged event to anchor it; it goes into the next charge's jobs root) or charged-before-receipts (charged in a v1 charge list, no proof).",
           "",
@@ -761,6 +761,7 @@ export const coreApi: OpenApiModule = {
                   verdict: { type: "integer", description: "uint8 code" },
                   chargeStatus: { type: "integer", description: "uint8 code" },
                   outputHash: { ...ref("Hash"), description: "0x00…00 unless agreed." },
+                  salt: { ...ref("Hash"), description: "The leaf's 32 random bytes. Only in this receipt, never public: keep the receipt private." },
                 },
               },
               leaf: ref("Hash"),

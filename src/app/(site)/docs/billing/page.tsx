@@ -69,8 +69,8 @@ export default function BillingPage() {
         <Note title="What is public">
           Every charge is on-chain: the <C>CustomerCharged</C> event shows your wallet and the amount per epoch. The epoch&apos;s
           charge (<C>GET /api/v1/epochs/&#123;id&#125;/charges</C>) shows each wallet&apos;s total and the leaves of the jobs tree
-          below, not job ids or prices. Charge lists from before job receipts list job ids, payers and prices. The leaf of a job
-          that was not charged has nothing secret in it, so someone who knows its job id and guesses your wallet can recompute it.
+          below, not job ids or prices. Every leaf includes a random salt that only your receipt holds, so nobody can link your
+          wallet to a job from the public leaves. Charge lists from before job receipts list job ids, payers and prices.
         </Note>
       </DocsSection>
 
@@ -84,7 +84,8 @@ export default function BillingPage() {
         <ul className="list-disc space-y-2 pl-5 marker:text-faint">
           <li>
             A receipt holds the job id, your wallet, the price, whether the results matched, whether you were charged, the hash of
-            the output and the signed statements (EIP-712) of both nodes about the result each of them sent.
+            the output, the signed statements (EIP-712) of both nodes about the result each of them sent, and the random salt of
+            your job&apos;s leaf.
           </li>
           <li>
             At each epoch close that charges at least one job, the scheduler builds a Merkle tree over every paid job settled since
@@ -98,7 +99,8 @@ export default function BillingPage() {
           </li>
           <li>
             Save the receipt as a JSON file. <span className="text-text">Check a job receipt</span> on the Jobs page checks a saved
-            file the same way, also while the Sparecycle API is unreachable.
+            file the same way, also while the Sparecycle API is unreachable. Keep the file private: its salt is what links your
+            wallet to your job&apos;s public leaf.
           </li>
         </ul>
         <Note title="Which root is checked">

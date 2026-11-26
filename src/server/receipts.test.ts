@@ -45,7 +45,7 @@ const { ANONYMOUS } = await import("./auth");
 const { linkMessage, parseJobRequest, sha256Hex, signReceipt } = await import("@/lib/protocol");
 const { jobPaymentMessage, jobPriceWei, jobRequestHash } = await import("@/lib/job-payment");
 const { buildTree } = await import("@/lib/merkle");
-const { jobLeafOf, verifyReceipt } = await import("@/lib/job-receipt");
+const { jobLeafOf, verifyReceipt, ZERO_HASH: ZERO_SALT } = await import("@/lib/job-receipt");
 const { jobPaymentsAbi } = await import("@/contracts/jobPayments");
 const { publicClient, targetChain } = await import("@/lib/chain");
 const { config } = await import("@/lib/config");
@@ -374,9 +374,20 @@ describe("a receipt from the verdict to the sealed charge", () => {
       assert.equal(r.chargeStatus, chargeStatus);
       assert.equal(r.pending, null);
       assert.equal(r.anchor?.listHash, chargesJson(epoch).listHash);
+      const stored = getDb().prepare("SELECT salt FROM charge_leaves WHERE epoch_id = ? AND job_id = ?").get(epoch, job.id) as { salt: Hex };
+      assert.match(stored.salt, /^0x[0-9a-f]{64}$/, "a 32-byte salt is stored with the leaf");
+      assert.equal(r.anchor?.leafInputs.salt, stored.salt, "the receipt carries the leaf's salt");
       assert.equal(
         r.anchor?.leaf,
-        jobLeafOf(epoch, { jobId: job.id, payer: who, priceWei: job.price, verdict, chargeStatus, outputHash: verdict === "agreed" ? sha256Hex(Buffer.from(SAME, "utf8")) : null }),
+        jobLeafOf(epoch, {
+          jobId: job.id,
+          payer: who,
+          priceWei: job.price,
+          verdict,
+          chargeStatus,
+          outputHash: verdict === "agreed" ? sha256Hex(Buffer.from(SAME, "utf8")) : null,
+          salt: stored.salt,
+        }),
       );
       const v = await verifyOn(epoch, r);
       assert.equal(v.outcome, "verified", `${verdict}/${chargeStatus}: ${JSON.stringify(v.checks)}`);
@@ -386,10 +397,26 @@ describe("a receipt from the verdict to the sealed charge", () => {
     assert.equal(((await res.json()) as JobReceipt).state, "sealed");
   });
 
-  test("a changed price on the sealed receipt no longer verifies", async () => {
+  test("a changed price or salt on the sealed receipt no longer verifies", async () => {
     const r = jobReceipt(agreed.id, asPayer(payer.address)) as JobReceipt;
     const changed = { ...r, priceWei: "1" };
     assert.equal((await verifyOn(epoch, changed)).outcome, "failed");
+    const otherSalt = { ...r, anchor: { ...r.anchor!, leafInputs: { ...r.anchor!.leafInputs, salt: randomHex(32) } } };
+    assert.equal((await verifyOn(epoch, otherSalt)).outcome, "failed");
+  });
+
+  test("the published leaves cannot be matched to a job from public fields: salts stay private", () => {
+    const c = chargesJson(epoch) as { leaves: Hex[] };
+    const json = JSON.stringify(chargesJson(epoch));
+    const salts = (getDb().prepare("SELECT salt FROM charge_leaves WHERE epoch_id = ?").all(epoch) as { salt: string }[]).map((x) => x.salt);
+    assert.equal(new Set(salts).size, salts.length, "one fresh salt per leaf");
+    for (const salt of salts) assert.ok(!json.includes(salt.slice(2)), "no salt in the public charge answer");
+    // The not-charged job: everything but the salt is public or guessable (its output hash is zero).
+    const guess = { jobId: disagreed.id, payer: payer.address, priceWei: disagreed.price, verdict: "disagreed", chargeStatus: "released", outputHash: null } as const;
+    assert.ok(!c.leaves.includes(jobLeafOf(epoch, { ...guess, salt: ZERO_SALT })), "a zero salt does not match");
+    assert.ok(!c.leaves.includes(jobLeafOf(epoch, { ...guess, salt: randomHex(32) })), "a guessed salt does not match");
+    const real = (getDb().prepare("SELECT salt FROM charge_leaves WHERE epoch_id = ? AND job_id = ?").get(epoch, disagreed.id) as { salt: Hex }).salt;
+    assert.ok(c.leaves.includes(jobLeafOf(epoch, { ...guess, salt: real })), "only the payer's salt matches");
   });
 
   test("the v2 charge list: per-customer totals and leaf hashes, no job ids (D7)", () => {

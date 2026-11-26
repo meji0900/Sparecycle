@@ -5,11 +5,15 @@
 // bytes32 as listHash.
 //
 // leaf  = keccak256(abi.encode(uint64 epochId, bytes32 jobId, address payer, uint256 priceWei, uint8 verdict,
-//                              uint8 chargeStatus, bytes32 outputHash))
+//                              uint8 chargeStatus, bytes32 outputHash, bytes32 salt))
 //         epochId    = the epoch whose charge() committed the tree (the Charged event's epochId)
 //         verdict    = LEAF_VERDICT, chargeStatus = LEAF_CHARGE_STATUS (0 is never used)
 //         outputHash = sha256 of the kept output when the two results agreed, else 0x00…00
-//         224 bytes in, so a leaf can never collide with a 64-byte inner node.
+//         salt       = 32 random bytes (CSPRNG) drawn when the leaf is built, kept by the scheduler and given only in
+//                      the payer's receipt. Job ids, verdicts and prices are public, and a not-agreed job's output hash
+//                      is zero, so without the salt anyone could recompute a published leaf for a guessed wallet and
+//                      link that wallet to the job. With it, a published leaf reveals nothing.
+//         256 bytes in, so a leaf can never collide with a 64-byte inner node.
 // inner = sorted-pair keccak256 (src/lib/merkle.ts hashPair); leaves sorted ascending, an odd node is promoted.
 //
 // Pure (viem only) and browser-safe: the scheduler builds trees and receipts with it (src/server/payments.ts,
@@ -36,7 +40,7 @@ export const ZERO_HASH: Hex = `0x${"00".repeat(32)}`;
 
 /** The leaf rule as one line (served with v2 charge lists, shown in the docs). */
 export const JOBS_LEAF_RULE =
-  "keccak256(abi.encode(uint64 epochId, bytes32 jobId, address payer, uint256 priceWei, uint8 verdict, uint8 chargeStatus, bytes32 outputHash)); sorted-pair keccak256 tree as the payout tree (src/lib/merkle.ts)";
+  "keccak256(abi.encode(uint64 epochId, bytes32 jobId, address payer, uint256 priceWei, uint8 verdict, uint8 chargeStatus, bytes32 outputHash, bytes32 salt)); salt = 32 random bytes per leaf, given only in the payer's receipt; sorted-pair keccak256 tree as the payout tree (src/lib/merkle.ts)";
 
 const LEAF_TYPES = [
   { type: "uint64" },
@@ -45,6 +49,7 @@ const LEAF_TYPES = [
   { type: "uint256" },
   { type: "uint8" },
   { type: "uint8" },
+  { type: "bytes32" },
   { type: "bytes32" },
 ] as const;
 
@@ -56,6 +61,8 @@ export type JobLeafEntry = {
   chargeStatus: LeafChargeStatus;
   /** null (or omitted) = 0x00…00. Only an agreed job has one. */
   outputHash: Hex | null;
+  /** 32 random bytes per leaf (newLeafSalt): only the payer's receipt carries it. */
+  salt: Hex;
 };
 
 /** The leaf of one job in the jobs tree of epoch `epochId`. */
@@ -69,8 +76,16 @@ export function jobLeafOf(epochId: bigint | number, e: JobLeafEntry): Hex {
       LEAF_VERDICT[e.verdict],
       LEAF_CHARGE_STATUS[e.chargeStatus],
       e.outputHash ?? ZERO_HASH,
+      e.salt,
     ]),
   );
+}
+
+/** A fresh leaf salt: 32 bytes from the platform CSPRNG (Web Crypto, in Node and in browsers). */
+export function newLeafSalt(): Hex {
+  const b = new Uint8Array(32);
+  globalThis.crypto.getRandomValues(b);
+  return `0x${Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("")}`;
 }
 
 /** The jobs tree of one charge (at least one entry; job ids are unique, so leaves are too). */
@@ -96,6 +111,8 @@ export type ReceiptLeafInputs = {
   verdict: number;
   chargeStatus: number;
   outputHash: Hex;
+  /** The leaf's random salt: without it the published leaf cannot be matched to this job. Keep the receipt private. */
+  salt: Hex;
 };
 
 export type ReceiptAnchor = {
@@ -170,7 +187,7 @@ const RECEIPT_KEYS = [
 ] as const;
 const NODE_KEYS = ["node", "outputHash", "gpuMs", "epoch", "signature"] as const;
 const ANCHOR_KEYS = ["hashRule", "leafInputs", "leaf", "proof", "listHash"] as const;
-const LEAF_INPUT_KEYS = ["epochId", "jobId", "payer", "priceWei", "verdict", "chargeStatus", "outputHash"] as const;
+const LEAF_INPUT_KEYS = ["epochId", "jobId", "payer", "priceWei", "verdict", "chargeStatus", "outputHash", "salt"] as const;
 const PENDING_KEYS = ["reason", "epochId"] as const;
 const PENDING_REASONS = ["waiting-for-charge", "charge-unconfirmed", "no-anchor", "charged-before-receipts"] as const;
 
@@ -253,6 +270,7 @@ export function parseReceipt(raw: unknown): JobReceipt {
         verdict: li.verdict as number,
         chargeStatus: li.chargeStatus as number,
         outputHash: hash(li.outputHash, "anchor.leafInputs.outputHash"),
+        salt: hash(li.salt, "anchor.leafInputs.salt"),
       },
       leaf: hash(a.leaf, "anchor.leaf"),
       proof: (a.proof as string[]).map((p) => p.toLowerCase() as Hex),
@@ -449,7 +467,15 @@ export async function verifyReceipt(raw: unknown, opts: VerifyOptions): Promise<
     same(li.outputHash, r.outputHash ?? ZERO_HASH);
   const computedLeaf =
     verdictName && chargeName
-      ? jobLeafOf(li.epochId, { jobId: li.jobId, payer: li.payer, priceWei: BigInt(li.priceWei), verdict: verdictName, chargeStatus: chargeName, outputHash: li.outputHash })
+      ? jobLeafOf(li.epochId, {
+          jobId: li.jobId,
+          payer: li.payer,
+          priceWei: BigInt(li.priceWei),
+          verdict: verdictName,
+          chargeStatus: chargeName,
+          outputHash: li.outputHash,
+          salt: li.salt,
+        })
       : null;
   const leafOk = inputsMatch && computedLeaf !== null && same(computedLeaf, a.leaf);
   ok =
@@ -457,7 +483,7 @@ export async function verifyReceipt(raw: unknown, opts: VerifyOptions): Promise<
       "leaf",
       "Jobs-tree leaf",
       leafOk,
-      leafOk ? `computed here from the job, wallet, price, verdict, charge status and output hash: ${shortHex(computedLeaf!)}` : "the leaf does not match the receipt's fields",
+      leafOk ? `computed here from the job, wallet, price, verdict, charge status, output hash and salt: ${shortHex(computedLeaf!)}` : "the leaf does not match the receipt's fields",
     ) && ok;
   const computedRoot = computedLeaf ? a.proof.reduce<Hex>((h, p) => hashPair(h, p), computedLeaf) : null;
   const rootOk = computedRoot !== null && same(computedRoot, a.listHash);

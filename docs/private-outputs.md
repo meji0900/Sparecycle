@@ -22,10 +22,10 @@ What is **not** private:
   cannot be recalled.
 - **Payments are public.** The payments contract emits `CustomerCharged` (payer and amount per epoch) on-chain. The
   per-epoch charge answer (`GET /api/v1/epochs/{id}/charges`) shows each paying wallet's total and the leaf hashes of the
-  jobs tree; charge lists made before job receipts also link charged job ids to paying wallets and prices. A leaf of a
-  job that was not charged contains nothing secret (its output hash is zero), so someone who knows its job id and
-  guesses the paying wallet can recompute it. Each payer's job receipt (`GET /api/v1/jobs/{id}/receipt`) has the same
-  credentials as the invoice.
+  jobs tree; charge lists made before job receipts also link charged job ids to paying wallets and prices. Every leaf
+  includes 32 random bytes (a salt) that are given only in the payer's job receipt (`GET /api/v1/jobs/{id}/receipt`,
+  same credentials as the invoice), so the public leaves cannot be matched to a job or a wallet: job ids, verdicts and
+  prices are public, but the salt is not.
   Public job views keep only `payment` (free / paid / team); a job's price, charge status and output hash are on its
   private invoice (`GET /api/v1/jobs/{id}/invoice`, same credentials as the output, always enforced).
 - **Outputs made before this change** were served with `Cache-Control: public, max-age=31536000, immutable` to anyone

@@ -2,7 +2,8 @@
 // verdict is set (submitResult in ./results): `provisional` until the charge that commits the job's leaf to a jobs root
 // is confirmed on-chain, then `sealed` with the leaf, its Merkle proof, the jobs root (the listHash of the Charged
 // event) and the charge transaction. Both nodes' EIP-712 receipts (results.signature) come with it, so the payer holds
-// signed statements from the two nodes as well. Format, leaf and checks: src/lib/job-receipt.ts.
+// signed statements from the two nodes as well. The leaf's random salt is given here and nowhere else: without it the
+// published leaves cannot be matched to jobs. Format, leaf and checks: src/lib/job-receipt.ts.
 //
 // Who can read it: exactly who can read the invoice (./invoices): a session of the wallet that paid, the job's read
 // secret, or the API key that submitted the job; always enforced, whatever OUTPUT_AUTH says. A free trial job has no
@@ -52,6 +53,7 @@ type LeafRow = {
   verdict: LeafVerdict;
   charge_status: LeafChargeStatus;
   output_hash: string | null;
+  salt: Hex;
   leaf: Hex;
 };
 
@@ -108,15 +110,16 @@ function sealed(r: Row): Pick<JobReceipt, "payer" | "priceWei" | "verdict" | "ch
     | { list_hash: Hex; tx: Hex | null; status: string; hash_rule: string }
     | undefined;
   const leafRow = db
-    .prepare("SELECT payer, price_wei, verdict, charge_status, output_hash, leaf FROM charge_leaves WHERE epoch_id = ? AND job_id = ?")
+    .prepare("SELECT payer, price_wei, verdict, charge_status, output_hash, salt, leaf FROM charge_leaves WHERE epoch_id = ? AND job_id = ?")
     .get(epochId, r.id) as LeafRow | undefined;
-  if (!charge || charge.status !== "done" || charge.hash_rule !== JOBS_HASH_RULE || !isHex32(charge.tx) || !leafRow) {
+  if (!charge || charge.status !== "done" || charge.hash_rule !== JOBS_HASH_RULE || !isHex32(charge.tx) || !leafRow || !isHex32(leafRow.salt)) {
     console.error(`[sparecycle] job ${r.id}: receipt epoch ${epochId} has no confirmed v2 charge with its leaf`);
     throw new ApiError(500, "receipt-unavailable", "the scheduler's records for this receipt are incomplete");
   }
   const tree = buildTree((db.prepare("SELECT leaf FROM charge_leaves WHERE epoch_id = ?").all(epochId) as { leaf: Hex }[]).map((l) => l.leaf));
   const payer = getAddress(leafRow.payer);
   const outputHash = isHex32(leafRow.output_hash) ? (leafRow.output_hash.toLowerCase() as Hex) : null;
+  const salt = leafRow.salt.toLowerCase() as Hex;
   const leaf = jobLeafOf(epochId, {
     jobId: r.id as Hex,
     payer,
@@ -124,6 +127,7 @@ function sealed(r: Row): Pick<JobReceipt, "payer" | "priceWei" | "verdict" | "ch
     verdict: leafRow.verdict,
     chargeStatus: leafRow.charge_status,
     outputHash,
+    salt,
   });
   if (leaf !== leafRow.leaf.toLowerCase() || tree.root !== charge.list_hash.toLowerCase()) {
     console.error(`[sparecycle] job ${r.id}: stored leaf or jobs root of epoch ${epochId} does not recompute`);
@@ -147,6 +151,7 @@ function sealed(r: Row): Pick<JobReceipt, "payer" | "priceWei" | "verdict" | "ch
         verdict: LEAF_VERDICT[leafRow.verdict],
         chargeStatus: LEAF_CHARGE_STATUS[leafRow.charge_status],
         outputHash: outputHash ?? ZERO_HASH,
+        salt,
       },
       leaf,
       proof: getProof(tree, leaf),

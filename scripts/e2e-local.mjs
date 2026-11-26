@@ -21,7 +21,7 @@
 //     provisional at the verdict with both node signatures
 //  7. warp anvil past the epoch end, POST /api/v1/epochs/close (posts the root on-chain)
 //  7b. the charge commits the jobs root (hashRule v2-jobs-merkle) as the Charged event's listHash; the public charge
-//     list shows per-customer totals (= CustomerCharged) and leaves, no job ids; both receipts are sealed and verify
+//     list shows per-customer totals (= CustomerCharged) and salted leaves, no job ids or salts; both receipts are sealed and verify
 //     against the Charged event read from anvil (src/lib/job-receipt.ts, the browser's check); a tampered one fails
 //  8. each owner fetches its proof and claims; balances must rise by exactly the leaf amount; a second claim
 //     must revert AlreadyClaimed; reserved <= pot; the rollover lands in epoch 1
@@ -818,7 +818,13 @@ async function main() {
   const saved = JSON.parse(JSON.stringify(rc1.data)); // what "Save receipt (JSON)" writes
   const tamperedPrice = await verifyReceipt({ ...saved, priceWei: (BigInt(saved.priceWei) - 1n).toString() }, verifyOpts);
   const tamperedEpoch = await verifyReceipt({ ...saved, epochId: 1, anchor: { ...saved.anchor, leafInputs: { ...saved.anchor.leafInputs, epochId: 1 } } }, verifyOpts);
-  check("a tampered receipt (price, epoch) does not verify", tamperedPrice.outcome === "failed" && tamperedEpoch.outcome === "failed");
+  const tamperedSalt = await verifyReceipt({ ...saved, anchor: { ...saved.anchor, leafInputs: { ...saved.anchor.leafInputs, salt: `0x${"ab".repeat(32)}` } } }, verifyOpts);
+  check("a tampered receipt (price, epoch, salt) does not verify", tamperedPrice.outcome === "failed" && tamperedEpoch.outcome === "failed" && tamperedSalt.outcome === "failed");
+  const salt = saved.anchor.leafInputs.salt;
+  check(
+    "the leaf's salt is only in the payer's receipt, not in the public charge answer",
+    /^0x[0-9a-f]{64}$/.test(salt) && !JSON.stringify((await api("GET", "/epochs/0/charges")).data).includes(salt.slice(2)),
+  );
   const deadRpc = await verifyReceipt(saved, { ...verifyOpts, client: createPublicClient({ chain: foundry, transport: http("http://127.0.0.1:9", { retryCount: 0 }) }) });
   check("an unreachable RPC is reported as unreachable, never as verified", deadRpc.outcome === "unreachable");
   const acct2 = (await api("GET", "/payments/account?address=" + customer.address)).data;

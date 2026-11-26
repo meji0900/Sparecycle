@@ -138,8 +138,8 @@ export function ReceiptScopeNote({ className }: { className?: string }) {
         <span className="num">listHash</span> in the payments contract&apos;s <span className="num">Charged</span> event of that epoch.
       </p>
       <p>
-        <span className="text-text">What a pass shows.</span> This job&apos;s line (job id, wallet, price, verdict, charge status, output hash) is in the
-        root committed on-chain with that charge. It does not show that the nodes computed the output correctly: the node signatures only show which
+        <span className="text-text">What a pass shows.</span> This job&apos;s line (job id, wallet, price, verdict, charge status, output hash, with a
+        random salt that only this receipt holds) is in the root committed on-chain with that charge. It does not show that the nodes computed the output correctly: the node signatures only show which
         node keys reported these results.
       </p>
     </div>
@@ -331,7 +331,7 @@ export function JobReceiptPanel({ state, className }: { state: ReceiptState; cla
               </Button>
               <span className="text-xs text-muted">
                 {r.state === "sealed"
-                  ? "The file can be checked later on the Jobs page, even when the Sparecycle API is unreachable."
+                  ? "The file can be checked later on the Jobs page, even when the Sparecycle API is unreachable. Keep it private: its salt links your wallet to this job's public leaf."
                   : "Save it again once it is sealed: a provisional receipt has no proof yet."}
               </span>
             </div>

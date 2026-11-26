@@ -1,6 +1,7 @@
 // Jobs tree and job receipts (src/lib/job-receipt.ts, feature brief #8 option B): the leaf encoding against a
-// hand-built abi.encode, the uint8 codes, proofs for every leaf, tampering, the strict receipt parser, and
-// verifyReceipt against a stub chain (a Charged / CustomerCharged transaction built here). No network. Run: npm test
+// hand-built abi.encode, the uint8 codes, the per-leaf salt (a published leaf cannot be matched from public fields),
+// proofs for every leaf, tampering, the strict receipt parser, and verifyReceipt against a stub chain (a Charged /
+// CustomerCharged transaction built here). No network. Run: npm test
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
@@ -22,6 +23,7 @@ import {
   JOBS_HASH_RULE,
   LEAF_CHARGE_STATUS,
   LEAF_VERDICT,
+  newLeafSalt,
   parseReceipt,
   ReceiptFormatError,
   verifyReceipt,
@@ -38,7 +40,7 @@ const CONTRACT: Address = "0x420716931E5Ff2a984840C6E95837d826a8BE7eB";
 const rnd32 = (): Hex => keccak256(generatePrivateKey());
 const addr = (): Address => privateKeyToAccount(generatePrivateKey()).address;
 
-/** abi.encode of the seven leaf fields, by hand: every value left-padded to one 32-byte word. */
+/** abi.encode of the eight leaf fields, by hand: every value left-padded to one 32-byte word. */
 function manualLeaf(epochId: number, e: JobLeafEntry): Hex {
   const word = (v: bigint | number) => pad(numberToHex(v), { size: 32 });
   return keccak256(
@@ -50,6 +52,7 @@ function manualLeaf(epochId: number, e: JobLeafEntry): Hex {
       word(LEAF_VERDICT[e.verdict]),
       word(LEAF_CHARGE_STATUS[e.chargeStatus]),
       e.outputHash ?? ZERO_HASH,
+      e.salt,
     ]),
   );
 }
@@ -61,6 +64,7 @@ const entry = (over: Partial<JobLeafEntry> = {}): JobLeafEntry => ({
   verdict: "agreed",
   chargeStatus: "charged",
   outputHash: rnd32(),
+  salt: newLeafSalt(),
   ...over,
 });
 
@@ -71,7 +75,7 @@ describe("jobs tree: leaf encoding and codes", () => {
     assert.equal(JOBS_HASH_RULE, "v2-jobs-merkle");
   });
 
-  test("leaf = keccak256(abi.encode(uint64, bytes32, address, uint256, uint8, uint8, bytes32)), 224 bytes in", () => {
+  test("leaf = keccak256(abi.encode(uint64, bytes32, address, uint256, uint8, uint8, bytes32, bytes32)), 256 bytes in", () => {
     for (const e of [
       entry(),
       entry({ verdict: "disagreed", chargeStatus: "released", outputHash: null }),
@@ -84,10 +88,19 @@ describe("jobs tree: leaf encoding and codes", () => {
       assert.notEqual(jobLeafOf(7, e), packedStyle, "abi.encode, not encodePacked");
     }
     const words = encodeAbiParameters(
-      [{ type: "uint64" }, { type: "bytes32" }, { type: "address" }, { type: "uint256" }, { type: "uint8" }, { type: "uint8" }, { type: "bytes32" }],
-      [1n, ZERO_HASH, CONTRACT, 0n, 1, 1, ZERO_HASH],
+      [
+        { type: "uint64" },
+        { type: "bytes32" },
+        { type: "address" },
+        { type: "uint256" },
+        { type: "uint8" },
+        { type: "uint8" },
+        { type: "bytes32" },
+        { type: "bytes32" },
+      ],
+      [1n, ZERO_HASH, CONTRACT, 0n, 1, 1, ZERO_HASH, ZERO_HASH],
     );
-    assert.equal((words.length - 2) / 2, 224);
+    assert.equal((words.length - 2) / 2, 256);
   });
 
   test("a not-agreed job's output hash is 0x00…00 (null and zero give the same leaf)", () => {
@@ -105,9 +118,38 @@ describe("jobs tree: leaf encoding and codes", () => {
       { ...e, verdict: "disagreed" },
       { ...e, chargeStatus: "unpaid" },
       { ...e, outputHash: rnd32() },
+      { ...e, salt: newLeafSalt() },
     ];
     for (const v of variants) assert.notEqual(jobLeafOf(5, v), base);
     assert.notEqual(jobLeafOf(6, e), base);
+  });
+});
+
+describe("jobs tree: the salt keeps published leaves unlinkable", () => {
+  test("a published leaf cannot be matched from public fields alone", () => {
+    // A not-charged job: job id, wallet guess, price and verdict are public or guessable, and its output hash is zero.
+    const e = entry({ verdict: "disagreed", chargeStatus: "released", outputHash: null });
+    const published = jobLeafOf(12, e);
+    const unsalted = keccak256(
+      encodeAbiParameters(
+        [{ type: "uint64" }, { type: "bytes32" }, { type: "address" }, { type: "uint256" }, { type: "uint8" }, { type: "uint8" }, { type: "bytes32" }],
+        [12n, e.jobId, e.payer, e.priceWei, LEAF_VERDICT.disagreed, LEAF_CHARGE_STATUS.released, ZERO_HASH],
+      ),
+    );
+    assert.notEqual(unsalted, published, "the seven public fields alone give another hash");
+    assert.notEqual(jobLeafOf(12, { ...e, salt: ZERO_HASH }), published, "a zero salt gives another hash");
+    for (let i = 0; i < 32; i++) assert.notEqual(jobLeafOf(12, { ...e, salt: newLeafSalt() }), published, "a guessed salt gives another hash");
+    assert.equal(jobLeafOf(12, { ...e }), published, "with the real salt it matches");
+  });
+
+  test("salts are 32 random bytes, different every time", () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 256; i++) {
+      const s = newLeafSalt();
+      assert.match(s, /^0x[0-9a-f]{64}$/);
+      seen.add(s);
+    }
+    assert.equal(seen.size, 256);
   });
 });
 
@@ -153,7 +195,8 @@ async function sealedReceipt(opts: { verdict?: "agreed" | "disagreed"; chargeSta
     signature: await signReceipt(k, CHAIN, { jobId, node: k.address, outputHash, gpuMs: 1234n, epoch: BigInt(epochId) }),
   });
   const outputHash = verdict === "agreed" ? hashA : null;
-  const mine: JobLeafEntry = { jobId, payer, priceWei, verdict, chargeStatus, outputHash };
+  const salt = newLeafSalt();
+  const mine: JobLeafEntry = { jobId, payer, priceWei, verdict, chargeStatus, outputHash, salt };
   const { tree } = buildJobsTree(epochId, [mine, entry(), entry({ verdict: "expired", chargeStatus: "released", outputHash: null }), entry()]);
   const leaf = jobLeafOf(epochId, mine);
   const chargeTx = rnd32();
@@ -182,6 +225,7 @@ async function sealedReceipt(opts: { verdict?: "agreed" | "disagreed"; chargeSta
         verdict: LEAF_VERDICT[verdict],
         chargeStatus: LEAF_CHARGE_STATUS[chargeStatus],
         outputHash: outputHash ?? ZERO_HASH,
+        salt,
       },
       leaf,
       proof: getProof(tree, leaf),
@@ -268,6 +312,8 @@ describe("verifyReceipt", () => {
       ["anchor.leafInputs.verdict", (r) => (r.anchor!.leafInputs.verdict = 2)],
       ["anchor.leafInputs.chargeStatus", (r) => (r.anchor!.leafInputs.chargeStatus = 3)],
       ["anchor.leafInputs.outputHash", (r) => (r.anchor!.leafInputs.outputHash = ZERO_HASH)],
+      ["anchor.leafInputs.salt", (r) => (r.anchor!.leafInputs.salt = other)],
+      ["anchor.leafInputs.salt dropped", (r) => delete (r.anchor!.leafInputs as { salt?: Hex }).salt],
       ["anchor.leaf", (r) => (r.anchor!.leaf = other)],
       ["anchor.proof", (r) => (r.anchor!.proof[0] = other)],
       ["anchor.proof shortened", (r) => r.anchor!.proof.pop()],
@@ -292,7 +338,15 @@ describe("verifyReceipt", () => {
     const r = clone(b.receipt);
     // Rebuild a self-consistent receipt with a higher price: leaf, proof and root all agree, the chain does not.
     r.priceWei = r.anchor!.leafInputs.priceWei = "1";
-    const leaf = jobLeafOf(9, { jobId: r.jobId, payer: r.payer, priceWei: 1n, verdict: "agreed", chargeStatus: "charged", outputHash: r.outputHash });
+    const leaf = jobLeafOf(9, {
+      jobId: r.jobId,
+      payer: r.payer,
+      priceWei: 1n,
+      verdict: "agreed",
+      chargeStatus: "charged",
+      outputHash: r.outputHash,
+      salt: r.anchor!.leafInputs.salt,
+    });
     r.anchor!.leaf = r.anchor!.listHash = leaf;
     r.anchor!.proof = [];
     const v = await verifyReceipt(r, opts(b.client));

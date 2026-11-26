@@ -287,8 +287,10 @@ const MIGRATIONS: string[] = [
   // A charge now commits a Merkle root over every paid / team job that reached a final charge status (charged,
   // released, unpaid) and is not yet in a confirmed jobs root: that root is the listHash of the Charged event
   // (charges.hash_rule = 'v2-jobs-merkle'). Charges stored before this keep 'v1' (listHash = keccak256 of the JSON
-  // list) and are served unchanged. charge_leaves holds each charge's leaves (like payouts for the payout tree);
-  // jobs.receipt_epoch is the epoch whose confirmed charge holds the job's leaf (NULL = not yet in a confirmed root).
+  // list) and are served unchanged. charge_leaves holds each charge's leaves (like payouts for the payout tree) with
+  // each leaf's random salt: the salt goes only into the payer's receipt, never into a public answer, so a published
+  // leaf cannot be recomputed from public data. jobs.receipt_epoch is the epoch whose confirmed charge holds the job's
+  // leaf (NULL = not yet in a confirmed root).
   `
   ALTER TABLE charges ADD COLUMN hash_rule TEXT NOT NULL DEFAULT 'v1';
   ALTER TABLE jobs ADD COLUMN receipt_epoch INTEGER;
@@ -300,6 +302,7 @@ const MIGRATIONS: string[] = [
     verdict       TEXT NOT NULL,              -- agreed | disagreed | expired | rejected (uint8 code: src/lib/job-receipt.ts)
     charge_status TEXT NOT NULL,              -- charged | released | unpaid
     output_hash   TEXT,                       -- NULL = 0x00…00 in the leaf
+    salt          TEXT NOT NULL,              -- 32 random bytes (hex) in the leaf; private: payer's receipt only
     leaf          TEXT NOT NULL,
     PRIMARY KEY (epoch_id, job_id)
   );

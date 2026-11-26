@@ -147,7 +147,9 @@ PaaS proxies do). IPs are stored only as salted hashes.
   settled before receipts existed), stores its leaves (`charge_leaves`, like `payouts` for the payout tree) with the
   charge row (`charges.hash_rule = 'v2-jobs-merkle'`) before sending, and passes the root as `listHash` to
   `charge(...)`. Leaf: `keccak256(abi.encode(uint64 epochId, bytes32 jobId, address payer, uint256 priceWei, uint8
-  verdict, uint8 chargeStatus, bytes32 outputHash))`, codes in `src/lib/job-receipt.ts`, sorted-pair tree. When the
+  verdict, uint8 chargeStatus, bytes32 outputHash, bytes32 salt))`, codes in `src/lib/job-receipt.ts`, sorted-pair tree;
+  `salt` is 32 CSPRNG bytes drawn per leaf, stored in `charge_leaves.salt` and served only in the payer's receipt (never
+  in `/charges`, logs or the public tree mirror), so a published leaf cannot be recomputed from public data. When the
   charge is confirmed (`markCharged`, also from the crash-recovery path) the jobs get `receipt_epoch` and their
   receipts are `sealed`; before that a receipt is `provisional` from the verdict on (waiting for the charge, charge
   unconfirmed, or `no-anchor` when the epoch close after the verdict charged nothing: no `Charged` event, D15; such
