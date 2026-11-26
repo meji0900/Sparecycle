@@ -89,6 +89,7 @@ describe("live root: funding from V2, floored shares, skipped epochs", () => {
   let available = 10n ** 20n;
 
   const stubChain = () => {
+    mock.restoreAll(); // never mock a mocked method: restoreAll would then leave the first stub in place
     mock.method(tokenChain, "currentEpoch", async () => open);
     mock.method(tokenChain, "rewardsEpoch", async (id: bigint) => {
       const s = s5 + (Number(id) - 5) * EPOCH;
@@ -427,6 +428,29 @@ describe("posting roots (mock chain with the pool's rules)", () => {
       process.env.SCHEDULER_SIGNER_KEY = key;
     }
   });
+});
+
+test("head reads are uncached: a funding or ledger scan never ends at a stale block number", async () => {
+  const { publicClient } = await import("@/lib/chain");
+  const pc = publicClient as unknown as Record<string, (...a: unknown[]) => unknown>;
+  const heads: unknown[] = [];
+  mock.method(pc, "getBlockNumber", async (args?: unknown) => {
+    heads.push(args);
+    return 120n;
+  });
+  const ranges: [bigint, bigint][] = [];
+  mock.method(pc, "getLogs", async (q: { fromBlock: bigint; toBlock: bigint }) => {
+    ranges.push([q.fromBlock, q.toBlock]);
+    return [{ args: { toHolderPool: 7n }, transactionHash: hashOf(1) }];
+  });
+  try {
+    assert.equal(await tokenChain.headBlock(), 120n);
+    assert.deepEqual(await tokenChain.holderFunding(5n, 100n), { total: 7n, txs: [hashOf(1)] });
+    assert.deepEqual(ranges, [[100n, 120n]], "scanned to the fresh head");
+    assert.ok(heads.length === 2 && heads.every((a) => (a as { cacheTime?: number } | undefined)?.cacheTime === 0));
+  } finally {
+    mock.restoreAll();
+  }
 });
 
 test("the sender: postRoot goes through sendAsScheduler only, and holder-posts.ts holds no key or wallet code", () => {

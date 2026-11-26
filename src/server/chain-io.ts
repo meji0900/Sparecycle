@@ -278,9 +278,11 @@ const EXECUTION_SUCCESS_TOPIC = keccak256(toBytes("ExecutionSuccess(bytes32,uint
 /** Safe 1.3 logs ExecutionSuccess with txHash in data, later versions index it: read both layouts. */
 const safeTxHashOfLog = (l: { topics: readonly Hex[]; data: Hex }): Hex => (l.topics[1] ?? (`0x${l.data.slice(2, 66)}` as Hex)) as Hex;
 
+// Every head read below is uncached (cacheTime 0): viem keeps the last block number for a few seconds, and a scan that
+// ends at a stale head silently misses the newest logs (a charge's Distributed, a transfer just before an epoch end).
 export const tokenChain = {
   async headBlock(): Promise<bigint> {
-    return publicClient.getBlockNumber();
+    return publicClient.getBlockNumber({ cacheTime: 0 });
   },
 
   /** Block timestamp (unix seconds), cached in memory. */
@@ -384,7 +386,7 @@ export const tokenChain = {
   /** The SPARE/ETH v4 pool's price and in-range liquidity (StateView), both read at one block. */
   async poolState(): Promise<PoolRead> {
     const address = live(UNISWAP_V4.stateView, "Uniswap v4 StateView");
-    const block = await publicClient.getBlockNumber();
+    const block = await publicClient.getBlockNumber({ cacheTime: 0 });
     const id = UNISWAP_V4.spareEthPoolId;
     const [slot0, liquidity] = await Promise.all([
       publicClient.readContract({ address, abi: v4StateViewAbi, functionName: "getSlot0", args: [id], blockNumber: block }),
@@ -400,7 +402,7 @@ export const tokenChain = {
 
   /** ExecutionSuccess events of the treasury Safe since `fromBlock`. */
   async safeExecutions(fromBlock: bigint): Promise<SafeExecution[]> {
-    const head = await publicClient.getBlockNumber();
+    const head = await publicClient.getBlockNumber({ cacheTime: 0 });
     const logs = await logsInChunks(fromBlock, head, (from, to) => publicClient.getLogs({ address: ADDR.treasurySafe, fromBlock: from, toBlock: to }));
     return logs
       .filter((l) => l.topics[0] === EXECUTION_SUCCESS_TOPIC)
@@ -424,7 +426,7 @@ export const tokenChain = {
 
   /** SPARE Transfer logs to the zero or the dead address since `fromBlock` (burn candidates), in chain order. */
   async spareBurnTransfers(fromBlock: bigint): Promise<SpareTransfer[]> {
-    const head = await publicClient.getBlockNumber();
+    const head = await publicClient.getBlockNumber({ cacheTime: 0 });
     const out: SpareTransfer[] = [];
     for (const sink of [BURN_SINKS.zero, BURN_SINKS.dead]) {
       const logs = await logsInChunks(fromBlock, head, (from, to) =>
@@ -485,7 +487,7 @@ export const tokenChain = {
   /** SparecycleNodeStake Slashed events in [fromBlock, toBlock] (default: to the head). */
   async slashedEvents(fromBlock: bigint, toBlock?: bigint): Promise<SlashedEvent[]> {
     const address = live(TOKEN_CONTRACTS.nodeStake, "SparecycleNodeStake");
-    const head = toBlock ?? (await publicClient.getBlockNumber());
+    const head = toBlock ?? (await publicClient.getBlockNumber({ cacheTime: 0 }));
     const logs = await logsInChunks(fromBlock, head, (from, to) => publicClient.getLogs({ address, event: nodeStakeAbi[3], fromBlock: from, toBlock: to }));
     return logs.map((l) => ({
       owner: getAddress(l.args.owner!),
@@ -500,7 +502,7 @@ export const tokenChain = {
   /** SparecycleBurner Burned events since `fromBlock` (phase 2b). */
   async burnedEvents(fromBlock: bigint): Promise<BurnedEvent[]> {
     const address = live(TOKEN_CONTRACTS.burner, "SparecycleBurner");
-    const head = await publicClient.getBlockNumber();
+    const head = await publicClient.getBlockNumber({ cacheTime: 0 });
     const logs = await logsInChunks(fromBlock, head, (from, to) => publicClient.getLogs({ address, event: burnerAbi[0], fromBlock: from, toBlock: to }));
     return logs.map((l) => ({
       epochId: l.args.epochId!,
@@ -514,7 +516,7 @@ export const tokenChain = {
   /** SparecycleNodeStake SlashProposed events since `fromBlock`. */
   async slashProposedEvents(fromBlock: bigint): Promise<(Omit<SlashedEvent, "proposalId"> & { proposalId: bigint })[]> {
     const address = live(TOKEN_CONTRACTS.nodeStake, "SparecycleNodeStake");
-    const head = await publicClient.getBlockNumber();
+    const head = await publicClient.getBlockNumber({ cacheTime: 0 });
     const logs = await logsInChunks(fromBlock, head, (from, to) => publicClient.getLogs({ address, event: nodeStakeAbi[4], fromBlock: from, toBlock: to }));
     return logs.map((l) => ({
       owner: getAddress(l.args.owner!),
@@ -532,7 +534,7 @@ export const tokenChain = {
     claims: { epochId: bigint; holder: Address; mode: number; amount: bigint; block: bigint; txHash: Hex }[];
   }> {
     const address = live(TOKEN_CONTRACTS.holderPool, "SparecycleHolderPool");
-    const head = await publicClient.getBlockNumber();
+    const head = await publicClient.getBlockNumber({ cacheTime: 0 });
     const [roots, claims] = await Promise.all([
       logsInChunks(fromBlock, head, (from, to) => publicClient.getLogs({ address, event: holderPoolAbi[4], fromBlock: from, toBlock: to })),
       logsInChunks(fromBlock, head, (from, to) => publicClient.getLogs({ address, event: holderPoolAbi[5], fromBlock: from, toBlock: to })),
@@ -568,7 +570,7 @@ export const tokenChain = {
    */
   async holderFunding(epochId: bigint, fromBlock: bigint): Promise<{ total: bigint; txs: Hex[] }> {
     const address = live(TOKEN_CONTRACTS.jobPaymentsV2, "SparecycleJobPaymentsV2");
-    const head = await publicClient.getBlockNumber();
+    const head = await publicClient.getBlockNumber({ cacheTime: 0 });
     const logs = await logsInChunks(fromBlock, head, (from, to) =>
       publicClient.getLogs({ address, event: jobPaymentsV2Abi[0], args: { epochId }, fromBlock: from, toBlock: to }),
     );
@@ -597,7 +599,7 @@ export const tokenChain = {
   /** The transaction of the RootPosted event for `epochId` (indexed), from `fromBlock`; null when there is none. */
   async holderRootPostedTx(epochId: bigint, fromBlock: bigint): Promise<Hex | null> {
     const address = live(TOKEN_CONTRACTS.holderPool, "SparecycleHolderPool");
-    const head = await publicClient.getBlockNumber();
+    const head = await publicClient.getBlockNumber({ cacheTime: 0 });
     const logs = await logsInChunks(fromBlock, head, (from, to) =>
       publicClient.getLogs({ address, event: holderPoolAbi[4], args: { epochId }, fromBlock: from, toBlock: to }),
     );
