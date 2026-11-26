@@ -6,6 +6,10 @@
 // holder of the job's read secret (`Authorization: Bearer`, returned once by POST /api/v1/jobs). Always enforced,
 // whatever OUTPUT_AUTH says. A free trial job has no invoice: its read-secret holder gets a "free trial, no charge"
 // stub instead.
+//
+// With SparecycleJobPaymentsV2 on (TOKEN_PAYMENTS_V2, ./payments-v2) the invoice is version 2: it also says which
+// contract charges the job (V1 or V2) and from which balance (ETH or SPARE), for a SPARE job the epoch price used and
+// the SPARE taken, and why a SPARE job is still waiting. With the flag off it is version 1, exactly as before.
 import { explorerTx } from "@/lib/chain";
 import { protocolCutWei, TREASURY_BPS } from "@/lib/job-payment";
 import type { JobStatus } from "@/lib/protocol";
@@ -14,9 +18,15 @@ import type { Viewer } from "./auth";
 import { getDb, nowSec } from "./db";
 import { AUTH_REQUIRED, ApiError } from "./http";
 import { accessOf, expireStaleJobs, hasCredentials, isJobId, paymentKind, X402_CHARGE_STATUS } from "./jobs";
+import { paymentsAddress } from "./payments";
+import { SPARE_MAX_WAIT_EPOCHS, v2Address, WAIT_TEXT, type WaitReason } from "./payments-v2";
 
 export type ChargeStatus = "pending" | "charged" | "released" | "unpaid";
 export type Verdict = "agreed" | "disagreed" | "expired" | "rejected";
+
+/** How a SPARE-paid job is charged (invoice version 2). */
+export const SPARE_PAYMENT_NOTE =
+  "Paid from your SPARE balance at 0% discount: the job's ETH price in SPARE at the epoch's accepted SPARE price, rounded up. The SPARE is sold for ETH through the SPARE/ETH Uniswap v4 pool, whose Pons hook takes 2.90% of the sale; the node pot still gets 95% of the job's ETH price, and the hook's cut comes out of the 5% protocol share, not out of your balance or the pot.";
 
 /** How the per-job protocol cut is labelled wherever it is shown. */
 export const PROTOCOL_CUT_NOTE =
@@ -41,14 +51,22 @@ type Row = {
   epoch_posted_tx: string | null;
   charge_tx: string | null;
   round: number;
+  pay_contract: string | null;
+  pay_asset: string | null;
+  spare_price: string | null;
+  spare_wei: string | null;
+  pay_wait: string | null;
+  pay_waits: number;
+  v2_charge_tx: string | null;
 };
 
 const SELECT = `SELECT j.id, j.kind, j.model, j.status, j.created_at, j.settled_at, j.epoch_id, j.note, j.payer, j.price_wei,
   j.charge_status, j.charged_epoch, j.output_hash, j.read_secret_hash, j.round, e.status AS epoch_status, e.posted_tx AS epoch_posted_tx,
-  c.tx AS charge_tx
+  c.tx AS charge_tx, j.pay_contract, j.pay_asset, j.spare_price, j.spare_wei, j.pay_wait, j.pay_waits, c2.tx AS v2_charge_tx
   FROM jobs j
   LEFT JOIN epochs e ON e.id = j.epoch_id
   LEFT JOIN charges c ON c.epoch_id = j.charged_epoch AND c.status = 'done'
+  LEFT JOIN v2_charges c2 ON c2.epoch_id = j.charged_epoch AND c2.status = 'done'
   WHERE j.id = ?`;
 
 const VERDICTS: readonly JobStatus[] = ["agreed", "disagreed", "expired", "rejected"];
@@ -111,8 +129,14 @@ export function jobInvoice(id: string, viewer: Viewer) {
   const price = BigInt(r.price_wei);
   const cut = protocolCutWei(price);
   const chargeStatus = chargeStatusOf(r.status, r.charge_status);
+  const v2 = v2Address();
+  const onV2 = r.pay_contract === "v2";
+  const spareJob = onV2 && r.pay_asset === "spare";
+  const chargeTx = onV2 ? r.v2_charge_tx : r.charge_tx;
+  const waitReason = spareJob && r.pay_wait && r.pay_wait in WAIT_TEXT ? (r.pay_wait as WaitReason) : null;
   return {
     ...base,
+    ...(v2 ? { version: 2 as const } : {}),
     payment,
     invoice: true as const,
     payer: r.payer,
@@ -126,6 +150,30 @@ export function jobInvoice(id: string, viewer: Viewer) {
     toPotWei: (price - cut).toString(),
     toPotNote:
       "the rest goes into the open epoch's node reward pot, which is split by work units across all matched jobs of that epoch, not paid to the nodes of this job in particular",
+    // Version 2 (TOKEN_PAYMENTS_V2 on): the contract and balance that pay, the SPARE terms, and why a SPARE job waits.
+    ...(v2
+      ? {
+          contract: onV2 ? ("v2" as const) : ("v1" as const),
+          paymentsContract: onV2 ? v2 : paymentsAddress(),
+          asset: spareJob ? ("spare" as const) : ("eth" as const),
+          spare: spareJob
+            ? {
+                discountBps: 0,
+                /** The epoch's accepted price used at the charge (wei per 10^18 SPARE base units); null until charged. */
+                priceWeiPer1e18Spare: r.charge_status === "charged" ? r.spare_price : null,
+                /** SPARE taken for this job at that price (rounded up); null until charged. */
+                spareWei: r.charge_status === "charged" ? r.spare_wei : null,
+                note: SPARE_PAYMENT_NOTE,
+              }
+            : null,
+          waiting:
+            waitReason && chargeStatus === "pending"
+              ? { reason: waitReason, text: WAIT_TEXT[waitReason], closesWaited: r.pay_waits, maxCloses: SPARE_MAX_WAIT_EPOCHS }
+              : waitReason && r.charge_status === "unpaid"
+                ? { reason: waitReason, text: `Not charged: it waited ${SPARE_MAX_WAIT_EPOCHS} epoch closes (${WAIT_TEXT[waitReason]})`, closesWaited: r.pay_waits, maxCloses: SPARE_MAX_WAIT_EPOCHS }
+                : null,
+        }
+      : {}),
     chargeStatus,
     /** Why the scheduler settled the job this way (e.g. "the two results do not match"), when it says. */
     reason: r.note,
@@ -137,7 +185,7 @@ export function jobInvoice(id: string, viewer: Viewer) {
     /** sha256 of the output served at /api/v1/jobs/:id/result (the copy kept from one of the two matching results). */
     outputHash: r.status === "agreed" ? r.output_hash : null,
     links: {
-      chargeTx: chargeStatus === "charged" ? txLink(r.charge_tx) : null,
+      chargeTx: chargeStatus === "charged" ? txLink(chargeTx) : null,
       epochRootTx: r.epoch_status === "posted" ? txLink(r.epoch_posted_tx) : null,
     },
   };

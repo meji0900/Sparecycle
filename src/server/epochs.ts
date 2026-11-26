@@ -18,6 +18,7 @@ import { ApiError } from "./http";
 import { allocate, type AgreedJob } from "./payouts";
 import { runTokenWorkAfterClose } from "./token-work";
 import { chargeOpenEpoch, paymentsAddress } from "./payments";
+import { chargeOpenEpochV2, v2Address } from "./payments-v2";
 import { sealX402Epoch } from "./x402";
 import {
   describeChainError,
@@ -323,6 +324,10 @@ async function closeEpochUnlocked(): Promise<CloseSummary> {
   // never blocks the close; the jobs stay pending and are charged at the next close.
   if (mode === "contract" && paymentsAddress()) {
     console.log(`[sparecycle] epoch ${open.id} job payments: ${await chargeOpenEpoch(open.id)}`);
+  }
+  // SparecycleJobPaymentsV2 (TOKEN_PAYMENTS_V2): its own SPARE price and charge, also before the pot is read.
+  if (mode === "contract" && v2Address()) {
+    console.log(`[sparecycle] epoch ${open.id} job payments V2: ${await chargeOpenEpochV2(open.id)}`);
   }
   // x402 (./x402): escrows that reached an outcome go into this epoch's x402 tree. Silent when there are none (always,
   // unless x402 was ever on); never throws.

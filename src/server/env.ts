@@ -112,6 +112,13 @@ export const serverEnv = {
   tokenStakeGate: () => onFlag("TOKEN_STAKE_GATE"),
   /** TOKEN_HOLDER_PAGE=on: serve /token/holders (off = 404, and nothing links to it). */
   tokenHolderPage: () => onFlag("TOKEN_HOLDER_PAGE"),
+  /**
+   * TOKEN_PAYMENTS_V2=on (together with TOKEN_JOB_PAYMENTS_V2_ADDRESS): paid jobs can also be paid and charged on
+   * SparecycleJobPaymentsV2 (src/server/payments-v2.ts): new deposits go there, V1 balances stay usable. Unlike the
+   * other token flags this one sends transactions from the scheduler key (V2 charges and the per-epoch SPARE price),
+   * exactly as the V1 charge does. Off (the default): everything behaves as before V2 existed.
+   */
+  tokenPaymentsV2: () => onFlag("TOKEN_PAYMENTS_V2"),
   /** The root-posting key. Returns null unless it is a well-formed 32-byte hex key. */
   signerKey: (): Hex | null => {
     const s = str(process.env.SCHEDULER_SIGNER_KEY);

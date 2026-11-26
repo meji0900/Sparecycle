@@ -15,9 +15,14 @@
 //            job, prices or salts: D7), which cannot be matched to jobs without the salt. Charges stored before this kept hashRule "v1"
 //            (listHash = keccak256 of the JSON list of charged jobs) and are served exactly as stored.
 //
+// SparecycleJobPaymentsV2 (TOKEN_PAYMENTS_V2, ./payments-v2): a job is charged on the contract it was paid on
+// (jobs.pay_contract; NULL = V1, every job before V2). Each contract has its own charge per epoch, its own Charged event
+// and its own jobs tree with the same rule; the charge bookkeeping below (`Ledger`) is shared. With the flag off no job
+// has pay_contract 'v2' and every query below selects exactly what it selected before V2 existed.
+//
 // Crash safety: the list and the tree are stored (status 'sending') before the transaction and the hash right after it
 // is sent; a retry first looks for that receipt or a Charged(epoch, listHash) log, so a job is never charged twice.
-import { createWalletClient, getAddress, http, isAddress, recoverMessageAddress, type Address, type Hex } from "viem";
+import { createWalletClient, getAddress, http, isAddress, recoverMessageAddress, type Abi, type Address, type Hex } from "viem";
 import { jobPaymentsAbi } from "@/contracts/jobPayments";
 import { publicClient, targetChain } from "@/lib/chain";
 import { config } from "@/lib/config";
@@ -50,12 +55,14 @@ export const teamWallets = (): Set<string> =>
       .filter((s) => /^0x[0-9a-f]{40}$/.test(s)),
   );
 
-const UNSETTLED = "('queued','running','checking','agreed')";
+export const UNSETTLED = "('queued','running','checking','agreed')";
+/** SQL condition: the job is charged on V1 (pay_contract NULL: every paid job from before V2). */
+export const ON_V1 = "COALESCE(pay_contract, 'v1') = 'v1'";
 
-/** Price of this payer's jobs that are not yet charged and may still be (unsettled or agreed). */
+/** Price of this payer's V1 jobs that are not yet charged and may still be (unsettled or agreed). */
 export function heldFor(payer: Address): bigint {
   const rows = getDb()
-    .prepare(`SELECT price_wei FROM jobs WHERE payer = ? AND charge_status = 'pending' AND status IN ${UNSETTLED}`)
+    .prepare(`SELECT price_wei FROM jobs WHERE payer = ? AND charge_status = 'pending' AND status IN ${UNSETTLED} AND ${ON_V1}`)
     .all(payer) as { price_wei: string }[];
   return rows.reduce((s, r) => s + BigInt(r.price_wei), 0n);
 }
@@ -85,7 +92,7 @@ export async function readAccount(payer: Address) {
   };
 }
 
-/** GET /api/v1/payments/account?address= */
+/** GET /api/v1/payments/account?address= (the V1 part; ./payments-v2 adds V2 when it is on) */
 export async function accountJson(addressRaw: string | null) {
   if (!addressRaw || !isAddress(addressRaw)) throw new ApiError(400, "invalid-address", "address must be a wallet address");
   const payer = getAddress(addressRaw);
@@ -107,14 +114,8 @@ export async function accountJson(addressRaw: string | null) {
 
 export type Payment = { payer: Address; signature: Hex; issued: number; priceWei: bigint };
 
-/** Checks a paid job's payment block against its request and the customer's available balance. */
-export async function verifyPayment(
-  request: unknown,
-  paymentRaw: unknown,
-  price: bigint,
-): Promise<Payment & { balance: bigint; withdrawAmount: bigint }> {
-  const contract = paymentsAddress();
-  if (!contract) throw new ApiError(503, "payments-off", "paid jobs are not enabled on this scheduler");
+/** The payment block of a paid job, checked for shape and freshness (no signature or balance check yet). */
+export function parsePaymentBlock(paymentRaw: unknown, price: bigint): Payment & { contract: string | null; asset: string | null } {
   const p = (paymentRaw ?? {}) as Record<string, unknown>;
   const payer = typeof p.payer === "string" && isAddress(p.payer) ? getAddress(p.payer) : null;
   const signature = typeof p.signature === "string" && /^0x[0-9a-fA-F]{130}$/.test(p.signature) ? (p.signature.toLowerCase() as Hex) : null;
@@ -130,6 +131,31 @@ export async function verifyPayment(
   if (priceWei !== price) {
     throw new ApiError(409, "price-changed", `this job costs ${price} wei; sign again at that price`, { priceWei: price.toString() });
   }
+  return {
+    payer,
+    signature,
+    issued,
+    priceWei,
+    contract: typeof p.contract === "string" ? p.contract : null,
+    asset: typeof p.asset === "string" ? p.asset : null,
+  };
+}
+
+/** Throws 409 payment-used when this signature already paid for a job. */
+export function assertSignatureUnused(signature: Hex) {
+  const seen = getDb().prepare("SELECT 1 FROM jobs WHERE payment_sig = ?").get(signature);
+  if (seen) throw new ApiError(409, "payment-used", "this payment signature already paid for a job");
+}
+
+/** Checks a paid job's payment block against its request and the customer's available balance (V1). */
+export async function verifyPayment(
+  request: unknown,
+  paymentRaw: unknown,
+  price: bigint,
+): Promise<Payment & { balance: bigint; withdrawAmount: bigint }> {
+  const contract = paymentsAddress();
+  if (!contract) throw new ApiError(503, "payments-off", "paid jobs are not enabled on this scheduler");
+  const { payer, signature, issued, priceWei } = parsePaymentBlock(paymentRaw, price);
   const message = jobPaymentMessage({ chainId: targetChain.id, contract, requestHash: jobRequestHash(request), priceWei, issued });
   let signer: Address;
   try {
@@ -138,8 +164,7 @@ export async function verifyPayment(
     throw new ApiError(401, "bad-payment-signature", "payment signature could not be recovered");
   }
   if (signer.toLowerCase() !== payer.toLowerCase()) throw new ApiError(401, "bad-payment-signature", "payment is not signed by the payer");
-  const seen = getDb().prepare("SELECT 1 FROM jobs WHERE payment_sig = ?").get(signature);
-  if (seen) throw new ApiError(409, "payment-used", "this payment signature already paid for a job");
+  assertSignatureUnused(signature);
   const acct = await readAccount(payer);
   if (acct.available < price) {
     throw new ApiError(402, "insufficient-balance", `available balance ${acct.available} wei is below the price ${price} wei`, {
@@ -152,8 +177,8 @@ export async function verifyPayment(
 
 // ---- Charging -----------------------------------------------------------------------------------------
 
-type DueJob = { id: string; payer: Address; price_wei: string; api_key_id: string | null; output_hash: string | null };
-type ChargeRow = {
+export type DueJob = { id: string; payer: Address; price_wei: string; api_key_id: string | null; output_hash: string | null };
+export type ChargeRow = {
   epoch_id: number;
   list_json: string;
   list_hash: Hex;
@@ -167,43 +192,53 @@ type ChargeRow = {
  * One charged job. `apiKeyId` (the key that paid for it, null = a per-job wallet signature) is in every entry of lists
  * charged since API keys exist; older stored lists don't have the field and are served exactly as stored, so their
  * listHash still matches. For a v2 charge the list stays internal (it marks the jobs charged); the public answer is
- * per-customer totals and the jobs-tree leaves.
+ * per-customer totals and the jobs-tree leaves. A V2 SPARE-paid job's entry also carries `asset: "spare"` and the
+ * SPARE taken for it (`spareWei`).
  */
-type ListEntry = { jobId: string; payer: Address; priceWei: string; apiKeyId?: string | null };
+export type ListEntry = { jobId: string; payer: Address; priceWei: string; apiKeyId?: string | null; asset?: "eth" | "spare"; spareWei?: string };
+
+/**
+ * One contract's charge bookkeeping: V1 (`charges`, every leaf before V2) or V2 (`v2_charges`, ./payments-v2). The
+ * jobs of a ledger are selected by `jobsWhere` (pay_contract), its leaves by charge_leaves.contract.
+ */
+export type Ledger = { key: "v1" | "v2"; table: "charges" | "v2_charges"; address: Address; abi: Abi; jobsWhere: string };
+
+export const v1Ledger = (address: Address): Ledger => ({ key: "v1", table: "charges", address, abi: jobPaymentsAbi, jobsWhere: ON_V1 });
 
 /** The v1 rule, as v1 lists are served. */
 const V1_HASH_RULE = "keccak256(utf8(JSON.stringify(jobs))) with jobs sorted by jobId";
 
 const isHex32 = (v: string | null): v is Hex => !!v && /^0x[0-9a-fA-F]{64}$/.test(v);
 
-function markCharged(epochId: number, list: ListEntry[], txHash: Hex) {
+/** Marks the listed jobs charged in `epochId` and the charge done; `onCharged` runs in the same transaction. */
+export function markCharged(ledger: Ledger, epochId: number, list: ListEntry[], txHash: Hex, onCharged?: () => void) {
   tx((db) => {
     const up = db.prepare("UPDATE jobs SET charge_status = 'charged', charged_epoch = ? WHERE id = ? AND charge_status = 'pending'");
     for (const e of list) up.run(epochId, e.jobId);
     // Every job whose leaf this confirmed charge committed now has a sealed receipt (v1 charges have no leaves).
-    db.prepare("UPDATE jobs SET receipt_epoch = ? WHERE receipt_epoch IS NULL AND id IN (SELECT job_id FROM charge_leaves WHERE epoch_id = ?)").run(
-      epochId,
-      epochId,
-    );
-    db.prepare("UPDATE charges SET status = 'done', tx = ?, error = NULL WHERE epoch_id = ?").run(txHash, epochId);
+    db.prepare(
+      "UPDATE jobs SET receipt_epoch = ? WHERE receipt_epoch IS NULL AND id IN (SELECT job_id FROM charge_leaves WHERE epoch_id = ? AND contract = ?)",
+    ).run(epochId, epochId, ledger.key);
+    db.prepare(`UPDATE ${ledger.table} SET status = 'done', tx = ?, error = NULL WHERE epoch_id = ?`).run(txHash, epochId);
+    onCharged?.();
   });
 }
 
 /** Forgets an unsent or unconfirmed charge attempt and its jobs tree (`status` = the row status to delete). */
-function dropCharge(epochId: number, status: "sending" | "failed") {
+export function dropCharge(ledger: Ledger, epochId: number, status: "sending" | "failed") {
   tx((db) => {
-    const gone = db.prepare("DELETE FROM charges WHERE epoch_id = ? AND status = ?").run(epochId, status);
-    if (Number(gone.changes) > 0) db.prepare("DELETE FROM charge_leaves WHERE epoch_id = ?").run(epochId);
+    const gone = db.prepare(`DELETE FROM ${ledger.table} WHERE epoch_id = ? AND status = ?`).run(epochId, status);
+    if (Number(gone.changes) > 0) db.prepare("DELETE FROM charge_leaves WHERE epoch_id = ? AND contract = ?").run(epochId, ledger.key);
   });
 }
 
 /**
- * The jobs-tree entries of a charge: the jobs charged now, plus every paid / team job whose final charge status is
- * released or unpaid and that no confirmed jobs root holds yet (since the last charge; on the first v2 charge this
- * also takes such jobs settled before receipts existed). Every leaf gets a fresh random salt (stored with the leaf,
+ * The jobs-tree entries of a charge: the jobs charged now, plus every paid / team job of this ledger whose final charge
+ * status is released or unpaid and that no confirmed jobs root holds yet (since the last charge; on the first v2 charge
+ * this also takes such jobs settled before receipts existed). Every leaf gets a fresh random salt (stored with the leaf,
  * served only in the payer's receipt), so the published leaves cannot be matched to jobs from public data.
  */
-function jobsTreeEntries(list: ListEntry[], dueById: Map<string, DueJob>): JobLeafEntry[] {
+export function jobsTreeEntries(ledger: Ledger, list: ListEntry[], dueById: Map<string, Pick<DueJob, "output_hash">>): JobLeafEntry[] {
   const entries: JobLeafEntry[] = list.map((e) => {
     const out = dueById.get(e.jobId)?.output_hash ?? null;
     return {
@@ -219,7 +254,7 @@ function jobsTreeEntries(list: ListEntry[], dueById: Map<string, DueJob>): JobLe
   const rows = getDb()
     .prepare(
       `SELECT id, payer, price_wei, status, charge_status, output_hash FROM jobs
-       WHERE payer IS NOT NULL AND receipt_epoch IS NULL AND charge_status IN ('released','unpaid') ORDER BY id`,
+       WHERE payer IS NOT NULL AND receipt_epoch IS NULL AND charge_status IN ('released','unpaid') AND ${ledger.jobsWhere} ORDER BY id`,
     )
     .all() as { id: string; payer: string; price_wei: string | null; status: string; charge_status: LeafChargeStatus; output_hash: string | null }[];
   for (const r of rows) {
@@ -241,20 +276,33 @@ function jobsTreeEntries(list: ListEntry[], dueById: Map<string, DueJob>): JobLe
   return entries;
 }
 
-/** Resolves a charge left 'sending' by an earlier attempt. Returns true when it is settled (done). */
-async function resolveSending(row: ChargeRow, contract: Address): Promise<boolean> {
+/** Stores a charge's leaves for `ledger` (any leaves left for this epoch and ledger are stale and go first). */
+export function storeLeaves(ledger: Ledger, epochId: number, leaves: (JobLeafEntry & { leaf: Hex })[]) {
+  const db = getDb();
+  db.prepare("DELETE FROM charge_leaves WHERE epoch_id = ? AND contract = ?").run(epochId, ledger.key);
+  const ins = db.prepare(
+    "INSERT INTO charge_leaves (epoch_id, job_id, payer, price_wei, verdict, charge_status, output_hash, salt, leaf, contract) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  );
+  for (const l of leaves) ins.run(epochId, l.jobId, l.payer, l.priceWei.toString(), l.verdict, l.chargeStatus, l.outputHash, l.salt, l.leaf, ledger.key);
+}
+
+/**
+ * Resolves a charge left 'sending' by an earlier attempt. Returns true when it is settled (done). `onCharged` (V2: the
+ * SPARE price and amounts of the SPARE jobs) runs in the transaction that marks the jobs charged.
+ */
+export async function resolveSending(ledger: Ledger, row: ChargeRow, onCharged?: () => void): Promise<boolean> {
   const list = JSON.parse(row.list_json) as ListEntry[];
   if (row.tx) {
     const receipt = await publicClient.getTransactionReceipt({ hash: row.tx }).catch(() => null);
     if (receipt?.status === "success") {
-      markCharged(row.epoch_id, list, row.tx);
+      markCharged(ledger, row.epoch_id, list, row.tx, onCharged);
       return true;
     }
     if (!receipt) {
       // Not mined (yet): wait for it rather than risk a second charge.
       const r = await publicClient.waitForTransactionReceipt({ hash: row.tx, timeout: 180_000 });
       if (r.status === "success") {
-        markCharged(row.epoch_id, list, row.tx);
+        markCharged(ledger, row.epoch_id, list, row.tx, onCharged);
         return true;
       }
     }
@@ -263,7 +311,7 @@ async function resolveSending(row: ChargeRow, contract: Address): Promise<boolea
     // Public RPCs cap log queries at 10M blocks; Robinhood Chain makes ~9 blocks/s, so 9M blocks is ~11 days.
     const head = await publicClient.getBlockNumber();
     const logs = await publicClient.getContractEvents({
-      address: contract,
+      address: ledger.address,
       abi: jobPaymentsAbi,
       eventName: "Charged",
       args: { epochId: BigInt(row.epoch_id), listHash: row.list_hash },
@@ -271,12 +319,19 @@ async function resolveSending(row: ChargeRow, contract: Address): Promise<boolea
       toBlock: head,
     });
     if (logs.length) {
-      markCharged(row.epoch_id, list, logs[0].transactionHash as Hex);
+      markCharged(ledger, row.epoch_id, list, logs[0].transactionHash as Hex, onCharged);
       return true;
     }
   }
-  dropCharge(row.epoch_id, "sending");
+  dropCharge(ledger, row.epoch_id, "sending");
   return false;
+}
+
+/** Settled without agreement: never charged (every contract). */
+export function releaseUnagreed() {
+  getDb()
+    .prepare("UPDATE jobs SET charge_status = 'released' WHERE charge_status = 'pending' AND status IN ('disagreed','expired','rejected')")
+    .run();
 }
 
 /**
@@ -288,27 +343,25 @@ export async function chargeOpenEpoch(epochId: number): Promise<string> {
   const account = schedulerAccount();
   if (!contract) return "payments off";
   if (!account) return "SCHEDULER_SIGNER_KEY not set: no charge";
+  const ledger = v1Ledger(contract);
   const db = getDb();
 
   const prev = db.prepare("SELECT * FROM charges WHERE epoch_id = ?").get(epochId) as ChargeRow | undefined;
   if (prev?.status === "done") return `epoch ${epochId} already charged (${prev.tx})`;
   if (prev?.status === "sending") {
     try {
-      if (await resolveSending(prev, contract)) return `epoch ${epochId} charge confirmed (${prev.tx ?? "found by event"})`;
+      if (await resolveSending(ledger, prev)) return `epoch ${epochId} charge confirmed (${prev.tx ?? "found by event"})`;
     } catch (e) {
       // Unknown outcome of an earlier send: stop here rather than risk charging the same jobs twice.
       return `earlier charge of epoch ${epochId} still unresolved: ${describeChainError(e)}`;
     }
   }
-  if (prev?.status === "failed") dropCharge(epochId, "failed");
+  if (prev?.status === "failed") dropCharge(ledger, epochId, "failed");
 
-  // Settled without agreement: never charged.
-  db.prepare(
-    "UPDATE jobs SET charge_status = 'released' WHERE charge_status = 'pending' AND status IN ('disagreed','expired','rejected')",
-  ).run();
+  releaseUnagreed();
   const due = db
     .prepare(
-      "SELECT id, payer, price_wei, api_key_id, output_hash FROM jobs WHERE charge_status = 'pending' AND status = 'agreed' ORDER BY settled_at, id",
+      `SELECT id, payer, price_wei, api_key_id, output_hash FROM jobs WHERE charge_status = 'pending' AND status = 'agreed' AND ${ON_V1} ORDER BY settled_at, id`,
     )
     .all() as DueJob[];
   if (!due.length) return "no paid jobs to charge";
@@ -351,7 +404,7 @@ export async function chargeOpenEpoch(epochId: number): Promise<string> {
   // listHash = the jobs root (v2): the jobs charged now plus the not-charged ones since the last confirmed charge.
   let built: ReturnType<typeof buildJobsTree>;
   try {
-    built = buildJobsTree(epochId, jobsTreeEntries(list, new Map(due.map((j) => [j.id, j]))));
+    built = buildJobsTree(epochId, jobsTreeEntries(ledger, list, new Map(due.map((j) => [j.id, j]))));
   } catch (e) {
     // Never block the epoch close: nothing was sent, the jobs stay due for the next close.
     return `charge not sent: jobs tree failed: ${e instanceof Error ? e.message : String(e)}${unpaidNote}`;
@@ -363,14 +416,10 @@ export async function chargeOpenEpoch(epochId: number): Promise<string> {
   const total = amounts.reduce((s, a) => s + a, 0n);
   tx(() => {
     // No confirmed or in-flight charge of this epoch exists here, so any leaves left for it are stale.
-    db.prepare("DELETE FROM charge_leaves WHERE epoch_id = ?").run(epochId);
     db.prepare(
       "INSERT INTO charges (epoch_id, list_json, list_hash, total_wei, status, created_at, hash_rule) VALUES (?, ?, ?, ?, 'sending', ?, ?)",
     ).run(epochId, JSON.stringify(list), listHash, total.toString(), nowSec(), JOBS_HASH_RULE);
-    const ins = db.prepare(
-      "INSERT INTO charge_leaves (epoch_id, job_id, payer, price_wei, verdict, charge_status, output_hash, salt, leaf) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    );
-    for (const l of leaves) ins.run(epochId, l.jobId, l.payer, l.priceWei.toString(), l.verdict, l.chargeStatus, l.outputHash, l.salt, l.leaf);
+    storeLeaves(ledger, epochId, leaves);
   });
   try {
     const { request } = await publicClient.simulateContract({
@@ -384,7 +433,7 @@ export async function chargeOpenEpoch(epochId: number): Promise<string> {
     db.prepare("UPDATE charges SET tx = ? WHERE epoch_id = ?").run(hash, epochId);
     const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 180_000 });
     if (receipt.status !== "success") throw new Error(`charge transaction ${hash} reverted`);
-    markCharged(epochId, list, hash);
+    markCharged(ledger, epochId, list, hash);
     return `charged ${list.length} jobs from ${customers.length} customers, ${total} wei, jobs root over ${leaves.length} jobs (tx ${hash})${unpaidNote}`;
   } catch (e) {
     const msg = describeChainError(e);
@@ -397,8 +446,8 @@ export async function chargeOpenEpoch(epochId: number): Promise<string> {
 }
 
 /** The sorted leaves of a charge's jobs tree (layer 0 of the tree whose root is the charge's listHash). */
-export function chargeLeaves(epochId: number): Hex[] {
-  const rows = getDb().prepare("SELECT leaf FROM charge_leaves WHERE epoch_id = ?").all(epochId) as { leaf: Hex }[];
+export function chargeLeaves(epochId: number, ledgerKey: Ledger["key"] = "v1"): Hex[] {
+  const rows = getDb().prepare("SELECT leaf FROM charge_leaves WHERE epoch_id = ? AND contract = ?").all(epochId, ledgerKey) as { leaf: Hex }[];
   return buildTree(rows.map((r) => r.leaf)).layers[0];
 }
 
@@ -409,6 +458,7 @@ export function chargeLeaves(epochId: number): Hex[] {
  *      their own job with its receipt (GET /api/v1/jobs/:id/receipt).
  *   v1 (charges stored before job receipts): the per-job list exactly as stored; its keccak256 is the listHash.
  *   none: nothing was charged in this epoch (no Charged event).
+ * The V1 contract's charge only; SparecycleJobPaymentsV2's charge of the same epoch is the `v2` block (./payments-v2).
  */
 export function chargesJson(epochId: number) {
   const row = getDb().prepare("SELECT * FROM charges WHERE epoch_id = ?").get(epochId) as ChargeRow | undefined;
@@ -424,11 +474,6 @@ export function chargesJson(epochId: number) {
       hashRule: V1_HASH_RULE,
     };
   }
-  const totals = new Map<string, bigint>();
-  for (const e of JSON.parse(row.list_json) as ListEntry[]) {
-    const who = getAddress(e.payer);
-    totals.set(who, (totals.get(who) ?? 0n) + BigInt(e.priceWei));
-  }
   return {
     epochId,
     status: row.status,
@@ -436,11 +481,22 @@ export function chargesJson(epochId: number) {
     listHash: row.list_hash,
     totalWei: row.total_wei,
     tx: row.tx,
-    customers: [...totals]
-      .sort(([a], [b]) => (a.toLowerCase() < b.toLowerCase() ? -1 : 1))
-      .map(([customer, amount]) => ({ customer, amountWei: amount.toString() })),
+    customers: customerTotals(JSON.parse(row.list_json) as ListEntry[]),
     leaves: chargeLeaves(epochId),
     leafRule: JOBS_LEAF_RULE,
     codes: { verdict: LEAF_VERDICT, chargeStatus: LEAF_CHARGE_STATUS },
   };
+}
+
+/** Each customer's total of the listed jobs (optionally only one asset), sorted by address. */
+export function customerTotals(list: ListEntry[], asset?: "eth" | "spare") {
+  const totals = new Map<string, bigint>();
+  for (const e of list) {
+    if (asset && (e.asset ?? "eth") !== asset) continue;
+    const who = getAddress(e.payer);
+    totals.set(who, (totals.get(who) ?? 0n) + BigInt(e.priceWei));
+  }
+  return [...totals]
+    .sort(([a], [b]) => (a.toLowerCase() < b.toLowerCase() ? -1 : 1))
+    .map(([customer, amount]) => ({ customer, amountWei: amount.toString() }));
 }

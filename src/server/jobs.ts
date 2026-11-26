@@ -23,7 +23,8 @@ import { assertPairReachable } from "./capacity";
 import { abandonStuckRounds, insertRoundTasks } from "./rounds";
 import { maxRoundsFor } from "@/lib/rounds";
 import { isLowBalance, jobPriceWei } from "@/lib/job-payment";
-import { heldFor, paymentsAddress, priceWeiPerUnit, readAccount, teamWallets, verifyPayment, type Payment } from "./payments";
+import { priceWeiPerUnit, teamWallets } from "./payments";
+import { keyPaidJob, paidJobsOn, v2Address, verifyJobPayment, type PaidJob } from "./payments-v2";
 
 type JobRow = {
   id: string;
@@ -99,8 +100,6 @@ export type SubmitOptions = {
   x402?: { payer: Address; jobId: Hex } | null;
 };
 
-type Payer = { payer: Address; priceWei: bigint; balance: bigint; withdrawAmount: bigint; signature: Hex | null };
-
 /**
  * POST /api/v1/jobs. A free job is the request itself (JOB_RATE_LIMIT per IP per hour). A paid job is
  * { request, payment }: the payer's signature over the request at the quoted price, checked against their
@@ -120,7 +119,16 @@ export async function submitJob(
   body: unknown,
   ip: string,
   opts: SubmitOptions = {},
-): Promise<{ id: Hex; status: "queued"; priceWei: string | null; readSecret?: string; available?: string; lowBalance?: boolean }> {
+): Promise<{
+  id: Hex;
+  status: "queued";
+  priceWei: string | null;
+  readSecret?: string;
+  available?: string;
+  lowBalance?: boolean;
+  contract?: "v1" | "v2";
+  asset?: "eth" | "spare";
+}> {
   const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const key = opts.key ?? null;
   const x402 = opts.x402 ?? null;
@@ -141,22 +149,15 @@ export async function submitJob(
   }
   // Before the payment check and the transaction: a refused job holds nothing and uses up no rate limit or key cap.
   assertPairReachable(needs(req).model, poolStartInfo());
-  let paid: Payer | null = null;
+  // A paid job is charged on V1 or V2 (./payments-v2: the contract its payment was signed for; an API key: V2 first).
+  let paid: PaidJob | null = null;
   if (paidRequest) {
-    const p: Payment & { balance: bigint; withdrawAmount: bigint } = await verifyPayment(rawRequest, b.payment, jobPriceWei(req, priceWeiPerUnit()));
-    paid = { payer: p.payer, priceWei: p.priceWei, balance: p.balance, withdrawAmount: p.withdrawAmount, signature: p.signature };
+    paid = await verifyJobPayment(rawRequest, b.payment, jobPriceWei(req, priceWeiPerUnit()));
   } else if (key) {
-    if (!paymentsAddress()) throw new ApiError(503, "payments-off", "paid jobs are not enabled on this scheduler");
+    if (!paidJobsOn()) throw new ApiError(503, "payments-off", "paid jobs are not enabled on this scheduler");
     const price = jobPriceWei(req, priceWeiPerUnit());
     assertKeyCanSpend(key, price); // cheap: status and daily cap before the chain read
-    const acct = await readAccount(key.owner);
-    if (acct.available < price) {
-      throw new ApiError(402, "insufficient-balance", `available balance ${acct.available} wei is below the price ${price} wei`, {
-        available: acct.available.toString(),
-        priceWei: price.toString(),
-      });
-    }
-    paid = { payer: key.owner, priceWei: price, balance: acct.balance, withdrawAmount: acct.withdrawAmount, signature: null };
+    paid = await keyPaidJob(key.owner, price);
   }
   const { limit, bucket } = queueBucket(paid?.payer ?? x402?.payer ?? null, ip);
   const now = nowSec();
@@ -179,14 +180,14 @@ export async function submitJob(
     let availableAfter: bigint | null = null;
     if (paid) {
       // Re-checked inside the transaction so two concurrent submissions can't overspend the balance.
-      const locked = heldFor(paid.payer) + paid.withdrawAmount + paid.priceWei;
-      if (locked > paid.balance) {
+      const f = paid.fits();
+      if (!f.ok) {
         throw new ApiError(402, "insufficient-balance", "available balance is below the price of this job", {
-          available: (paid.balance > locked - paid.priceWei ? paid.balance - (locked - paid.priceWei) : 0n).toString(),
+          available: f.availableBefore.toString(),
           priceWei: paid.priceWei.toString(),
         });
       }
-      availableAfter = paid.balance - locked;
+      availableAfter = f.availableAfter;
     }
     // A key's daily cap, re-checked here (status too) and counted in the same transaction as the job.
     if (key && paid) holdKeySpend(key.keyId, paid.priceWei, now);
@@ -201,8 +202,8 @@ export async function submitJob(
     }
     db.prepare(
       `INSERT INTO jobs (id, kind, model, spec, prompt_hash, work_units, status, ip_hash, created_at, payer, price_wei, payment_sig, charge_status,
-         read_secret_hash, api_key_id, api_key_held)
-       VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         read_secret_hash, api_key_id, api_key_held, pay_contract, pay_asset)
+       VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id,
       spec.kind,
@@ -219,6 +220,9 @@ export async function submitJob(
       read?.hash ?? null,
       key?.keyId ?? null,
       key ? 1 : 0,
+      // NULL = V1 and ETH (every job before V2, and every V1 job since).
+      paid?.contract === "v2" ? "v2" : null,
+      paid?.asset === "spare" ? "spare" : null,
     );
     insertRoundTasks(db, id, 0);
     db.prepare(
@@ -234,6 +238,8 @@ export async function submitJob(
       ...(paid && availableAfter !== null
         ? { available: availableAfter.toString(), lowBalance: isLowBalance(availableAfter, paid.priceWei) }
         : {}),
+      // Only with V2 on: which contract and balance pays (a SPARE job's `available` is its SPARE's ETH value).
+      ...(paid && v2Address() ? { contract: paid.contract, asset: paid.asset } : {}),
     };
   });
   poolNudge(); // bootstrap GPU pool: start it if no two owners online can take this job

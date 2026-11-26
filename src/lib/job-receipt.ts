@@ -20,13 +20,22 @@
 // src/server/receipts.ts), and the dapp's Verify panel, the unit tests and scripts/e2e-local.mjs check them with it.
 import { encodeAbiParameters, getAddress, isAddress, keccak256, parseEventLogs, type Address, type Hex } from "viem";
 import { jobPaymentsAbi } from "@/contracts/jobPayments";
+import { jobPaymentsV2Abi } from "@/contracts/jobPaymentsV2";
+import { spareForWei } from "./job-payment";
 import { buildTree, hashPair, type MerkleTree } from "./merkle";
 import { recoverReceiptSigner } from "./protocol";
 
 /** `hashRule` of a charge whose listHash is a jobs Merkle root. Earlier charges hashed the JSON list ("v1"). */
 export const JOBS_HASH_RULE = "v2-jobs-merkle" as const;
 export const RECEIPT_FORMAT = "sparecycle-job-receipt" as const;
+/** Version 1: every receipt before SparecycleJobPaymentsV2, and every receipt while TOKEN_PAYMENTS_V2 is off. */
 export const RECEIPT_VERSION = 1 as const;
+/**
+ * Version 2 (served while TOKEN_PAYMENTS_V2 is on): version 1 plus `payment`: the contract that charged the job (V1 or
+ * V2), the asset (ETH or SPARE) and, for a charged SPARE job, the epoch's SPARE price used and the SPARE taken. The leaf
+ * and the jobs root are unchanged. Saved version 1 receipts keep verifying.
+ */
+export const RECEIPT_VERSION_V2 = 2 as const;
 
 /** The uint8 verdict of a jobs-tree leaf. One definition for the scheduler, the browser and the tests. */
 export const LEAF_VERDICT = { agreed: 1, disagreed: 2, expired: 3, rejected: 4 } as const;
@@ -139,17 +148,32 @@ export type ReceiptPending = {
   epochId: number | null;
 };
 
+/** How a version 2 receipt's job was paid. */
+export type ReceiptPayment = {
+  /** The contract that charges the job: "v1" = SparecycleJobPayments, "v2" = SparecycleJobPaymentsV2. */
+  contract: "v1" | "v2";
+  /** The balance it is paid from: "eth" (V2: holder credits first, then deposits) or "spare" (the V2 SPARE balance). */
+  asset: "eth" | "spare";
+  /**
+   * A charged SPARE job: the epoch's accepted SPARE price (wei per 10^18 SPARE base units) and the SPARE taken for this
+   * job at it (its price rounded up; 0% discount). Null for every other job.
+   */
+  spare: { priceWeiPer1e18Spare: string; spareWei: string } | null;
+};
+
 /**
  * A paid (or team) job's receipt: GET /api/v1/jobs/{id}/receipt, and the file a payer saves. Every field is checked by
  * verifyReceipt (constants, the node signatures, the leaf and its proof, the Charged event), so a changed field fails.
  */
 export type JobReceipt = {
   format: typeof RECEIPT_FORMAT;
-  version: typeof RECEIPT_VERSION;
+  version: typeof RECEIPT_VERSION | typeof RECEIPT_VERSION_V2;
   /** provisional until the charge transaction that commits the job's leaf is confirmed, then sealed. */
   state: "provisional" | "sealed";
   chainId: number;
   paymentsContract: Address;
+  /** Version 2 only (absent in version 1). */
+  payment?: ReceiptPayment;
   jobId: Hex;
   payer: Address;
   priceWei: string;
@@ -185,6 +209,10 @@ const RECEIPT_KEYS = [
   "anchor",
   "pending",
 ] as const;
+/** Version 2: version 1's fields with `payment` after `paymentsContract`. */
+const RECEIPT_KEYS_V2 = [...RECEIPT_KEYS.slice(0, 5), "payment", ...RECEIPT_KEYS.slice(5)] as const;
+const PAYMENT_KEYS = ["contract", "asset", "spare"] as const;
+const SPARE_KEYS = ["priceWeiPer1e18Spare", "spareWei"] as const;
 const NODE_KEYS = ["node", "outputHash", "gpuMs", "epoch", "signature"] as const;
 const ANCHOR_KEYS = ["hashRule", "leafInputs", "leaf", "proof", "listHash"] as const;
 const LEAF_INPUT_KEYS = ["epochId", "jobId", "payer", "priceWei", "verdict", "chargeStatus", "outputHash", "salt"] as const;
@@ -202,9 +230,9 @@ const isSig = (v: unknown): v is Hex => typeof v === "string" && /^0x[0-9a-fA-F]
 const isWei = (v: unknown): v is string => typeof v === "string" && /^(0|[1-9]\d{0,77})$/.test(v);
 const isUint = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 
-function exactKeys(o: Record<string, unknown>, keys: readonly string[], what: string) {
+function exactKeys(o: Record<string, unknown>, keys: readonly string[], what: string, version: number = RECEIPT_VERSION) {
   const extra = Object.keys(o).filter((k) => !keys.includes(k));
-  if (extra.length) fail(`${what} has fields a version 1 receipt does not have: ${extra.join(", ")}`);
+  if (extra.length) fail(`${what} has fields a version ${version} receipt does not have: ${extra.join(", ")}`);
   const missing = keys.filter((k) => !(k in o));
   if (missing.length) fail(`${what} is missing: ${missing.join(", ")}`);
 }
@@ -213,15 +241,36 @@ const address = (v: unknown, what: string): Address => (typeof v === "string" &&
 const hash = (v: unknown, what: string): Hex => (isHash(v) ? (v.toLowerCase() as Hex) : fail(`${what} must be a 32-byte hex hash`));
 
 /**
- * Reads a receipt strictly: exactly the version 1 fields, each of the right type. Hex values come back lowercase
- * and addresses checksummed (an address with a wrong checksum is refused). Throws ReceiptFormatError.
+ * Reads a receipt strictly: exactly the fields of its version (1 or 2), each of the right type. Hex values come back
+ * lowercase and addresses checksummed (an address with a wrong checksum is refused). Throws ReceiptFormatError.
  */
 export function parseReceipt(raw: unknown): JobReceipt {
   if (!isObj(raw)) fail("a receipt is a JSON object");
   const o = raw as Record<string, unknown>;
   if (o.format !== RECEIPT_FORMAT) fail(`not a Sparecycle job receipt (format must be "${RECEIPT_FORMAT}")`);
-  if (o.version !== RECEIPT_VERSION) fail(`unknown receipt version ${String(o.version)}; this page reads version ${RECEIPT_VERSION}`);
-  exactKeys(o, RECEIPT_KEYS, "the receipt");
+  if (o.version !== RECEIPT_VERSION && o.version !== RECEIPT_VERSION_V2) {
+    fail(`unknown receipt version ${String(o.version)}; this page reads versions ${RECEIPT_VERSION} and ${RECEIPT_VERSION_V2}`);
+  }
+  const version = o.version as JobReceipt["version"];
+  exactKeys(o, version === RECEIPT_VERSION_V2 ? RECEIPT_KEYS_V2 : RECEIPT_KEYS, "the receipt", version);
+  let payment: ReceiptPayment | undefined;
+  if (version === RECEIPT_VERSION_V2) {
+    if (!isObj(o.payment)) fail("payment must be an object");
+    const pm = o.payment as Record<string, unknown>;
+    exactKeys(pm, PAYMENT_KEYS, "payment", version);
+    if (pm.contract !== "v1" && pm.contract !== "v2") fail('payment.contract must be "v1" or "v2"');
+    if (pm.asset !== "eth" && pm.asset !== "spare") fail('payment.asset must be "eth" or "spare"');
+    let spare: ReceiptPayment["spare"] = null;
+    if (pm.spare !== null) {
+      if (!isObj(pm.spare)) fail("payment.spare must be an object or null");
+      const sp = pm.spare as Record<string, unknown>;
+      exactKeys(sp, SPARE_KEYS, "payment.spare", version);
+      if (!isWei(sp.priceWeiPer1e18Spare) || sp.priceWeiPer1e18Spare === "0") fail("payment.spare.priceWeiPer1e18Spare must be a whole number above 0, as a string");
+      if (!isWei(sp.spareWei)) fail("payment.spare.spareWei must be a whole number, as a string");
+      spare = { priceWeiPer1e18Spare: sp.priceWeiPer1e18Spare as string, spareWei: sp.spareWei as string };
+    }
+    payment = { contract: pm.contract as ReceiptPayment["contract"], asset: pm.asset as ReceiptPayment["asset"], spare };
+  }
   if (o.state !== "provisional" && o.state !== "sealed") fail('state must be "provisional" or "sealed"');
   if (!isUint(o.chainId)) fail("chainId must be a whole number");
   if (typeof o.verdict !== "string" || !(o.verdict in LEAF_VERDICT)) fail("verdict must be agreed, disagreed, expired or rejected");
@@ -288,10 +337,11 @@ export function parseReceipt(raw: unknown): JobReceipt {
   }
   return {
     format: RECEIPT_FORMAT,
-    version: RECEIPT_VERSION,
+    version,
     state: o.state as JobReceipt["state"],
     chainId: o.chainId as number,
     paymentsContract: address(o.paymentsContract, "paymentsContract"),
+    ...(payment ? { payment } : {}),
     jobId: hash(o.jobId, "jobId"),
     payer: address(o.payer, "payer"),
     priceWei: o.priceWei as string,
@@ -348,6 +398,8 @@ export type VerifyOptions = {
   /** The chain and payments contract this site uses. A receipt naming another one fails. */
   chainId: number;
   paymentsContract: Address;
+  /** SparecycleJobPaymentsV2, when this site uses it: a version 2 receipt with payment.contract "v2" must name it. */
+  paymentsContractV2?: Address | null;
 };
 
 const same = (a: string | null | undefined, b: string | null | undefined) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
@@ -385,7 +437,7 @@ export async function verifyReceipt(raw: unknown, opts: VerifyOptions): Promise<
   let r: JobReceipt;
   try {
     r = parseReceipt(raw);
-    add("format", "Receipt format", true, `Sparecycle job receipt, version ${RECEIPT_VERSION}`);
+    add("format", "Receipt format", true, `Sparecycle job receipt, version ${r.version}`);
   } catch (e) {
     add("format", "Receipt format", false, e instanceof ReceiptFormatError ? e.message : "could not read the receipt");
     return done("failed");
@@ -393,12 +445,20 @@ export async function verifyReceipt(raw: unknown, opts: VerifyOptions): Promise<
 
   let ok = true;
   ok = add("chain", "Chain", r.chainId === opts.chainId, r.chainId === opts.chainId ? `chain id ${r.chainId}` : `the receipt names chain ${r.chainId}; this site uses chain ${opts.chainId}`) && ok;
+  // Version 2 names which contract charged it; that one must be this site's (V1 or V2).
+  const isV2 = r.payment?.contract === "v2";
+  const expected = isV2 ? (opts.paymentsContractV2 ?? null) : opts.paymentsContract;
+  const contractOk = expected !== null && same(r.paymentsContract, expected);
   ok =
     add(
       "contract",
       "Payments contract",
-      same(r.paymentsContract, opts.paymentsContract),
-      same(r.paymentsContract, opts.paymentsContract) ? r.paymentsContract : `the receipt names ${r.paymentsContract}; this site's payments contract is ${opts.paymentsContract}`,
+      contractOk,
+      contractOk
+        ? `${r.paymentsContract}${r.payment ? ` (${isV2 ? "SparecycleJobPaymentsV2" : "SparecycleJobPayments"})` : ""}`
+        : expected === null
+          ? `the receipt names the V2 payments contract ${r.paymentsContract}; this site has none`
+          : `the receipt names ${r.paymentsContract}; this site's ${isV2 ? "V2 " : ""}payments contract is ${expected}`,
     ) && ok;
 
   // State: sealed <=> a confirmed charge holds the leaf.
@@ -406,7 +466,12 @@ export async function verifyReceipt(raw: unknown, opts: VerifyOptions): Promise<
   const provisionalShape = r.anchor === null && r.epochId === null && r.chargeTx === null && r.pending !== null;
   // Only an agreed job is charged, unpaid or still pending; only an agreed job has an output hash.
   const chargeFits = r.verdict === "agreed" ? r.chargeStatus !== "released" : r.chargeStatus === "released" && r.outputHash === null;
-  const stateOk = (r.state === "sealed" ? sealedShape : provisionalShape) && chargeFits;
+  // Version 2: SPARE only on V2; a SPARE price and amount exactly when a SPARE job is charged and sealed.
+  const paymentFits =
+    !r.payment ||
+    ((r.payment.contract === "v2" || r.payment.asset === "eth") &&
+      (r.payment.spare !== null) === (r.payment.asset === "spare" && r.chargeStatus === "charged" && r.state === "sealed"));
+  const stateOk = (r.state === "sealed" ? sealedShape : provisionalShape) && chargeFits && paymentFits;
   ok =
     add(
       "state",
@@ -416,7 +481,7 @@ export async function verifyReceipt(raw: unknown, opts: VerifyOptions): Promise<
         ? r.state === "sealed"
           ? `sealed in epoch ${r.epochId}`
           : "provisional"
-        : "the fields do not fit together (state, verdict, charge status, output hash, anchor)",
+        : "the fields do not fit together (state, verdict, charge status, output hash, anchor, payment)",
     ) && ok;
 
   // Node signatures (EIP-712, domain Sparecycle v1 on the receipt's chain): over this job id.
@@ -531,6 +596,13 @@ export async function verifyReceipt(raw: unknown, opts: VerifyOptions): Promise<
     if (ev.eventName === "Charged") charged ??= { listHash: ev.args.listHash };
     else if (same(ev.args.customer, r.payer)) paid ??= { amount: ev.args.amount };
   }
+  // A SPARE job (version 2): V2's CustomerChargedSpare(epoch, payer, ethValue, spareAmount) for this wallet.
+  const spareEvents =
+    tx.status === "success" && r.payment?.asset === "spare"
+      ? parseEventLogs({ abi: jobPaymentsV2Abi, eventName: "CustomerChargedSpare", logs, strict: true }).filter(
+          (ev) => Number(ev.args.epochId) === r.epochId && same(ev.args.customer, r.payer),
+        )
+      : [];
   const onchain = { listHash: charged?.listHash ?? null, customerCharged: paid ? paid.amount.toString() : null, blockNumber: tx.blockNumber.toString() };
   const eventOk = !!charged && same(charged.listHash, a.listHash);
   ok =
@@ -544,7 +616,25 @@ export async function verifyReceipt(raw: unknown, opts: VerifyOptions): Promise<
           ? `transaction ${shortHex(r.chargeTx!)} has no Charged event for epoch ${r.epochId} from the payments contract`
           : `the Charged event of epoch ${r.epochId} carries another root (${shortHex(charged.listHash)})`,
     ) && ok;
-  if (r.chargeStatus === "charged") {
+  if (r.chargeStatus === "charged" && r.payment?.asset === "spare") {
+    // The receipt's price fixes the SPARE: this job's SPARE = its price at that price (rounded up), and the wallet's
+    // event must follow the same rule for its total (the contract rounds each wallet's total up).
+    const sp = r.payment.spare;
+    const price = sp ? BigInt(sp.priceWeiPer1e18Spare) : 0n;
+    const jobSpareOk = !!sp && spareForWei(BigInt(r.priceWei), price).toString() === sp.spareWei;
+    const ev = jobSpareOk ? spareEvents.find((e) => e.args.ethValue >= BigInt(r.priceWei) && e.args.spareAmount === spareForWei(e.args.ethValue, price)) : undefined;
+    ok =
+      add(
+        "customer",
+        "Charge to the wallet",
+        !!ev,
+        ev
+          ? `CustomerChargedSpare(epoch ${r.epochId}, ${shortHex(r.payer)}) = ${ev.args.spareAmount} SPARE units for ${ev.args.ethValue} wei of jobs at ${sp!.priceWeiPer1e18Spare} wei per SPARE, this job's ${r.priceWei} wei (${sp!.spareWei} SPARE units) included`
+          : !jobSpareOk
+            ? "the receipt's SPARE amount is not this job's price at the receipt's SPARE price"
+            : "the transaction has no CustomerChargedSpare event for this wallet that covers the price at the receipt's SPARE price",
+      ) && ok;
+  } else if (r.chargeStatus === "charged") {
     const covers = !!paid && paid.amount >= BigInt(r.priceWei);
     ok =
       add(

@@ -525,6 +525,56 @@ const MIGRATIONS: string[] = [
     created_at INTEGER NOT NULL
   );
   `,
+  // v13 (SparecycleJobPaymentsV2 behind TOKEN_PAYMENTS_V2; src/server/payments-v2.ts, docs/contracts-v2.md). Additive
+  // only; nothing writes the new columns or tables while the flag is off, and NULL means exactly what it meant before.
+  //   jobs.pay_contract   the contract a paid job is charged on: NULL or 'v1' = SparecycleJobPayments, 'v2' = V2
+  //   jobs.pay_asset      NULL or 'eth' = the ETH balance (V2: credits first, then deposits); 'spare' = the V2 SPARE balance
+  //   jobs.spare_price    SPARE job: the accepted epoch price used at the charge (wei per 10^18 SPARE base units)
+  //   jobs.spare_wei      SPARE job: SPARE taken for it at that price (ceil(price_wei x 10^18 / spare_price))
+  //   jobs.pay_wait       SPARE job not charged at the last close, and why (customer-visible): no-reference | not-posted |
+  //                       paused | cap | sale | spare-balance | spend-limit; NULL once charged or never deferred
+  //   jobs.pay_waits      epoch closes the job has waited through (after SPARE_MAX_WAIT_EPOCHS it is marked unpaid)
+  //   charge_leaves.contract  which contract's jobs root holds the leaf ('v1' for every leaf before this)
+  //   v2_charges          V2's one charge per epoch (charge or chargeWithSpare), like `charges` for V1
+  //   v2_spare_prices     V2's per-epoch SPARE price post (postSparePrice) and what the contract decided
+  `
+  ALTER TABLE jobs ADD COLUMN pay_contract TEXT;
+  ALTER TABLE jobs ADD COLUMN pay_asset TEXT;
+  ALTER TABLE jobs ADD COLUMN spare_price TEXT;
+  ALTER TABLE jobs ADD COLUMN spare_wei TEXT;
+  ALTER TABLE jobs ADD COLUMN pay_wait TEXT;
+  ALTER TABLE jobs ADD COLUMN pay_waits INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE charge_leaves ADD COLUMN contract TEXT NOT NULL DEFAULT 'v1';
+  CREATE TABLE v2_charges (
+    epoch_id       INTEGER PRIMARY KEY,
+    list_json      TEXT NOT NULL,             -- the charged jobs: ETH entries and SPARE entries (asset, spareWei)
+    list_hash      TEXT NOT NULL,             -- the jobs root (hash_rule v2-jobs-merkle), the Charged event's listHash
+    total_wei      TEXT NOT NULL,             -- ETH leg (credits + deposits)
+    spare_eth_wei  TEXT NOT NULL,             -- SPARE leg, ETH value of the jobs
+    spare_wei      TEXT NOT NULL,             -- SPARE leg, SPARE debited
+    spare_price    TEXT,                      -- the epoch's accepted price (NULL = no SPARE leg)
+    min_eth_out    TEXT,                      -- the SPARE sale's minimum (NULL = no SPARE leg)
+    method         TEXT NOT NULL,             -- charge | chargeWithSpare
+    status         TEXT NOT NULL,             -- sending | done | failed
+    tx             TEXT,
+    error          TEXT,
+    hash_rule      TEXT NOT NULL,
+    created_at     INTEGER NOT NULL
+  );
+  CREATE TABLE v2_spare_prices (
+    epoch_id       INTEGER PRIMARY KEY,
+    price          TEXT,                      -- posted price (NULL = not posted: see status)
+    reference      TEXT,                      -- the contract's reference price at the post
+    accepted       INTEGER,                   -- 1 = inside the deviation band (SPARE charges run this epoch)
+    sqrt_price_x96 TEXT,                      -- the pool read the price came from
+    block          INTEGER,
+    status         TEXT NOT NULL,             -- sending | done | failed | skipped
+    reason         TEXT,                      -- skipped / failed: why
+    tx             TEXT,
+    created_at     INTEGER NOT NULL
+  );
+  CREATE INDEX jobs_pay_contract ON jobs(pay_contract, charge_status) WHERE pay_contract IS NOT NULL;
+  `,
 ];
 
 type Holder = { db: DatabaseSync; path: string; txDepth: number };

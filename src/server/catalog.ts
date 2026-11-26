@@ -20,7 +20,8 @@ import { modelCapacity, operatorsOf } from "./capacity";
 import { nowSec } from "./db";
 import { serverEnv } from "./env";
 import { poolStartInfo } from "./gpu-pool";
-import { paymentsAddress, priceWeiPerUnit } from "./payments";
+import { priceWeiPerUnit } from "./payments";
+import { paidJobsOn } from "./payments-v2";
 
 /** What the catalog says about who runs the nodes, in one plain sentence. */
 export const OPERATOR_NOTE: Record<Catalog["network"]["operators"], string> = {
@@ -32,7 +33,7 @@ export const OPERATOR_NOTE: Record<Catalog["network"]["operators"], string> = {
 export function catalogJson(now = nowSec()): Catalog {
   const pool = poolStartInfo(now);
   const capacity = modelCapacity(pool, now);
-  const paid = paymentsAddress() !== null;
+  const paid = paidJobsOn();
   const perUnit = paid ? priceWeiPerUnit() : 0n;
   const operators = operatorsOf(now);
   const models: CatalogModel[] = CATALOG_MODEL_IDS.map((id) => {
