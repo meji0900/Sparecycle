@@ -26,6 +26,7 @@ const eslintConfig = defineConfig([
     "node-client/**",
     "src/components/reactbits/**",
     "videos/**",
+    ".deploy-head/**",
   ]),
 ]);
 

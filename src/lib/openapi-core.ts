@@ -200,6 +200,24 @@ export const coreApi: OpenApiModule = {
         responses: { "200": { description: "Readable." }, "401": { description: "No credentials." }, "403": { description: "Not allowed." } },
       },
     },
+    "/jobs/{id}/invoice": {
+      parameters: [jobIdParam],
+      get: {
+        operationId: "getJobInvoice",
+        summary: "The private invoice of a paid or team job (a stub for a free trial job)",
+        description:
+          "Price, rounded 5% protocol cut (charged per epoch batch), verdict, charge status, output hash (sha256 of the agreed output, not the file), epochs, and the charge and root transactions. Same credentials as /jobs/{id}/result, enforced whatever OUTPUT_AUTH says. A free trial job answers { payment: \"free\", invoice: false, note: \"free trial, no charge\" }. Always Cache-Control: private, no-store and Vary: Authorization, Cookie.",
+        tags: ["Jobs"],
+        security: [{ readSecret: [] }, { walletSession: [] }],
+        responses: {
+          "200": json({ type: "object", description: "The invoice (version 1), or the free trial stub." }, "The invoice."),
+          "400": error("bad-id"),
+          "401": { description: "No credentials were sent (empty body)." },
+          "403": error("These credentials cannot read this job's invoice."),
+          "404": error("unknown-job"),
+        },
+      },
+    },
     "/jobs/{id}/output": {
       parameters: [jobIdParam],
       get: {
@@ -320,6 +338,35 @@ export const coreApi: OpenApiModule = {
           "200": json({ type: "object", description: "{ taskId, jobId, epoch, spec, chainId, leaseExpiresAt } or { type: \"challenge\", challengeId, spec }." }, "A task."),
           "204": { description: "Nothing to do right now." },
           "401": error("Bad or replayed node signature."),
+        },
+      },
+    },
+    "/nodes/heartbeat": {
+      post: {
+        operationId: "nodeHeartbeat",
+        summary: "Idle Guard: the state a node reports about its own machine",
+        description:
+          "Node client 0.4.0+. Body { state: active | paused-busy | paused-hot | paused-hours, since? } (since in unix seconds, not in the future). Sent on every state change and at least every 60 s while paused, so a paused node stays online but gets no task. Only the state is sent: no temperatures, process names or PIDs. GET /nodes shows the state, never when the pause started.",
+        tags: ["Nodes (signed)"],
+        security: [{ nodeSignature: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["state"],
+                properties: { state: { type: "string", enum: ["active", "paused-busy", "paused-hot", "paused-hours"] }, since: { type: "integer" } },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": json({ type: "object", description: "{ ok: true, state, since }" }, "Recorded."),
+          "400": error("invalid-heartbeat"),
+          "401": error("Bad, stale or replayed node signature."),
+          "403": error("not-registered"),
+          "413": error("Body too large."),
         },
       },
     },
