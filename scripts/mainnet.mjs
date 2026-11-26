@@ -17,11 +17,14 @@
 //                                                the treasury Safe; minimum stake 0). Internal review only, no audit.
 //   node scripts/mainnet.mjs deploy-x402 [--dry-run]    deploy SparecycleX402Escrow (x402 pay-per-job in USDG, owner and
 //                                                forwardTo the treasury Safe; caps 1 / 100 / 10 USDG). Internal review only.
+//   node scripts/mainnet.mjs deploy-v2 [--dry-run]      deploy the V2 payment stack in one run: Uniswap v4 SPARE adapter,
+//                                                SparecycleBurner, SparecycleJobPaymentsV2, SparecycleHolderPool (split
+//                                                350/0/150, SPARE at 0% discount, slippage 4%). Internal review only.
 //   node scripts/mainnet.mjs transfer-owner <safe>  step 1 of moving the reward contract owner to a Safe
 //                                                (the Safe then executes acceptOwnership(); docs/ops/multisig-runbook.md)
 //   node scripts/mainnet.mjs launch              launch the token on Pons with the reward contract as fee recipient
 //                                                (refuses while the logo / website links do not load)
-//   node scripts/mainnet.mjs verify              publish the reward contract source (Sourcify, shown on Blockscout)
+//   node scripts/mainnet.mjs verify [payments|stake|x402|v2]   publish a contract's source (Sourcify, shown on Blockscout)
 //   node scripts/mainnet.mjs env                 the site / Railway settings for what is deployed
 //   node scripts/mainnet.mjs secret <scheduler|sweep>   the hot key, only into a pipe (railway ... --stdin)
 //
@@ -54,6 +57,7 @@ const USDG = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168";
 const SCRIPT_ENV = ["TREASURY", "SPARE_TOKEN", "SPARE_HAS_BURN", "MIN_STAKE_PER_NODE",
   "X402_ASSET", "X402_ASSET_NAME", "X402_ASSET_VERSION", "X402_FORWARD_TO", "X402_SETTLE_WINDOW", "X402_MAX_PER_JOB",
   "X402_MAX_TOTAL_HELD", "X402_MAX_PER_PAYER_PER_EPOCH",
+  "V4_POOL_MANAGER", "V4_POOL_FEE", "V4_TICK_SPACING", "V4_HOOKS", "MAX_ETH_PER_BURN", "SPARE_PAY_CAP_ETH",
   "ADMIN", "SCHEDULER", "EPOCH_LENGTH", "PAYOUT_TOKEN", "FEE_ESCROW", "DEPLOY_MOCK_ESCROW", "REWARD_CONTRACT",
   "TOKEN_NAME", "TOKEN_SYMBOL", "TOKEN_LOGO", "TOKEN_DESCRIPTION", "TOKEN_TWITTER", "TOKEN_TELEGRAM", "TOKEN_DISCORD",
   "TOKEN_WEBSITE", "TOKEN_FARCASTER", "CREATOR_TAX_BPS", "PAIR_ASSET", "LAUNCH_CONFIG_ID", "LAUNCH_SALT",
@@ -233,6 +237,32 @@ function spareToken() {
   if (!m) fail("No spareToken in src/lib/addresses.ts.");
   return getAddress(m[1]);
 }
+
+/** The SPARE/ETH Uniswap v4 pool key and PoolManager from the site's address sources (UNISWAP_V4_DEFAULTS, PONS.memeHook). */
+function v4Pool() {
+  const a = readFileSync(join(ROOT, "src", "lib", "addresses.ts"), "utf8");
+  const p = readFileSync(join(ROOT, "src", "lib", "pons.ts"), "utf8");
+  const pm = /poolManager:\s*"(0x[0-9a-fA-F]{40})"/.exec(a);
+  const key = /spareEthPoolKey:\s*\{[^}]*fee:\s*(\d+),\s*tickSpacing:\s*(\d+),\s*hooks:\s*PONS\.memeHook/.exec(a);
+  const hook = /memeHook:\s*"(0x[0-9a-fA-F]{40})"/.exec(p);
+  if (!pm || !key || !hook) fail("Could not read the SPARE/ETH v4 pool key from src/lib/addresses.ts and src/lib/pons.ts.");
+  return { poolManager: getAddress(pm[1]), fee: Number(key[1]), tickSpacing: Number(key[2]), hooks: getAddress(hook[1]) };
+}
+
+// V2 contract names in src/contracts/deployments.json, in deploy order.
+const V2_NAMES = ["UniswapV4SpareAdapter", "SparecycleBurner", "SparecycleJobPaymentsV2", "SparecycleHolderPool"];
+
+function deployedV2() {
+  if (!existsSync(DEPLOYMENTS)) return null;
+  const d = JSON.parse(readFileSync(DEPLOYMENTS, "utf8"))[String(CHAIN_ID)] ?? {};
+  return d.SparecycleJobPaymentsV2 ? Object.fromEntries(V2_NAMES.map((n) => [n, d[n] ? getAddress(d[n]) : null])) : null;
+}
+
+// V2 launch settings (owner decisions of 26-27 Nov 2026; the split, discount and slippage are the contracts' defaults).
+// SPARE-paid jobs: at most 0.02 ETH of them per epoch (a small share of the pool's ETH side, so one epoch's SPARE sale
+// stays well inside the 4% slippage with the pool hook's 2.90% cut). The burner's share is 0, so its cap is not used
+// until the Safe changes the split; it must be > 0. The Safe can change both later.
+const V2 = { spareCapEthPerEpoch: parseEther("0.02"), maxEthPerBurn: parseEther("0.05") };
 
 function launched() {
   if (!existsSync(LAUNCH_RUN)) return null;
@@ -647,6 +677,113 @@ async function deployX402(again, dryRun) {
   console.log("Next: node scripts/mainnet.mjs verify x402, then set the X402_* variables on Railway.");
 }
 
+const v2Abi = parseAbi([
+  "function treasury() view returns (address)",
+  "function rewards() view returns (address)",
+  "function burner() view returns (address)",
+  "function holderPool() view returns (address)",
+  "function spare() view returns (address)",
+  "function swapAdapter() view returns (address)",
+  "function currentSplit() view returns (uint16, uint16, uint16)",
+  "function SPARE_DISCOUNT_BPS() view returns (uint16)",
+  "function maxSwapSlippageBps() view returns (uint16)",
+  "function spareCapEthPerEpoch() view returns (uint256)",
+  "function referenceSparePrice() view returns (uint256)",
+]);
+const holderPoolAbi = parseAbi(["function payments() view returns (address)"]);
+
+/**
+ * Deploys the V2 payment stack (docs/contracts-v2.md) in one forge run from the wallet: the Uniswap v4 SPARE adapter,
+ * SparecycleBurner, SparecycleJobPaymentsV2 and SparecycleHolderPool, wired to each other through predicted addresses,
+ * on the live SparecycleRewards with the treasury Safe as owner of every setting. Internal review only, not externally
+ * audited. --dry-run simulates on live mainnet state and sends nothing.
+ */
+async function deployV2(again, dryRun) {
+  const c = config();
+  const reward = deployedReward();
+  if (!reward) fail("No reward contract deployed.");
+  const safe = c.treasury?.safe;
+  if (!safe || !isAddress(safe)) fail('Set "treasury": { "safe": "0x…" } in contracts/mainnet.json (the Safe multisig).');
+  if (deployedV2() && !again) fail(`Already deployed: SparecycleJobPaymentsV2 ${deployedV2().SparecycleJobPaymentsV2}. (--again deploys another set)`);
+  const spare = spareToken();
+  const pool = v4Pool();
+  if (!dryRun) {
+    needTerminal();
+    needKeystore(c);
+  }
+  const r = await rpc();
+  const pc = await client();
+  const [threshold, owner, scheduler, payout, spareCode, bal] = await Promise.all([
+    pc.readContract({ address: safe, abi: safeAbi, functionName: "getThreshold" }).catch(() => null),
+    pc.readContract({ address: reward, abi: rewardAbi, functionName: "owner" }),
+    pc.readContract({ address: reward, abi: rewardAbi, functionName: "scheduler" }),
+    pc.readContract({ address: reward, abi: rewardAbi, functionName: "payoutToken" }),
+    pc.getCode({ address: spare }),
+    pc.getBalance({ address: c.wallet }),
+  ]);
+  if (threshold === null || threshold < 2n) fail(`${safe} is not a Safe with a threshold of at least 2.`);
+  if (getAddress(owner) !== getAddress(safe)) fail(`The reward contract's owner is ${owner}, not the treasury Safe.`);
+  if (payout !== zeroAddress) fail("The reward contract does not pay out in ETH; V2 needs an ETH pot.");
+  // burn(uint256) = 0x42966c68 in SPARE's runtime code (as for NodeStake).
+  const hasBurn = Boolean(spareCode && spareCode.toLowerCase().includes("42966c68"));
+  console.log(`Reward contract ${reward} (scheduler ${scheduler}); treasury Safe ${safe}, threshold ${threshold}`);
+  console.log(`SPARE ${spare}, burn(uint256) ${hasBurn ? "found" : "not found (burns go to 0x…dEaD)"}`);
+  console.log(`SPARE/ETH v4 pool: PoolManager ${pool.poolManager}, fee ${pool.fee}, tickSpacing ${pool.tickSpacing}, hooks ${pool.hooks}`);
+  console.log(`Split 350 treasury / 0 burner / 150 holder pool; SPARE discount 0%; slippage 4%; SPARE-paid jobs at most ${eth(V2.spareCapEthPerEpoch)} per epoch; burner cap ${eth(V2.maxEthPerBurn)}`);
+  console.log(`Wallet ${c.wallet}: ${eth(bal)}`);
+  const env = {
+    REWARD_CONTRACT: reward,
+    TREASURY: safe,
+    SPARE_TOKEN: spare,
+    SPARE_HAS_BURN: String(hasBurn),
+    V4_POOL_MANAGER: pool.poolManager,
+    V4_POOL_FEE: String(pool.fee),
+    V4_TICK_SPACING: String(pool.tickSpacing),
+    V4_HOOKS: pool.hooks,
+    MAX_ETH_PER_BURN: String(V2.maxEthPerBurn),
+    SPARE_PAY_CAP_ETH: String(V2.spareCapEthPerEpoch),
+  };
+  const args = ["script", "script/DeployV2.s.sol:DeployV2", "--rpc-url", r.url, "--sender", c.wallet];
+  console.log(`Simulating the V2 deploy from ${c.wallet} (nothing sent yet)\n`);
+  if ((await run("forge", args, env)) !== 0) fail("Simulation failed. Nothing was sent.");
+  if (dryRun) {
+    console.log("\nDry run only: nothing was sent.");
+    return;
+  }
+  const ok = await confirm(
+    "V2",
+    `Deploy 4 contracts in a row from ${c.wallet} (send nothing else from this wallet until it is done): the Uniswap v4 SPARE adapter, SparecycleBurner, SparecycleJobPaymentsV2 and SparecycleHolderPool, owned by the treasury Safe. Split 350 / 0 / 150, SPARE at 0% discount, slippage 4%; SPARE payments stay closed until the Safe sets a reference price. Internal review only, not externally audited.`,
+  );
+  if (!ok) fail("Stopped. Nothing was sent.");
+  if ((await run("forge", [...args, "--account", c.keystore, "--broadcast", "--slow"], env)) !== 0) fail("Broadcast failed (see above). Check Blockscout before running it again.");
+  const runFile = join(CONTRACTS, "broadcast", "DeployV2.s.sol", String(CHAIN_ID), "run-latest.json");
+  const out = JSON.parse(readFileSync(runFile, "utf8"));
+  const found = {};
+  for (const t of out.transactions ?? []) {
+    if (!V2_NAMES.includes(t.contractName) || !t.contractAddress) continue;
+    const rc = out.receipts?.find((x) => x.transactionHash === t.hash);
+    if (rc && (rc.status === "0x1" || rc.status === 1)) found[t.contractName] = { address: getAddress(t.contractAddress), tx: t.hash };
+  }
+  const missingNames = V2_NAMES.filter((n) => !found[n]);
+  if (missingNames.length) fail(`Sent, but no successful receipt for ${missingNames.join(", ")} in ${runFile}; check Blockscout.`);
+  const all = existsSync(DEPLOYMENTS) ? JSON.parse(readFileSync(DEPLOYMENTS, "utf8")) : {};
+  all[String(CHAIN_ID)] = { ...(all[String(CHAIN_ID)] ?? {}), ...Object.fromEntries(V2_NAMES.map((n) => [n, found[n].address])) };
+  writeFileSync(DEPLOYMENTS, JSON.stringify(all, null, 2) + "\n");
+  const v2 = found.SparecycleJobPaymentsV2.address;
+  const read = (functionName) => pc.readContract({ address: v2, abi: v2Abi, functionName });
+  const [tr, rw, bu, hp, sp, ad, split, disc, slip, cap, ref] = await Promise.all(
+    ["treasury", "rewards", "burner", "holderPool", "spare", "swapAdapter", "currentSplit", "SPARE_DISCOUNT_BPS", "maxSwapSlippageBps", "spareCapEthPerEpoch", "referenceSparePrice"].map(read),
+  );
+  const poolPays = await pc.readContract({ address: found.SparecycleHolderPool.address, abi: holderPoolAbi, functionName: "payments" });
+  const good = tr === getAddress(safe) && rw === reward && bu === found.SparecycleBurner.address && hp === found.SparecycleHolderPool.address &&
+    sp === spare && ad === found.UniswapV4SpareAdapter.address && split.join("/") === "350/0/150" && disc === 0 && slip === 400 &&
+    cap === V2.spareCapEthPerEpoch && ref === 0n && poolPays === v2;
+  console.log("");
+  for (const n of V2_NAMES) console.log(`${n.padEnd(24)} ${found[n].address}  ${EXPLORER}/tx/${found[n].tx}`);
+  console.log(`read back: treasury ${tr}, split ${split.join("/")}, SPARE discount ${disc} bps, slippage ${slip} bps, SPARE cap ${eth(cap)}, reference price ${ref} (not set yet)  ${good ? "OK" : "MISMATCH"}`);
+  console.log("Next: node scripts/mainnet.mjs verify v2, then node scripts/mainnet.mjs env for the Railway settings.");
+}
+
 /**
  * Step 1 of 2 of moving the reward contract's owner to a Safe: transferOwnership(safe) from the wallet. The Safe must
  * then execute acceptOwnership() (data 0x79ba5097); until it does, the wallet stays owner. See docs/ops/multisig-runbook.md.
@@ -764,6 +901,7 @@ async function verify(which) {
   if (which === "payments") return verifyPayments();
   if (which === "stake") return verifyStake();
   if (which === "x402") return verifyX402();
+  if (which === "v2") return verifyV2();
   const reward = deployedReward();
   if (!reward) fail("Nothing deployed yet.");
   const runFile = join(CONTRACTS, "broadcast", "Deploy.s.sol", String(CHAIN_ID), "run-latest.json");
@@ -826,6 +964,38 @@ async function verifyX402() {
   ]);
 }
 
+async function verifyV2() {
+  const d = deployedV2();
+  if (!d) fail("The V2 contracts are not deployed yet.");
+  const runFile = join(CONTRACTS, "broadcast", "DeployV2.s.sol", String(CHAIN_ID), "run-latest.json");
+  const txs = JSON.parse(readFileSync(runFile, "utf8")).transactions ?? [];
+  const argsOf = (name) => {
+    const t = txs.find((x) => x.contractName === name);
+    if (!t?.arguments) fail(`No constructor arguments for ${name} in ${runFile}.`);
+    return t.arguments;
+  };
+  const [pm, sp, fee, ts, hk] = argsOf("UniswapV4SpareAdapter");
+  const [bRw, bTr, bSp, bAd, bPs, bUse, bMax] = argsOf("SparecycleBurner");
+  const [vRw, vTr, vBu, vHp, vSp, vAd, vCap] = argsOf("SparecycleJobPaymentsV2");
+  const [hRw, hPay, hTr] = argsOf("SparecycleHolderPool");
+  const jobs = [
+    ["UniswapV4SpareAdapter", "src/adapters/UniswapV4SpareAdapter.sol:UniswapV4SpareAdapter",
+      encodeAbiParameters(parseAbiParameters("address, address, uint24, int24, address"), [pm, sp, Number(fee), Number(ts), hk])],
+    ["SparecycleBurner", "src/SparecycleBurner.sol:SparecycleBurner",
+      encodeAbiParameters(parseAbiParameters("address, address, address, address, address, bool, uint256"), [bRw, bTr, bSp, bAd, bPs, String(bUse) === "true", BigInt(bMax)])],
+    ["SparecycleJobPaymentsV2", "src/SparecycleJobPaymentsV2.sol:SparecycleJobPaymentsV2",
+      encodeAbiParameters(parseAbiParameters("address, address, address, address, address, address, uint256"), [vRw, vTr, vBu, vHp, vSp, vAd, BigInt(vCap)])],
+    ["SparecycleHolderPool", "src/SparecycleHolderPool.sol:SparecycleHolderPool",
+      encodeAbiParameters(parseAbiParameters("address, address, address"), [hRw, hPay, hTr])],
+  ];
+  let code = 0;
+  for (const [name, path, args] of jobs) {
+    console.log(`\n${name} ${d[name]}`);
+    code ||= await run("forge", ["verify-contract", d[name], path, "--chain", String(CHAIN_ID), "--verifier", "sourcify", "--constructor-args", args, "--watch"]);
+  }
+  process.exitCode = code;
+}
+
 function env() {
   const c = config();
   const o = ops();
@@ -853,6 +1023,14 @@ function env() {
     `NEXT_PUBLIC_JOB_PRICE_WEI_PER_UNIT=${c.jobPriceWeiPerUnit ?? ""}`,
     `NEXT_PUBLIC_TREASURY_ADDRESS=${c.treasury?.safe ?? ""}`,
     `TOKEN_NODE_STAKE_ADDRESS=${deployedStake() ?? ""}`,
+    ...(deployedV2()
+      ? [
+          `TOKEN_JOB_PAYMENTS_V2_ADDRESS=${deployedV2().SparecycleJobPaymentsV2}`,
+          `TOKEN_HOLDER_POOL_ADDRESS=${deployedV2().SparecycleHolderPool ?? ""}`,
+          `TOKEN_BURNER_ADDRESS=${deployedV2().SparecycleBurner ?? ""}`,
+          "# switch on only after the Safe set the reference SPARE price: TOKEN_PAYMENTS_V2=on, TOKEN_HOLDERS=on, TOKEN_HOLDER_PAGE=on",
+        ]
+      : []),
     "NEXT_PUBLIC_EXPLORER_URL=https://robinhoodchain.blockscout.com",
   ];
   console.log(lines.join("\n"));
@@ -885,6 +1063,7 @@ try {
     case "deploy-payments": await deployPayments(flag("--again")); break;
     case "deploy-stake": await deployStake(flag("--again"), flag("--dry-run")); break;
     case "deploy-x402": await deployX402(flag("--again"), flag("--dry-run")); break;
+    case "deploy-v2": await deployV2(flag("--again"), flag("--dry-run")); break;
     case "transfer-owner": await transferOwner(positional[0]); break;
     case "env": env(); break;
     case "secret": secret(positional[0]); break;

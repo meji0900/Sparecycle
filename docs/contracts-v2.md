@@ -306,11 +306,25 @@ credits, makes the unit tests and the invariant fail.
 
 V2's runtime size is 22,432 bytes, under the 24,576-byte limit but close to it. Watch it if code is added.
 
-## Deploy (simulation only)
+## Deploy
 
-`contracts/script/DryRunDeployV2.s.sol` simulates Burner → V2 → HolderPool with predicted addresses and checks the
-wiring. It has no broadcast step and refuses `--broadcast`. With no env set it uses local stand-ins. Real values
-come from `src/lib/addresses.ts`. The adapter and the burn cap stay `[PLACEHOLDER]` until they exist.
+`node scripts/mainnet.mjs deploy-v2 --dry-run` simulates the real deployment on live mainnet state from the wallet;
+without `--dry-run` it asks for the word `V2`, then broadcasts (`contracts/script/DeployV2.s.sol`, signed from the
+Foundry keystore). One run deploys, in this order and with nothing else sent from the wallet in between:
+
+1. `UniswapV4SpareAdapter` on the SPARE/ETH pool key of `src/lib/addresses.ts` (PoolManager, fee 0, tick spacing 200,
+   the Pons hook);
+2. `SparecycleBurner` (price source = the predicted V2; `maxEthPerBurn` 0.05 ETH, unused while its share is 0);
+3. `SparecycleJobPaymentsV2` (SPARE-paid jobs capped at 0.02 ETH per epoch);
+4. `SparecycleHolderPool`.
+
+The script reads every wire back (each contract points at the others, the treasury is the Safe, split 350 / 0 / 150,
+discount 0, slippage 400 bps, no reference price yet) and the runner records the four addresses in
+`src/contracts/deployments.json`. Then `node scripts/mainnet.mjs verify v2` publishes the four sources on Sourcify and
+`node scripts/mainnet.mjs env` prints the `TOKEN_*_ADDRESS` lines for the scheduler.
+
+`contracts/script/DryRunDeployV2.s.sol` stays as the local simulation of Burner → V2 → HolderPool with stand-ins; it
+has no broadcast step and refuses `--broadcast`.
 
 ## Open risks for the audit
 
