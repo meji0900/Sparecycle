@@ -2,6 +2,7 @@ import Image from "next/image";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { CodeBlock } from "@/components/ui/code-block";
+import { TOKEN_COPY_OFF, tokenCopy, type TokenCopy } from "@/lib/token-copy";
 import { FeatureBento } from "./feature-bento";
 import { config, tickerLabel } from "@/lib/config";
 import { EM_DASH, formatAmount, formatBps, formatInt } from "@/lib/format";
@@ -56,7 +57,7 @@ function Section({
 }
 
 /* ---------- What the MVP includes ---------- */
-export function Features() {
+export function Features({ noToken }: { noToken?: TokenCopy["bentoNoToken"] } = {}) {
   return (
     <section id="features" aria-labelledby="features-title" className="scroll-mt-20 border-b border-line">
       <div className="mx-auto max-w-[1200px] px-4 py-20 sm:px-6">
@@ -67,7 +68,7 @@ export function Features() {
           <p className="max-w-[380px] text-muted">Small on purpose. Each item is something you can check.</p>
         </div>
         <div className="mt-10">
-          <FeatureBento />
+          <FeatureBento noToken={noToken} />
         </div>
       </div>
     </section>
@@ -118,7 +119,8 @@ export function Mechanics() {
 }
 
 /* ---------- Run a node ---------- */
-export function RunANode() {
+/** `tokenLine`: the flag-dependent last line (src/lib/token-copy.ts); the default is today's line. */
+export function RunANode({ tokenLine = tokenCopy(TOKEN_COPY_OFF).runANodeToken }: { tokenLine?: string } = {}) {
   const payout = config.nodePayoutAsset ?? "[NODE_PAYOUT_ASSET]";
   const siteUrl = config.domain ? `https://${config.domain.replace(/^https?:\/\//, "")}` : process.env.NEXT_PUBLIC_APP_URL ?? "<SCHEDULER_URL>";
   return (
@@ -135,7 +137,7 @@ export function RunANode() {
           </>,
           "The node pulls jobs from the scheduler, runs the allowed models, and submits a result. A second node runs the same job. Agreement is required for payment eligibility.",
           "Payment, if any, is claimed from the contract after the six-hour period closes. There is no hourly wage and no advertised rate of return.",
-          "You do not need to hold the token.",
+          tokenLine,
         ].map((t, i) => (
           <li key={i} className="py-5 text-muted">
             {t}
@@ -161,17 +163,25 @@ export function RunANode() {
 }
 
 /* ---------- The token, stated plainly ---------- */
-const TOKEN_FACTS = [
-  "You don't need the token for anything here: not to run a node, and not to pay for a job.",
+const OFF_COPY = tokenCopy(TOKEN_COPY_OFF);
+const tokenFacts = (need: string, feesToPot: string, extra: readonly string[]) => [
+  need,
   feesToTeamWallet
     ? "The token's creator fees and creator tax go to the team wallet set at launch, not to the node pot. Node payouts come from job payments."
-    : "Creator trading fees fund the job pot. Buybacks are off. This is not a reason the token should go up, and it is not a yield on holding.",
+    : feesToPot,
   "It was launched on Pons v2 in one transaction. The whole supply went to the bonding curve; there is no team allocation.",
   "If the curve sells out, Pons moves it into a Uniswap v4 pool and locks that liquidity. Sparecycle holds no LP it can pull.",
   `Pons v2 was still unaudited as of ${config.factsCheckedOn}. The token can lose all of its value.`,
+  ...extra,
 ];
 
-export async function TokenSection() {
+/** The flag-dependent facts (src/lib/token-copy.ts) come in as props; the defaults are today's facts. */
+export async function TokenSection({
+  need = OFF_COPY.tokenFactNeed,
+  feesToPot = OFF_COPY.tokenFactFeesToPot,
+  extra = OFF_COPY.facts,
+}: { need?: string; feesToPot?: string; extra?: readonly string[] } = {}) {
+  const TOKEN_FACTS = tokenFacts(need, feesToPot, extra);
   const snap = await chainSnapshot();
   const pons = snap.pons.ok ? snap.pons.data : null;
   const rows: [string, ReactNode][] = pons
@@ -347,7 +357,8 @@ export function Faq() {
 }
 
 /* ---------- Limits and disclosures ---------- */
-export function Disclosures() {
+/** `extra`: the flag-dependent disclosures (src/lib/token-copy.ts), none while the TOKEN_* flags are off. */
+export function Disclosures({ extra = OFF_COPY.facts }: { extra?: readonly string[] } = {}) {
   const items = [
     "Not financial, legal, or tax advice.",
     FUNDING.disclosureItem,
@@ -357,6 +368,7 @@ export function Disclosures() {
     "The scheduler is centralized in this MVP. The operator that posts the Merkle root can err or misbehave. Cross-checking reduces bad results; it does not make root posting trustless.",
     "The reward contract as creatorFeeRecipient has been exercised only on a local fork of Robinhood Chain mainnet (a throwaway launch, a buy, a Pons operator sweep, then a claim into the pot). It has not been tried on live mainnet. A multisig that claims and forwards is the fallback.",
     "Once the reward contract is the fee recipient it cannot redirect fees elsewhere, by design. While an epoch is open, the contract owner could replace the scheduler; settled epochs cannot be touched.",
+    ...extra,
   ];
   return (
     <section id="disclosures" aria-labelledby="disclosures-title" className="scroll-mt-20 border-b border-line">

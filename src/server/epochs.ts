@@ -16,6 +16,7 @@ import { getDb, getMeta, nowSec, setMeta, tx } from "./db";
 import { POLICY, serverEnv } from "./env";
 import { ApiError } from "./http";
 import { allocate, type AgreedJob } from "./payouts";
+import { runTokenWorkAfterClose } from "./token-work";
 import { chargeOpenEpoch, paymentsAddress } from "./payments";
 import {
   describeChainError,
@@ -372,6 +373,8 @@ async function closeEpochUnlocked(): Promise<CloseSummary> {
   );
 
   if (mode === "contract" && schedulerAccount()) await postEpoch(closed);
+  // Token features (docs/token-features.md): each step only with its TOKEN_* flag on (all off by default); never sends.
+  await runTokenWorkAfterClose(open.id);
   const note =
     mode === "contract"
       ? schedulerAccount()

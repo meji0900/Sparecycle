@@ -6,28 +6,32 @@ import { OnchainStatus } from "@/components/landing/onchain-status";
 import { ProductPanel } from "@/components/landing/product-panel";
 import { WhoFor } from "@/components/landing/who-for";
 import { Disclosures, Faq, Features, Mechanics, Roadmap, RunANode, TokenSection } from "@/components/landing/sections";
+import { tokenCopy } from "@/lib/token-copy";
+import { tokenCopyState } from "@/server/token-copy-state";
 
 // Pons factory reads are refreshed at most once a minute.
 export const revalidate = 60;
 
-export default function Home() {
+export default async function Home() {
+  // Token features (docs/token-features.md): the lines a TOKEN_* flag makes false follow the flags; all off = today's copy.
+  const copy = tokenCopy(await tokenCopyState());
   return (
     <>
-      <Hero />
+      <Hero noTokenFact={copy.heroNoToken} />
       <ProductPanel />
       <HowItWorks />
-      <WhoFor />
+      <WhoFor noToken={copy.whoForNoToken} />
       <NetworkNow />
-      <Features />
+      <Features noToken={copy.bentoNoToken} />
       <Mechanics />
-      <RunANode />
+      <RunANode tokenLine={copy.runANodeToken} />
       <Faq />
       <Closing />
       {/* the token, contract reads and the long disclosures sit below the product */}
-      <TokenSection />
+      <TokenSection need={copy.tokenFactNeed} feesToPot={copy.tokenFactFeesToPot} extra={copy.facts} />
       <OnchainStatus />
       <Roadmap />
-      <Disclosures />
+      <Disclosures extra={copy.facts} />
     </>
   );
 }

@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import type { ReactNode } from "react";
 import { PageHeader } from "@/components/dapp/app-shell";
 import { Dash, Fact, Facts, Panel, SectionTitle, TableBox, td, th } from "@/components/dapp/ui";
@@ -11,6 +12,9 @@ import { chainSnapshot } from "@/lib/onchain";
 import { PONS, PONS_DOCS_URL, PONS_LABELS, USDG_ADDRESS } from "@/lib/pons";
 import { FUNDING } from "@/lib/funding-copy";
 import { HeyBuilderCard } from "@/components/dapp/hey-builder-card";
+import { serverEnv } from "@/server/env";
+import { tokenCopy } from "@/lib/token-copy";
+import { tokenCopyState } from "@/server/token-copy-state";
 
 export const metadata: Metadata = {
   title: "Token",
@@ -59,6 +63,8 @@ function Decision({ label, value, placeholder, children }: { label: string; valu
 }
 
 export default async function TokenPage() {
+  // Token features (docs/token-features.md): one extra fact per TOKEN_* flag that is on; none while they are off.
+  const copy = tokenCopy(await tokenCopyState());
   const snap = await chainSnapshot();
   const pons = snap.pons.ok ? snap.pons.data : null;
   const tok = snap.token && snap.token.ok ? snap.token.data : null;
@@ -93,6 +99,20 @@ export default async function TokenPage() {
       />
 
       <div className="space-y-3">
+        {/* Token features (docs/token-features.md): only with TOKEN_HOLDER_PAGE on; off (the default) renders nothing. */}
+        {serverEnv.tokenHolderPage() ? (
+          <Notice
+            tone="neutral"
+            title="Holders"
+            action={
+              <Link href="/token/holders" className="link text-sm">
+                Open the holder page
+              </Link>
+            }
+          >
+            SPARE burned, distributed to holders and staked by node owners, read from the chain.
+          </Notice>
+        ) : null}
         {config.tokenAddress && snap.token && !snap.token.ok ? (
           <Notice tone="error" title="Could not read the token">
             The token address is configured but the read failed. Nothing is shown rather than a stale number.
@@ -247,7 +267,7 @@ export default async function TokenPage() {
       <section aria-labelledby="plainly" className="mt-14">
         <SectionTitle id="plainly" title="Stated plainly" />
         <dl className="grid gap-px overflow-hidden rounded-l border border-line bg-line md:grid-cols-2">
-          {FACTS.map(([t, d]) => (
+          {[...FACTS, ...copy.disclosures.map((x): [string, string] => [x.title, x.body])].map(([t, d]) => (
             <div key={t} className="bg-coal px-5 py-4">
               <dt className="font-medium text-text">{t}</dt>
               <dd className="mt-1.5 text-sm leading-relaxed text-muted">{d}</dd>

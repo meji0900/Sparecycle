@@ -12,6 +12,8 @@ import { IDLE_GUARD_HOURS_ONLY, NODE_STATE_LABEL, NODE_STATE_MEANING, type Publi
 import { MODELS } from "@/lib/protocol";
 import { IMAGE_MAX_BITS, TEXT_MIN_SIMILARITY } from "@/server/verify";
 import { FUNDING, feesToTeamWallet, paidJobsLive } from "@/lib/funding-copy";
+import { tokenCopy } from "@/lib/token-copy";
+import { tokenCopyState } from "@/server/token-copy-state";
 
 export const metadata: Metadata = {
   title: "Run a node",
@@ -33,15 +35,17 @@ const CHECKS: [string, string, string][] = [
 
 const STATES: PublicNodeState[] = ["active", "paused-busy", "paused-hot", "paused-hours", "offline"];
 
-export default function NodesPage() {
+export default async function NodesPage() {
+  // Token features (docs/token-features.md): with any TOKEN_* flag on this page renders per request and its staking lines
+  // follow the stake gate and minStakePerNode; with every flag off it is the static page it was.
+  const copy = tokenCopy(await tokenCopyState({ perRequest: true }));
   return (
     <>
       <PageHeader
         title="Run a node"
         description={
           <>
-            Watch the one-minute demo, then follow the steps for your system. NVIDIA GPUs take image and text jobs; AMD or
-            Intel GPUs, iGPUs and CPUs take text jobs. No hourly rate, and no token needed.
+            {`Watch the one-minute demo, then follow the steps for your system. NVIDIA GPUs take image and text jobs; AMD or Intel GPUs, iGPUs and CPUs take text jobs. ${copy.nodesIntroTail}`}
           </>
         }
       />
@@ -61,7 +65,7 @@ export default function NodesPage() {
               [
                 ["GPU", "NVIDIA RTX 30-series or newer for image and text jobs. AMD or Intel GPU, iGPU or CPU for text jobs."],
                 ["System", "Windows 10/11 or Ubuntu 24.04+"],
-                ["Hold", "Nothing. No token, no stake, no deposit."],
+                ["Hold", copy.nodesHold],
                 ["Paid", feesToTeamWallet ? "From customers' payments for verified jobs. No hourly rate." : "From trading fees that actually arrived. No hourly rate."],
                 ["Rule", "One wallet per GPU. Two nodes run every job."],
               ] as const

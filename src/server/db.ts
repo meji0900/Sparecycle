@@ -355,6 +355,117 @@ const MIGRATIONS: string[] = [
   CREATE INDEX charge_leaves_job ON charge_leaves(job_id);
   CREATE INDEX jobs_receipt_open ON jobs(charge_status) WHERE payer IS NOT NULL AND receipt_epoch IS NULL;
   `,
+  // v11 (token features, docs/token-features.md: src/server/burns.ts, holders.ts, slashing.ts and the stake gate in
+  // ./nodes). Self-contained and additive only: new tables, nothing existing changes. Every table stays empty while the
+  // TOKEN_* flags are off (the default). Amounts are wei as decimal strings. Nothing here is ever signed or sent: the
+  // safe_tx / *_call / fund_safe_tx columns hold UNSIGNED payloads for the Safe signers or the scheduler key.
+  //   token_burn_plans     one row per charged epoch: the burn share (N1), the carry-over, the cap (N12) from the pool
+  //                        read, and the unsigned Safe transaction that would buy and burn (phase 2a). status:
+  //                        prepared | incomplete (missing names what is not live) | nothing-due | carried (the cap allowed
+  //                        no buy) | executed | expired.
+  //   token_holder_*       the SPARE ledger (wallet and staked balance per address, up to meta token_holder_block),
+  //                        ModeSet history, and per epoch the time-weighted weights, leaves and the prepared root.
+  //   token_slash_*        per-node faults from re-check rounds, and slash proposals with their public evidence bundle
+  //                        (exactly the bytes hashed into evidence_hash).
+  //   token_stake_reads    the stake gate's last stakedOf / minStakePerNode read per owner wallet, per epoch.
+  `
+  CREATE TABLE token_burn_plans (
+    epoch_id        INTEGER PRIMARY KEY,      -- the charged epoch (the Charged event's epochId)
+    charge_tx       TEXT,                     -- the charge transaction the share was read from
+    to_treasury_wei TEXT NOT NULL,            -- Charged.toTreasury, read from that transaction's log
+    share_wei       TEXT NOT NULL,            -- burn share: toTreasury x 150 / 500 (N1)
+    carry_in_wei    TEXT NOT NULL,            -- carried over from earlier plans (cap, incomplete or expired)
+    due_wei         TEXT NOT NULL,            -- share + carry in
+    cap_wei         TEXT,                     -- N12 cap from the pool read (NULL = no pool read)
+    buy_wei         TEXT NOT NULL,            -- ETH the prepared transaction spends (0 = nothing prepared)
+    carry_out_wei   TEXT NOT NULL,            -- due - buy: carried into the next plan
+    min_out_wei     TEXT,                     -- SPARE minOut of the swap (N12 slippage)
+    pool_read       TEXT,                     -- JSON: sqrtPriceX96, liquidity, lpFee, block of the price read
+    method          TEXT NOT NULL,            -- dead | burn (BURN_METHOD)
+    status          TEXT NOT NULL,            -- prepared | incomplete | nothing-due | carried | executed | expired
+    missing         TEXT,                     -- JSON array: what an incomplete plan lacks
+    safe_tx         TEXT,                     -- JSON: the unsigned SafeTx and a Safe Transaction Builder batch
+    safe_tx_hash    TEXT,                     -- EIP-712 SafeTx hash at the nonce read (what 2 of 3 signers would sign)
+    data_hash       TEXT,                     -- keccak256 of the SafeTx data (matches an executed transaction)
+    deadline        INTEGER,                  -- router deadline: after it the swap reverts and the buy is carried over
+    prepared_block  INTEGER,                  -- chain head when prepared (executions are searched from here)
+    executed_tx     TEXT,                     -- the treasury Safe transaction that executed it (found on-chain)
+    created_at      INTEGER NOT NULL
+  );
+  CREATE TABLE token_holder_ledger (
+    address    TEXT PRIMARY KEY,              -- lowercase
+    wallet_wei TEXT NOT NULL,                 -- SPARE balance held in the wallet
+    staked_wei TEXT NOT NULL                  -- SPARE the address staked in SparecycleNodeStake (counts as held, N15)
+  );
+  CREATE TABLE token_holder_modes (
+    holder          TEXT NOT NULL,            -- lowercase
+    mode            INTEGER NOT NULL,
+    effective_epoch INTEGER NOT NULL,
+    block           INTEGER NOT NULL,
+    log_index       INTEGER NOT NULL,
+    PRIMARY KEY (holder, block, log_index)
+  );
+  CREATE TABLE token_holder_roots (
+    epoch_id        INTEGER PRIMARY KEY,
+    status          TEXT NOT NULL,            -- prepared | incomplete | nothing-due (no charge in the epoch)
+    missing         TEXT,                     -- JSON array: what an incomplete root lacks
+    to_treasury_wei TEXT,                     -- Charged.toTreasury of the epoch (NULL = no charge)
+    total_eth_wei   TEXT NOT NULL,            -- holder share (N1), the postRoot totalEth
+    root            TEXT,
+    leaves          INTEGER NOT NULL DEFAULT 0,
+    total_weight    TEXT,                     -- sum of the eligible time-weighted balances
+    from_block      INTEGER,
+    to_block        INTEGER,
+    post_call       TEXT,                     -- JSON: unsigned postRoot call for the scheduler key
+    fund_safe_tx    TEXT,                     -- JSON: unsigned SafeTx sending totalEth to the pool (until V2)
+    created_at      INTEGER NOT NULL
+  );
+  CREATE TABLE token_holder_leaves (
+    epoch_id        INTEGER NOT NULL,
+    holder          TEXT NOT NULL,            -- checksummed
+    mode            INTEGER NOT NULL,
+    avg_balance_wei TEXT NOT NULL,            -- time-weighted average SPARE (wallet + staked) over the epoch
+    amount_wei      TEXT NOT NULL,
+    leaf            TEXT NOT NULL,
+    PRIMARY KEY (epoch_id, holder)
+  );
+  CREATE TABLE token_slash_faults (
+    job_id      TEXT NOT NULL,
+    node_key    TEXT NOT NULL,
+    owner       TEXT NOT NULL,
+    task_id     TEXT NOT NULL,                -- the node's signed result (results.task_id)
+    round       INTEGER NOT NULL,
+    epoch_id    INTEGER NOT NULL,             -- the epoch of the job's agreed verdict
+    proposal_id INTEGER,                      -- the proposal that used this fault (NULL = not used yet)
+    at          INTEGER NOT NULL,
+    PRIMARY KEY (job_id, node_key)
+  );
+  CREATE INDEX token_slash_faults_node ON token_slash_faults(node_key, epoch_id);
+  CREATE TABLE token_slash_proposals (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner         TEXT NOT NULL,
+    node_key      TEXT NOT NULL,
+    from_epoch    INTEGER NOT NULL,
+    to_epoch      INTEGER NOT NULL,
+    faults        INTEGER NOT NULL,
+    evidence_json TEXT NOT NULL,              -- the public bundle, exactly the bytes evidence_hash is taken over
+    evidence_hash TEXT NOT NULL UNIQUE,       -- keccak256(utf8(evidence_json))
+    stake_wei     TEXT,                       -- stakedOf(owner) when prepared (NULL = NodeStake not live)
+    amount_wei    TEXT,                       -- stake x SLASH_BPS (N4)
+    call_json     TEXT,                       -- JSON: unsigned proposeSlash call
+    status        TEXT NOT NULL,              -- prepared | incomplete
+    created_at    INTEGER NOT NULL
+  );
+  CREATE TABLE token_stake_reads (
+    owner            TEXT PRIMARY KEY,        -- lowercase owner wallet
+    epoch_id         INTEGER NOT NULL,
+    staked_wei       TEXT NOT NULL,
+    min_per_node_wei TEXT NOT NULL,
+    active_nodes     INTEGER NOT NULL,
+    ok               INTEGER NOT NULL,        -- staked >= min x active nodes at the read
+    read_at          INTEGER NOT NULL
+  );
+  `,
 ];
 
 type Holder = { db: DatabaseSync; path: string; txDepth: number };

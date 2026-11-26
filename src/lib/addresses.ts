@@ -2,6 +2,7 @@
 // the testnet run. src/lib/proof.ts, /docs/contracts and the footer read from here; no other file repeats a literal
 // (src/lib/addresses.test.ts checks proof.ts). Verification status carries the date it was last checked, because
 // explorers change: re-check before changing a status, never assume.
+import { getAddress, isAddress, type Address, type Hex } from "viem";
 import { PONS } from "./pons";
 
 export const MAINNET_CHAIN_ID = 4663;
@@ -287,3 +288,127 @@ export const explorerAddressUrl = (address: string, network: AddressRow["network
 export const explorerTxUrl = (hash: string, network: AddressRow["network"] = "mainnet") =>
   `${network === "testnet" ? TESTNET_EXPLORER : MAINNET_EXPLORER}/tx/${hash}`;
 export const sourcifyUrl = (address: string, chainId = MAINNET_CHAIN_ID) => `${SOURCIFY_REPO}/${chainId}/${address}`;
+
+// ---- Token features (docs/token-features.md): contracts and settings that are NOT live yet ---------------------
+// Everything below is behind feature flags that default to off (TOKEN_* in src/server/env.ts), pending the legal
+// review, the external audits and the Safe key split (F2). Nothing here is in ADDRESS_ROWS, so /docs/contracts does
+// not change. A null is a contract that is not deployed, or an address that is not recorded and checked yet: the UI
+// shows NOT_LIVE_YET for it, never a zero or a sample value.
+//
+// Each value can be set without a code change by a server environment variable (read when the server starts; static
+// pages read it at build time), so the flags can be turned on once the audited contracts are deployed. Set a value
+// only after checking it on the explorer. A malformed value is ignored (stays null). Once a value is final, it can also
+// be written here as the default, like the addresses above.
+//   TOKEN_NODE_STAKE_ADDRESS, TOKEN_HOLDER_POOL_ADDRESS, TOKEN_BURNER_ADDRESS, TOKEN_JOB_PAYMENTS_V2_ADDRESS
+//   TOKEN_V4_POOL_MANAGER_ADDRESS, TOKEN_V4_STATE_VIEW_ADDRESS, TOKEN_V4_UNIVERSAL_ROUTER_ADDRESS
+//   TOKEN_V4_POOL_KEY = "fee,tickSpacing,hooks" (currency0 is native ETH, currency1 is SPARE; it must hash to the pool id)
+//   TOKEN_SAFE_MULTISEND_CALL_ONLY_ADDRESS, TOKEN_SPARE_START_BLOCK
+
+const tokenEnv = (name: string): string | null => {
+  const v = typeof process !== "undefined" ? process.env?.[name] : undefined;
+  return v && v.trim() !== "" ? v.trim() : null;
+};
+const tokenEnvAddress = (name: string): Address | null => {
+  const v = tokenEnv(name);
+  return v && isAddress(v, { strict: false }) ? getAddress(v) : null;
+};
+
+/** The placeholder every UI shows for a contract or value that does not exist on-chain yet. */
+export const NOT_LIVE_YET = "[NOT LIVE YET]";
+
+/** Sparecycle's token-feature contracts (brief §3, §4, §6). null = not deployed. Interfaces: src/lib/token-contracts.ts. */
+export const TOKEN_CONTRACTS: {
+  nodeStake: Address | null;
+  holderPool: Address | null;
+  burner: Address | null;
+  jobPaymentsV2: Address | null;
+} = {
+  /** SparecycleNodeStake: SPARE stake per owner wallet, slash proposals (brief §3). Not deployed. */
+  nodeStake: tokenEnvAddress("TOKEN_NODE_STAKE_ADDRESS"),
+  /** SparecycleHolderPool: per-epoch Merkle root of holder shares, mode choice (brief §6.2). Not deployed. */
+  holderPool: tokenEnvAddress("TOKEN_HOLDER_POOL_ADDRESS"),
+  /** SparecycleBurner: phase 2b burn path (brief §4). Not deployed; phase 2a is run by the treasury Safe. */
+  burner: tokenEnvAddress("TOKEN_BURNER_ADDRESS"),
+  /** SparecycleJobPaymentsV2: configurable split of the 5%, creditFor (brief §6.3). Not deployed. */
+  jobPaymentsV2: tokenEnvAddress("TOKEN_JOB_PAYMENTS_V2_ADDRESS"),
+};
+
+export type V4PoolKey = { currency0: Address; currency1: Address; fee: number; tickSpacing: number; hooks: Address };
+
+/** TOKEN_V4_POOL_KEY "fee,tickSpacing,hooks" as the native-ETH / SPARE pool key, or null. */
+function poolKeyFromEnv(): V4PoolKey | null {
+  const v = tokenEnv("TOKEN_V4_POOL_KEY");
+  if (!v) return null;
+  const [fee, tick, hooks] = v.split(",").map((x) => x.trim());
+  if (!/^\d{1,8}$/.test(fee ?? "") || !/^-?\d{1,7}$/.test(tick ?? "") || !hooks || !isAddress(hooks, { strict: false })) return null;
+  return { currency0: "0x0000000000000000000000000000000000000000", currency1: ADDR.spareToken, fee: Number(fee), tickSpacing: Number(tick), hooks: getAddress(hooks) };
+}
+
+/**
+ * Uniswap v4 on Robinhood Chain, as the burn path (phase 2a) needs it. None of these is recorded and checked yet, so
+ * all are null and no burn payload can be completed. `spareEthPoolId` is the SPARE/ETH v4 pool id as DexScreener
+ * listed it on 26 Nov 2026 (third-party, not read on-chain): a pool key filled in later must hash to it
+ * (src/server/burns.ts checks this) or no payload is prepared.
+ */
+export const UNISWAP_V4: {
+  poolManager: Address | null;
+  stateView: Address | null;
+  universalRouter: Address | null;
+  spareEthPoolId: Hex;
+  spareEthPoolKey: V4PoolKey | null;
+} = {
+  poolManager: tokenEnvAddress("TOKEN_V4_POOL_MANAGER_ADDRESS"),
+  stateView: tokenEnvAddress("TOKEN_V4_STATE_VIEW_ADDRESS"),
+  universalRouter: tokenEnvAddress("TOKEN_V4_UNIVERSAL_ROUTER_ADDRESS"),
+  spareEthPoolId: "0x6c779d26cc59abb9f22d348257ee013b66d2a5f0d9dcf1bb9fa9338874eab1bd",
+  spareEthPoolKey: poolKeyFromEnv(),
+};
+
+/**
+ * Safe's MultiSendCallOnly on Robinhood Chain: needed only to batch the swap and SPARE.burn() in one Safe transaction
+ * (BURN_METHOD "burn"). Not recorded yet.
+ */
+export const SAFE_MULTISEND_CALL_ONLY: Address | null = tokenEnvAddress("TOKEN_SAFE_MULTISEND_CALL_ONLY_ADDRESS");
+
+/** The two burn sinks: SPARE sent to either counts as burned (brief §4). */
+export const BURN_SINKS = {
+  zero: "0x0000000000000000000000000000000000000000",
+  dead: "0x000000000000000000000000000000000000dEaD",
+} as const satisfies Record<string, Address>;
+
+/**
+ * First block to read SPARE Transfer logs from (the SPARE launch transaction's block; TOKEN_SPARE_START_BLOCK). Not
+ * recorded yet: until it is, holder weights cannot be computed (a holder's balance at an epoch start needs the full
+ * history) and the holder page reads no burn rows.
+ */
+export const SPARE_START_BLOCK: bigint | null = (() => {
+  const v = tokenEnv("TOKEN_SPARE_START_BLOCK");
+  return v && /^\d{1,12}$/.test(v) ? BigInt(v) : null;
+})();
+
+export type HolderExclusion = { address: Address | null; label: string; why: string };
+
+/**
+ * Addresses that never get a holder weight (brief §6.1, N14), shown on the holder page. On top of this list, every
+ * address with contract code is excluded unless it is in HOLDER_CONTRACT_ALLOWLIST (an EIP-7702 delegated EOA counts
+ * as an EOA). A null entry is not deployed or not recorded yet; it is listed so the page shows it as NOT_LIVE_YET.
+ */
+export const HOLDER_EXCLUSIONS: HolderExclusion[] = [
+  { address: UNISWAP_V4.poolManager, label: "Uniswap v4 PoolManager", why: "Holds every v4 pool's tokens, LP positions included (LPs are not counted, N14)." },
+  { address: PONS.memeHook, label: "Pons meme hook (Uniswap v4)", why: "A pool hook contract." },
+  { address: ADDR.spareCurve, label: "SPARE bonding curve (Pons)", why: "The Pons curve." },
+  { address: PONS.feeEscrow, label: "Pons fee escrow", why: "Holds creator fees for Pons launches." },
+  { address: PONS.buybackVault, label: "Pons buyback vault", why: "Pons's vault (buybacks are off for SPARE)." },
+  { address: PONS.launchLocker, label: "Pons launch locker", why: "Holds the locked launch liquidity." },
+  { address: ADDR.teamWallet, label: "Team wallet", why: "Launched SPARE and receives its creator fees." },
+  { address: ADDR.launchWallet, label: "Launch wallet", why: "Deployed the contracts." },
+  { address: ADDR.treasurySafe, label: "Treasury Safe", why: "Receives 5% of every charge and runs the burns." },
+  { address: TOKEN_CONTRACTS.nodeStake, label: "SparecycleNodeStake", why: "Staked SPARE counts for its owner instead (N15)." },
+  { address: TOKEN_CONTRACTS.burner, label: "SparecycleBurner", why: "The burn contract (phase 2b)." },
+  { address: TOKEN_CONTRACTS.holderPool, label: "SparecycleHolderPool", why: "The holder pool itself." },
+  { address: BURN_SINKS.zero, label: "Zero address", why: "Burned." },
+  { address: BURN_SINKS.dead, label: "Dead address", why: "Burned." },
+];
+
+/** Contracts that may hold a holder weight despite having code (N14). Empty: no contract is allow-listed. */
+export const HOLDER_CONTRACT_ALLOWLIST: Address[] = [];

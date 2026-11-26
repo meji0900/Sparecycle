@@ -15,7 +15,8 @@
 //   - A pair must exist: a new round starts only when the REGISTERED nodes (online or not, so a stopped pool machine
 //     counts) that could take it include two with different owners and different GPUs: the job's capability and VRAM,
 //     a backend that runs the model, the same backend and dev flag for both (dev nodes only for a dev job), the GPU
-//     gate of tryLease, and neither node key, owner nor GPU from any round so far. Without such a pair a mismatch is
+//     gate of tryLease, and neither node key, owner nor GPU from any round so far. With the stake gate on
+//     (TOKEN_STAKE_GATE, ./stake-gate; off by default) only owners whose last stake read passed count. Without such a pair a mismatch is
 //     final at once (`disagreed`, not charged, as before re-checks) instead of waiting out the TTL, and a stuck round is
 //     not abandoned. A round that cannot be followed by another keeps running until a verdict or the TTL.
 //   - Each round that ends without agreement is logged per node in job_rounds (disagreed | abandoned), as input for the
@@ -27,6 +28,7 @@ import { MAX_ROUNDS, maxRoundsFor, PICKUP_TIMEOUT_SECONDS } from "@/lib/rounds";
 import { eligibilityParams, eligibleSql } from "./challenge";
 import { randomHex } from "./db";
 import { POLICY, serverEnv } from "./env";
+import { stakePeerSql } from "./stake-gate";
 
 export { MAX_ROUNDS, PICKUP_TIMEOUT_SECONDS };
 
@@ -73,7 +75,7 @@ export function pairForNextRound(db: DatabaseSync, job: RoundJob, now: number): 
          SELECT n.node_key, lower(n.owner) AS owner, n.gpu_uuid, n.backend FROM nodes n
          WHERE n.caps LIKE $tag AND n.vram_mb >= $vram AND n.backend IN (${backends.map((_, i) => `$b${i}`).join(",")})
            AND n.dev = $dev
-           AND ${eligibleSql("n")}
+           AND ${eligibleSql("n")}${stakePeerSql("n")}
            AND NOT EXISTS (${earlierRoundSql("$job", "$next", { key: "n.node_key", owner: "n.owner", gpu: "n.gpu_uuid" })})
        )
        SELECT 1 AS ok FROM c a JOIN c b ON a.backend = b.backend AND a.owner != b.owner AND a.gpu_uuid != b.gpu_uuid LIMIT 1`,

@@ -1,5 +1,6 @@
 "use client";
 
+import { TOKEN_COPY_OFF, tokenCopy } from "@/lib/token-copy";
 import { ArrowUpRight } from "lucide-react";
 import dynamic from "next/dynamic";
 import Image from "next/image";
@@ -75,7 +76,8 @@ const MODULES = [
 
 /* ---------- hero ---------- */
 
-export function Hero() {
+/** `noTokenFact`: the flag-dependent "no token" fact (src/lib/token-copy.ts); the default is today's line. */
+export function Hero({ noTokenFact = tokenCopy(TOKEN_COPY_OFF).heroNoToken }: { noTokenFact?: string } = {}) {
   const sceneRef = useRef<HTMLDivElement>(null);
   const { reduced, inView, dense, webgl } = useSceneEnv(sceneRef);
   const frameloop = !inView || reduced ? "demand" : "always";
@@ -103,7 +105,7 @@ export function Hero() {
     "Free trial: 5 images an hour, no wallet",
     "Charged only when both GPUs agree",
     "Payouts claimed on Robinhood Chain",
-    "No token needed to run a node or pay for a job",
+    noTokenFact,
     "Stable Diffusion 1.5 and Qwen2.5-1.5B",
     "Every payment and payout is on-chain",
   ];

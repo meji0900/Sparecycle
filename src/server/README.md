@@ -51,11 +51,17 @@ exceed `reserved`, there is no withdraw of the pot and no second post. Say so wh
 | `SWEEP_SIGNER_KEY` | **yes** | unset | Sweep bot key (only for `--send`) |
 | `SWEEP_ENABLED` | | unset | `0` = kill switch: the sweep bot refuses `--send` |
 | `SWEEP_POOL_ID` | | unset | Uniswap v4 pool id after graduation (hook fee checks) |
+| `TOKEN_BURNS` | | off | Token features ([docs/token-features.md](../../docs/token-features.md)), **off until the legal review, the audits and the Safe key split**. `on` = at each epoch close, plan the burn share (N1) of every confirmed charge and prepare an UNSIGNED Safe transaction (phase 2a, `burns.ts`). Never signs or sends |
+| `TOKEN_HOLDERS` | | off | `on` = at each epoch close, compute time-weighted SPARE holder weights and prepare the HolderPool root, `postRoot` call and Safe funding transaction, unsigned (`holders.ts`) |
+| `TOKEN_SLASHING` | | off | `on` = attribute faults from re-check rounds, prepare slash proposals with public evidence, serve `GET slashing` and `GET slashing/:id` (`slashing.ts`). Off = those paths are the JSON 404 they were |
+| `TOKEN_STAKE_GATE` | | off | `on` = lease only to owners with `stakedOf(owner) >= minStakePerNode x active nodes` (`stake-gate.ts`). **With SparecycleNodeStake not deployed no node gets a lease.** Off = no read, leasing unchanged |
+| `TOKEN_HOLDER_PAGE` | | off | `on` = serve `/token/holders` (on-chain figures with proof links, `[NOT LIVE YET]` for undeployed parts) and link it from `/token` and `/proof`. Off = 404, not linked |
+| `TOKEN_*_ADDRESS`, `TOKEN_V4_POOL_KEY`, `TOKEN_SPARE_START_BLOCK` | | unset | Addresses of the token-feature contracts once deployed (NodeStake, HolderPool, Burner, JobPaymentsV2, the v4 PoolManager / StateView / Universal Router and pool key, Safe MultiSendCallOnly) and the SPARE start block, read by `src/lib/addresses.ts`. Unset or malformed = not live. Table: [docs/token-features.md](../../docs/token-features.md) |
 | `EPOCH_POST_GAS_COST` | | — | `[EPOCH_POST_GAS_COST]`: a measured number, not computed. Measure the gas of real `closeEpochAndPostRoot` transactions on the target chain before quoting a cost |
 
 `NEXT_PUBLIC_*` values are inlined by `next build` (server code included): set them before building and rebuild
 after changing them. Server-only variables (`DB_PATH`, `SCHEDULER_*`, `PAYOUT_CAP_PER_UNIT`, `JOB_RATE_LIMIT`, `OUTPUT_*`,
-`AUTH_DOMAIN`) are read at runtime.
+`AUTH_DOMAIN`, `TOKEN_*`) are read at runtime.
 
 Rate limiting uses the first `x-forwarded-for` hop, so the host's proxy must overwrite that header (mainstream
 PaaS proxies do). IPs are stored only as salted hashes.
@@ -203,7 +209,11 @@ when enforced), `GET jobs/:id/invoice` (the private invoice, above), `GET jobs/:
 above), `GET auth/nonce`, `POST auth/verify`,
 `POST auth/logout`.
 Nodes (signed): `POST nodes/register`, `POST nodes/poll`, `POST nodes/heartbeat`, `POST tasks/:taskId/result`.
-Operator: `POST epochs/close`. Errors are always `{ "error": "<kebab-code>", "message": "…" }`. Shapes:
+Operator: `POST epochs/close`.
+Token features, only with their flag on ([docs/token-features.md](../../docs/token-features.md)), served by the `[...path]`
+catch-all so they are the JSON 404 otherwise: `GET slashing`, `GET slashing/:id` (`TOKEN_SLASHING`), and the operator's
+`GET admin/token-payloads` (Bearer `SCHEDULER_ADMIN_TOKEN`; with `TOKEN_BURNS`, `TOKEN_HOLDERS` or `TOKEN_SLASHING`).
+Errors are always `{ "error": "<kebab-code>", "message": "…" }`. Shapes:
 `docs/SPEC.md`. Amounts are decimal strings (wei), timestamps unix seconds.
 
 ## Sweep / claim bot
