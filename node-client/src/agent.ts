@@ -33,14 +33,16 @@ import {
   type JobSpec,
 } from "#protocol";
 import { DEFAULT_KEY_FILE, loadKey, loadOrCreateKey } from "#keys";
-import { gpuBusyOrHot, inHours, parseHours, probeDevice, probeDeviceInfo, sharedMemoryMb, type Gpu } from "#gpu";
+import { gpuBusyOrHot, inHours, parseHours, probeDevice, probeDeviceInfo, sharedMemoryMb, simulatedPause, type Gpu } from "#gpu";
+import { currentState, heartbeatBody, heartbeatDue, pauseSleepMs, STATE_TEXT, type GpuPause, type NodeState, type Sent } from "#idle-guard";
 import { ImageRunner, TextRunner } from "#runners";
 import { DEV_BANNER, devImage, devText } from "#dev-runner";
 import { bench } from "#bench";
 
-// 0.3.0: device info + GPU challenge support at registration. Inference settings are unchanged from 0.2.0
-// (llama.cpp -ub 1, same models and runtimes), so 0.2.0 and 0.3.0 nodes produce the same outputs and pair normally.
-const VERSION = "sparecycle-node/0.3.0";
+// 0.3.0: device info + GPU challenge support at registration. 0.4.0: Idle Guard heartbeat (the node reports active /
+// paused and why, as a code only). Inference settings are unchanged since 0.2.0 (llama.cpp -ub 1, same models and
+// runtimes), so 0.2.0, 0.3.0 and 0.4.0 nodes produce the same outputs and pair normally.
+const VERSION = "sparecycle-node/0.4.0";
 
 const argv = process.argv.slice(2);
 const arg = (name: string, fallback?: string) => {
@@ -171,6 +173,8 @@ async function start(opts: StartOptions) {
   if (opts.backend !== "cuda" && !opts.dev) {
     say(`${opts.backend}: no reliable cross-vendor GPU temperature / VRAM reading, so the busy/hot pause is off (--hours still applies)`);
   }
+  const simulated = simulatedPause();
+  if (simulated) say(`SPARECYCLE_SIMULATE_PAUSE is set: the GPU check reports ${simulated} without reading the GPU (testing only)`);
 
   const stop = new AbortController();
   let stopping = false;
@@ -184,26 +188,49 @@ async function start(opts: StartOptions) {
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
 
+  // Idle Guard (0.4.0): the busy/hot check runs on CUDA only (or when simulated for a test); --hours on every backend.
+  // Every change of state, and every HEARTBEAT_SECONDS while paused, goes to the scheduler as a signed heartbeat with
+  // the state code and when it began. Nothing else: no temperature, no VRAM figure, no process name, no PID.
   const own = new Set<number>([process.pid]);
-  let lastPause = "";
+  const gpuCheck = (!opts.dev && opts.backend === "cuda") || simulated !== null;
+  let local: { state: NodeState; sinceMs: number } | null = null;
+  let sent: Sent | null = null; // the last heartbeat the scheduler accepted
+  let heartbeats = true; // off once the scheduler answers 404 (a version without the endpoint)
+  let lastHeartbeatError = "";
+  const heartbeat = async (state: NodeState, sinceMs: number) => {
+    let problem = "";
+    try {
+      const r = await call(account, base, "/nodes/heartbeat", heartbeatBody(state, sinceMs), stop.signal);
+      if (r.status === 200) sent = { state, atMs: Date.now() };
+      else if (r.status === 404) {
+        heartbeats = false;
+        say("this scheduler has no heartbeat endpoint (older version): pauses show there as offline, jobs work as before");
+      } else problem = `heartbeat ${errText(r)}`;
+    } catch (e) {
+      if (!stopping) problem = `heartbeat not sent (${e instanceof Error ? e.message : String(e)}); retrying`;
+    }
+    if (problem && problem !== lastHeartbeatError) say(problem);
+    lastHeartbeatError = problem;
+  };
   while (!stopping) {
-    if (!inHours(opts.hours)) {
-      if (lastPause !== "hours") say("outside --hours; waiting");
-      lastPause = "hours";
-      await sleep(60_000, stop.signal);
+    const insideHours = inHours(opts.hours);
+    let gpu: GpuPause | null = null;
+    if (insideHours && gpuCheck) {
+      for (const pid of [image.pid, text.pid]) if (pid) own.add(pid);
+      gpu = await gpuBusyOrHot(own);
+    }
+    const state = currentState(insideHours, gpu);
+    if (!local || local.state !== state) {
+      if (local || state !== "active") say(STATE_TEXT[state]);
+      local = { state, sinceMs: Date.now() };
+    }
+    if (heartbeats && heartbeatDue(state, sent, Date.now())) await heartbeat(state, local.sinceMs);
+    if (stopping) break;
+    if (state !== "active") {
+      const recheckMs = state === "paused-hours" ? 60_000 : 30_000;
+      await sleep(heartbeats ? pauseSleepMs(state, recheckMs, sent, Date.now()) : recheckMs, stop.signal);
       continue;
     }
-    if (!opts.dev && opts.backend === "cuda") {
-      for (const pid of [image.pid, text.pid]) if (pid) own.add(pid);
-      const busy = await gpuBusyOrHot(own);
-      if (busy) {
-        if (lastPause !== busy) say(`paused: ${busy}`);
-        lastPause = busy;
-        await sleep(30_000, stop.signal);
-        continue;
-      }
-    }
-    lastPause = "";
 
     let task: CallResult;
     try {

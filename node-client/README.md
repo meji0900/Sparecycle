@@ -149,7 +149,32 @@ job and stops; a second `Ctrl+C` quits at once. On Linux run it inside `tmux` or
 so it survives closing the terminal.
 
 Check that the scheduler sees you: your node key appears in `GET <SCHEDULER_URL>/api/v1/nodes` with
-`"online": true` and your `backend`.
+`"online": true`, `"state": "active"` (or a paused state, below) and your `backend`.
+
+## Idle Guard (0.4.0)
+
+The node tells the scheduler when it pauses and why, so the public node list shows a resting node as paused instead
+of offline. It sends a signed `POST /api/v1/nodes/heartbeat` with `{ state, since }` on every change of state, and at
+least every 60 s while paused (the scheduler counts a node as online for 120 s after its last poll or heartbeat).
+
+| `state` | Shown as | When |
+| --- | --- | --- |
+| `active` | active | taking jobs |
+| `paused-busy` | paused: owner is using the GPU | another program uses more than 500 MB of VRAM (`cuda` only) |
+| `paused-hot` | paused: GPU too hot | the GPU is at 83 °C or hotter (`cuda` only) |
+| `paused-hours` | paused: outside chosen hours | outside `--hours` (every backend) |
+| | offline | no poll or heartbeat for 120 s |
+
+- **What is sent:** the state code and `since` (when that state began, unix seconds). **Not sent:** the temperature,
+  VRAM figures, process names or PIDs; those readings stay on this machine.
+- **What is public:** `GET /api/v1/nodes` shows the state, not when a pause began. Anyone who watches the list over
+  time can still see when it changes.
+- A paused node does not poll, and the scheduler gives it no job and no challenge and does not count it as a peer.
+- `vulkan` / `cpu` nodes pause on `--hours` only; the node list notes "Idle Guard: hours only (busy/heat check is
+  NVIDIA-only)".
+- Older clients (0.3.0 and earlier) keep working: they show active while polling and offline while paused, as before.
+  A 0.4.0 node talking to a scheduler without the endpoint (404) stops sending heartbeats and works as before.
+- The thresholds (83 °C, 500 MB) are fixed in this version. `SPARECYCLE_NO_BUSY_CHECK=1` turns the busy/hot check off.
 
 ## Environment variables
 
@@ -161,6 +186,7 @@ Check that the scheduler sees you: your node key appears in `GET <SCHEDULER_URL>
 | `SPARECYCLE_MODELS_DIR` | `models/` | GGUF location; `HF_HOME` defaults to `models/hf` |
 | `SPARECYCLE_SD15_MODEL` | `stable-diffusion-v1-5/stable-diffusion-v1-5` | diffusers model id for SD 1.5 |
 | `SPARECYCLE_NO_BUSY_CHECK` | unset | `1` disables the VRAM / temperature pause (cuda) |
+| `SPARECYCLE_SIMULATE_PAUSE` | unset | `busy` or `hot`: report that pause without reading the GPU, on any backend (local testing only) |
 | `SPARECYCLE_GPU_UUID` | `nvidia-smi` UUID (cuda), else sha256(hostname, CPU, device, backend) | overrides the device id (local testing only) |
 | `SPARECYCLE_VRAM_MB` | `8192` | dev runner only: reported VRAM |
 
@@ -182,6 +208,7 @@ SPARECYCLE_GPU_UUID=TEST-GPU-A node src/agent.ts start --network http://127.0.0.
 - `src/protocol.ts` — wire protocol, byte-identical copy of the site's `src/lib/protocol.ts`
 - `src/runners.ts` — SD 1.5 worker and llama-server management (one llama.cpp folder per backend)
 - `src/gpu.ts` — device probe per backend (`nvidia-smi` / `vulkaninfo` / CPU), pause rules, `--hours`
+- `src/idle-guard.ts` — Idle Guard states and heartbeat timing (what is reported to the scheduler)
 - `src/dev-runner.ts` — synthetic outputs for local tests
 - `python/image_worker.py` — the Stable Diffusion 1.5 worker
 

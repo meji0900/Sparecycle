@@ -220,6 +220,14 @@ const MIGRATIONS: string[] = [
     note      TEXT
   );
   `,
+  // v6 (idle guard): the state a node reports about its own machine (node client 0.4.0+, POST /nodes/heartbeat):
+  // active | paused-busy | paused-hot | paused-hours. NULL = nothing reported since the last registration (older
+  // clients), treated as active. Separate from the scheduler's verdicts (gpu_status, challenge_state). state_since
+  // (unix seconds) is never in a public response. Additive only; renumber freely when merging with other migrations.
+  `
+  ALTER TABLE nodes ADD COLUMN state TEXT;
+  ALTER TABLE nodes ADD COLUMN state_since INTEGER;
+  `,
 ];
 
 type Holder = { db: DatabaseSync; path: string; txDepth: number };

@@ -1,6 +1,6 @@
 {
   "name": "sparecycle-node",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -12,6 +12,7 @@
     "#protocol": "./src/protocol.ts",
     "#keys": "./src/keys.ts",
     "#gpu": "./src/gpu.ts",
+    "#idle-guard": "./src/idle-guard.ts",
     "#runners": "./src/runners.ts",
     "#dev-runner": "./src/dev-runner.ts",
     "#bench": "./src/bench.ts"
