@@ -81,7 +81,7 @@ export const VERIFICATION = {
     sourcify: { status: "exact_match", checkedOn: "26 Nov 2026", verifiedAt: "2026-11-24T10:00:50Z" },
   },
   nodeStake: {
-    blockscout: null,
+    blockscout: { status: "verified", checkedOn: "26 Nov 2026" },
     sourcify: { status: "exact_match", checkedOn: "26 Nov 2026", verifiedAt: "2026-11-26T13:40:00Z" },
   },
   treasurySafe: {
