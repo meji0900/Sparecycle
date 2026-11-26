@@ -34,6 +34,19 @@ export const KIND_LABEL: Record<ChangelogKind, string> = {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    id: "staking-from-the-site",
+    title: "Stake SPARE from the site (optional)",
+    date: "2026-11-27",
+    kind: "site",
+    summary:
+      "Node owners can now stake SPARE, request and cancel an unstake, withdraw after the cooldown and appeal a slash proposal from /nodes/stake, each step with its transaction link. Staking pays nothing and the minimum is zero, so running a node still needs no token. Total staked, the number of staking owners and the total slashed are public on /nodes, /token and in the API.",
+    evidence: [
+      { label: "Stake page", url: `${LIVE_SITE}/nodes/stake` },
+      { label: "Staking API", url: `${LIVE_SITE}/api/v1/staking` },
+      { label: "Contract on Blockscout", url: explorerAddressUrl(ADDR.nodeStake) },
+    ],
+  },
+  {
     id: "x402-pay-per-job",
     title: "Pay per job over HTTP with x402 (USDG)",
     date: "2026-11-26",
