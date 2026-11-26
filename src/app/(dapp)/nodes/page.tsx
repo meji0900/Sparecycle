@@ -6,6 +6,7 @@ import { DemoVideo } from "@/components/dapp/demo-video";
 import { RegisteredNodesTable } from "@/components/dapp/node-list";
 import { NODE_STATE_TONE } from "@/components/dapp/node-state";
 import { SetupGuide } from "@/components/dapp/setup-guide";
+import { StakingNumbers } from "@/components/dapp/staking-numbers";
 import { SectionTitle, TableBox, td, th } from "@/components/dapp/ui";
 import { StatusTag } from "@/components/ui/status";
 import { IDLE_GUARD_HOURS_ONLY, NODE_STATE_LABEL, NODE_STATE_MEANING, type PublicNodeState } from "@/lib/node-state";
@@ -211,6 +212,25 @@ export default async function NodesPage() {
           </div>
         </section>
       </div>
+
+      <section aria-labelledby="staking" className="mt-14 scroll-mt-24">
+        <SectionTitle
+          id="staking"
+          title="Staking (optional)"
+          description={
+            <>
+              Owners can lock SPARE in the stake contract as collateral for their nodes. Nobody has to: the minimum per node, read
+              below, is 0 today, so running a node needs no token, and staking pays nothing. Repeated faults proven against two other
+              owners&apos; results can cost part of a stake, after an appeal window and a decision by the treasury Safe; that part is
+              burned.{" "}
+              <Link href="/docs/run-a-node#staking" className="link">
+                How staking works
+              </Link>
+            </>
+          }
+        />
+        <StakingNumbers cta />
+      </section>
     </>
   );
 }
