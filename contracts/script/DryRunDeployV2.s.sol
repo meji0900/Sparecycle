@@ -28,7 +28,8 @@ import {MockSpare, MockSwapAdapter} from "../test/mocks/V2Mocks.sol";
 ///           REWARD_CONTRACT    live SparecycleRewards (ADDR.rewards in src/lib/addresses.ts)
 ///           TREASURY           the treasury Safe (ADDR.treasurySafe)
 ///           SPARE_TOKEN        SPARE (ADDR.spareToken)
-///           SWAP_ADAPTER       an ISpareSwapAdapter. [PLACEHOLDER]: no Uniswap v4 adapter exists yet
+///           SWAP_ADAPTER       an ISpareSwapAdapter: UniswapV4SpareAdapter (src/adapters), not deployed yet
+///                              ([PLACEHOLDER]; its constructor values are in docs/uniswap-v4-adapter.md)
 ///           USE_BURN_FUNCTION  true = SPARE.burn(), false = send to 0x...dEaD (default true; confirm burn() on
 ///                              SPARE's verified source first)
 ///           MAX_ETH_PER_BURN   N12 cap in wei ([PLACEHOLDER]: 1% of the pool's quote-side liquidity, read live)
