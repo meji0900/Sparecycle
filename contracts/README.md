@@ -118,12 +118,14 @@ root    0x4971f2383291235f443738a07a4de878815dbfa43170bc2af3e913c86fb3e7b9
     before launch. The post-graduation path (`hook.sweepPoolFees` / operator `sweepPool(bytes32)`) was **not**
     exercised.
 
-## SparecycleNodeStake (not deployed, audit required)
+## SparecycleNodeStake (internal review only, not externally audited)
 
-`src/SparecycleNodeStake.sol` is node staking with partial slashing (brief §3). It is **written and tested only**:
-no deployment, no deploy script, and nothing in `../src/` calls it. External audit required before mainnet. Rules,
-defaults (N3–N9), the appeal flow, the evidence-bundle format and the open audit points are in
-`../docs/node-staking.md`. Tests: `test/SparecycleNodeStake.t.sol` and `test/invariant/SparecycleNodeStake.invariant.t.sol`.
+`src/SparecycleNodeStake.sol` is node staking with partial slashing (brief §3). **Internal review only — not
+externally audited**; an external audit is still recommended before it holds meaningful value. Launched with
+`minStakePerNode = 0` (staking is voluntary). Rules, defaults (N3–N9), the appeal flow and grace period, the
+evidence-bundle format, the scheduler-key rotation runbook and the open review points are in
+`../docs/node-staking.md`. Tests: `test/SparecycleNodeStake.t.sol`, `test/invariant/SparecycleNodeStake.invariant.t.sol`
+and the opt-in fork round trip `test/fork/NodeStakeFork.t.sol` (real SPARE, live reward contract).
 
 ## Run
 

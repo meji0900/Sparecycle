@@ -2,9 +2,9 @@
 pragma solidity ^0.8.28;
 
 // =====================================================================================================================
-//  AUDIT REQUIRED BEFORE MAINNET.
-//  Written and tested only. NOT deployed. Do not deploy or point any production code at this contract before an
-//  external audit has passed. Every default below is "Default, not yet confirmed by Fabio".
+//  INTERNAL REVIEW ONLY — NOT EXTERNALLY AUDITED. An external audit is still recommended before it holds
+//  meaningful value. Launched with minStakePerNode = 0 (staking is voluntary).
+//  Every default below is "Default, not yet confirmed by Fabio".
 // =====================================================================================================================
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -31,7 +31,8 @@ interface IERC20BurnForStake {
 ///         with `stakedOf(owner) >= minStakePerNode() * activeNodes(owner)` (`meetsMinimum`); the node count is
 ///         off-chain. Leaving is two-step: `requestUnstake(amount)` moves SPARE into a cooldown bucket (it stops
 ///         counting toward the minimum but can still be slashed), and `unstake()` pays it back to the owner after
-///         `cooldownEpochs`. Nothing can leave while the owner has an open slash proposal.
+///         `cooldownEpochs`; a new request restarts the cooldown for the whole bucket. Nothing can leave while the
+///         owner has an open slash proposal. There is no cap on the total stake.
 ///
 ///         Slashing (not trustless: the scheduler proposes, the treasury Safe judges). The scheduler of the live
 ///         SparecycleRewards contract calls `proposeSlash(owner, amount, evidenceHash)` once its off-chain rule has
@@ -41,7 +42,11 @@ interface IERC20BurnForStake {
 ///         `cancelSlash` at any time while the proposal is open, and can `executeSlash` once the appeal window is
 ///         over. Execution burns the amount (N9): nobody, including the project and the other node, gains from an
 ///         accusation. A proposal the Safe neither executes nor cancels within `decisionWindowEpochs` after the
-///         appeal window expires, so a stake can never stay frozen forever.
+///         appeal window expires. After every cancelled, expired or executed proposal, no new proposal against the
+///         same owner is accepted for `PROPOSAL_GRACE_EPOCHS`, so an owner whose cooldown has finished always gets
+///         a window to `unstake()`: the scheduler key alone cannot keep a stake frozen by re-proposing. The scheduler
+///         and the Safe together can still burn up to `slashBps` per proposal, with a grace window between
+///         proposals.
 ///
 ///         Epochs are the reward contract's epochs (`rewards.currentEpoch()`), so every window lines up with the
 ///         payout epochs. A window of `n` epochs ends when (a) `n * epochLength` seconds have passed AND (b) the
@@ -79,6 +84,11 @@ contract SparecycleNodeStake is ReentrancyGuard {
     /// @notice Brief §3: a `minStakePerNode` change takes effect after at least one epoch.
     ///         Default, not yet confirmed by Fabio.
     uint64 public constant DEFAULT_MIN_STAKE_DELAY_EPOCHS = 1;
+    /// @notice Not a brief §10 value: after a proposal against an owner is cancelled, expired or executed, no new
+    ///         proposal against that owner for this many epochs (12 h at 6 h epochs; same epoch-and-time rule and
+    ///         stall fallback as every other window). Gives an owner whose cooldown has finished a window to leave.
+    ///         Fixed in code. Default, not yet confirmed by Fabio.
+    uint64 public constant PROPOSAL_GRACE_EPOCHS = 2;
 
     // ------------------------------------------------------------------------------------------------------------
     // Hard limits (fixed in code, not configurable)
@@ -129,6 +139,9 @@ contract SparecycleNodeStake is ReentrancyGuard {
     /// @param status Stored status (see `Status`).
     /// @param proposedEpoch Reward-contract epoch when proposed (start of the appeal window).
     /// @param proposedAt Timestamp when proposed.
+    /// @param closedEpoch Reward-contract epoch when it was cancelled, executed or recorded as expired (0 while open).
+    ///        The grace period after a cancel or execute starts here; after an expiry it starts at the expiry itself.
+    /// @param closedAt Timestamp matching `closedEpoch` (0 while open).
     /// @param amount SPARE to burn if executed (<= slashBps of the stake at proposal time).
     /// @param evidenceHash keccak256 of the scheduler's evidence bundle (docs/node-staking.md).
     /// @param appealHash keccak256 of the owner's latest appeal bundle; zero if no appeal.
@@ -137,6 +150,8 @@ contract SparecycleNodeStake is ReentrancyGuard {
         Status status;
         uint64 proposedEpoch;
         uint64 proposedAt;
+        uint64 closedEpoch;
+        uint64 closedAt;
         uint256 amount;
         bytes32 evidenceHash;
         bytes32 appealHash;
@@ -147,14 +162,14 @@ contract SparecycleNodeStake is ReentrancyGuard {
     /// @param unstaking Requested for unstake, in cooldown: does not count toward the minimum, still slashable.
     /// @param requestEpoch Reward-contract epoch of the latest `requestUnstake` (start of the cooldown).
     /// @param requestedAt Timestamp of the latest `requestUnstake`.
-    /// @param openProposal Id of the owner's open proposal, 0 if none. It may have expired without a transaction;
-    ///        `openProposalOf` filters that out.
+    /// @param lastProposal Id of the latest proposal against this owner, 0 if none. Only this one can be open; it may
+    ///        have expired without a transaction (`openProposalOf` filters that out).
     struct Account {
         uint256 staked;
         uint256 unstaking;
         uint64 requestEpoch;
         uint64 requestedAt;
-        uint256 openProposal;
+        uint256 lastProposal;
     }
 
     // ------------------------------------------------------------------------------------------------------------
@@ -219,6 +234,9 @@ contract SparecycleNodeStake is ReentrancyGuard {
     event SlashExpired(uint256 indexed proposalId, address indexed owner);
     /// @notice The Safe executed the proposal: `amount` of `owner`'s stake was burned.
     event Slashed(address indexed owner, uint256 amount, uint256 indexed proposalId, bytes32 evidenceHash);
+    /// @notice Emitted with `Slashed`: how much of the burned amount came from active stake and how much from the
+    ///         cooldown bucket (`fromStaked + fromUnstaking == amount`).
+    event SlashSplit(uint256 indexed proposalId, address indexed owner, uint256 fromStaked, uint256 fromUnstaking);
     /// @notice The Safe scheduled `next` as the minimum per node; `current` stays in force until the delay passes.
     event MinStakeChangeScheduled(uint256 current, uint256 next, uint64 epoch, uint64 scheduledAt);
     /// @notice The Safe dropped the scheduled change to `next` before it took effect.
@@ -247,6 +265,7 @@ contract SparecycleNodeStake is ReentrancyGuard {
     error CooldownNotOver();
     error StakeFrozen(uint256 proposalId);
     error ProposalAlreadyOpen(uint256 proposalId);
+    error ProposalGraceActive(uint256 lastProposalId);
     error SlashAboveCap(uint256 amount, uint256 cap);
     error NotOpen(uint256 proposalId);
     error AppealWindowOver(uint256 proposalId);
@@ -422,7 +441,8 @@ contract SparecycleNodeStake is ReentrancyGuard {
     // ------------------------------------------------------------------------------------------------------------
 
     /// @notice Proposes burning `amount` of `owner`'s stake, backed by the evidence bundle hashing to `evidenceHash`.
-    ///         `amount <= slashBps * (staked + unstaking) / 10_000`. One open proposal per owner. Freezes the stake.
+    ///         `amount <= slashBps * (staked + unstaking) / 10_000`. One open proposal per owner, and none during the
+    ///         grace period after the owner's previous proposal was cancelled, expired or executed. Freezes the stake.
     /// @param owner Owner wallet.
     /// @param amount SPARE to burn if executed.
     /// @param evidenceHash keccak256 of the published evidence bundle, non-zero.
@@ -436,8 +456,16 @@ contract SparecycleNodeStake is ReentrancyGuard {
         if (msg.sender == safe) revert SafeIsScheduler();
         if (evidenceHash == bytes32(0)) revert ZeroEvidence();
         if (amount == 0) revert ZeroAmount();
-        uint256 open = _liveProposal(owner);
-        if (open != 0) revert ProposalAlreadyOpen(open);
+        Account storage a = _accounts[owner];
+        uint256 last = a.lastProposal;
+        if (last != 0) {
+            Proposal storage lp = _proposals[last];
+            bool stillOpen = lp.status == Status.Open;
+            if (stillOpen && !_expired(lp)) revert ProposalAlreadyOpen(last);
+            // Checked before any write, so a revert here never loses the expiry record below.
+            if (!_graceOver(lp)) revert ProposalGraceActive(last);
+            if (stillOpen) _expire(last, lp);
+        }
         uint256 cap = maxSlashOf(owner);
         if (amount > cap) revert SlashAboveCap(amount, cap);
 
@@ -448,11 +476,13 @@ contract SparecycleNodeStake is ReentrancyGuard {
             status: Status.Open,
             proposedEpoch: e,
             proposedAt: uint64(block.timestamp),
+            closedEpoch: 0,
+            closedAt: 0,
             amount: amount,
             evidenceHash: evidenceHash,
             appealHash: bytes32(0)
         });
-        _accounts[owner].openProposal = proposalId;
+        a.lastProposal = proposalId;
         emit SlashProposed(proposalId, owner, amount, evidenceHash, e);
     }
 
@@ -461,13 +491,18 @@ contract SparecycleNodeStake is ReentrancyGuard {
     // ------------------------------------------------------------------------------------------------------------
 
     /// @notice Rejects proposal `proposalId` (the appeal succeeded or the evidence is wrong) and releases the stake.
-    ///         Allowed at any time while the proposal is open.
+    ///         Allowed at any time while the proposal is open. A proposal already past its decision window is
+    ///         recorded as expired instead (`SlashExpired`), without reverting.
     /// @param proposalId Open proposal.
     function cancelSlash(uint256 proposalId) external onlySafe nonReentrant {
         Proposal storage p = _proposals[proposalId];
         if (p.status != Status.Open) revert NotOpen(proposalId);
+        if (_expired(p)) {
+            _expire(proposalId, p);
+            return;
+        }
         p.status = Status.Cancelled;
-        _accounts[p.owner].openProposal = 0;
+        _close(p);
         emit SlashCancelled(proposalId, p.owner);
     }
 
@@ -483,23 +518,27 @@ contract SparecycleNodeStake is ReentrancyGuard {
         address owner = p.owner;
         uint256 amount = p.amount;
         p.status = Status.Executed;
+        _close(p);
         Account storage a = _accounts[owner];
-        a.openProposal = 0;
         // Nothing could leave while the proposal was open, so staked + unstaking >= amount (checked arithmetic).
         uint256 s = a.staked;
         uint256 fromStaked = amount < s ? amount : s;
+        uint256 fromUnstaking = amount - fromStaked;
         a.staked = s - fromStaked;
-        a.unstaking -= amount - fromStaked;
+        a.unstaking -= fromUnstaking;
         totalStaked -= amount;
         totalSlashed += amount;
         emit Slashed(owner, amount, proposalId, p.evidenceHash);
+        emit SlashSplit(proposalId, owner, fromStaked, fromUnstaking);
         _burn(amount);
     }
 
     /// @notice Schedules a new minimum stake per active node (N3). It takes effect after `minStakeDelayEpochs`
-    ///         (epochs and time, see the contract notes). Replaces any change that has not taken effect yet.
+    ///         (epochs and time, see the contract notes). Replaces a change that has not taken effect yet, and emits
+    ///         `MinStakeChangeCancelled` for it first.
     /// @param newMinStakePerNode New minimum, in SPARE base units.
     function scheduleMinStakePerNode(uint256 newMinStakePerNode) external onlySafe nonReentrant {
+        if (_minStakeChangeScheduled && !_minStakeChangeDue()) emit MinStakeChangeCancelled(_nextMinStake);
         uint256 current = minStakePerNode();
         _minStake = current;
         _nextMinStake = newMinStakePerNode;
@@ -580,7 +619,7 @@ contract SparecycleNodeStake is ReentrancyGuard {
         return Math.mulDiv(slashableOf(owner), slashBps, 10_000);
     }
 
-    /// @notice The whole account record of `owner` (raw; `openProposal` may point to an expired proposal).
+    /// @notice The whole account record of `owner` (raw; `lastProposal` may be closed, or open but expired).
     function getAccount(address owner) external view returns (Account memory) {
         return _accounts[owner];
     }
@@ -622,9 +661,21 @@ contract SparecycleNodeStake is ReentrancyGuard {
 
     /// @notice Id of `owner`'s open, unexpired proposal; 0 if none. While non-zero the stake is frozen.
     function openProposalOf(address owner) public view returns (uint256) {
-        uint256 id = _accounts[owner].openProposal;
-        if (id == 0 || _expired(_proposals[id])) return 0;
+        uint256 id = _accounts[owner].lastProposal;
+        if (id == 0) return 0;
+        Proposal storage p = _proposals[id];
+        if (p.status != Status.Open || _expired(p)) return 0;
         return id;
+    }
+
+    /// @notice Whether the scheduler could propose against `owner` now as far as timing goes: no open proposal and
+    ///         the grace period after the previous one is over. (The amount must still be within `maxSlashOf`.)
+    function canPropose(address owner) external view returns (bool) {
+        uint256 id = _accounts[owner].lastProposal;
+        if (id == 0) return true;
+        Proposal storage p = _proposals[id];
+        if (p.status == Status.Open && !_expired(p)) return false;
+        return _graceOver(p);
     }
 
     /// @notice Whether `owner` can call `unstake()` successfully now.
@@ -677,20 +728,40 @@ contract SparecycleNodeStake is ReentrancyGuard {
         return _windowOver(p.proposedEpoch, p.proposedAt, uint256(appealWindowEpochs) + decisionWindowEpochs);
     }
 
-    /// @dev Id of `owner`'s live open proposal (0 if none). Marks an expired one as such on the way.
+    /// @dev The grace period after `p` (the owner's latest proposal, no longer live) is over. After a cancel or an
+    ///      execute it runs PROPOSAL_GRACE_EPOCHS from the decision. After an expiry it runs PROPOSAL_GRACE_EPOCHS past
+    ///      the expiry itself, measured from the proposal (appeal + decision + grace), so it never depends on when, or
+    ///      whether, anyone recorded the expiry.
+    function _graceOver(Proposal storage p) internal view returns (bool) {
+        if (p.status == Status.Cancelled || p.status == Status.Executed) {
+            return _windowOver(p.closedEpoch, p.closedAt, PROPOSAL_GRACE_EPOCHS);
+        }
+        return _windowOver(
+            p.proposedEpoch, p.proposedAt, uint256(appealWindowEpochs) + decisionWindowEpochs + PROPOSAL_GRACE_EPOCHS
+        );
+    }
+
+    /// @dev Id of `owner`'s live open proposal (0 if none). Records an expired one as such on the way.
     function _liveProposal(address owner) internal returns (uint256 id) {
-        id = _accounts[owner].openProposal;
+        id = _accounts[owner].lastProposal;
         if (id == 0) return 0;
         Proposal storage p = _proposals[id];
+        if (p.status != Status.Open) return 0;
         if (_expired(p)) {
             _expire(id, p);
             return 0;
         }
     }
 
+    /// @dev Stamps the epoch and time a proposal was closed (cancelled, executed or recorded as expired).
+    function _close(Proposal storage p) internal {
+        p.closedEpoch = rewards.currentEpoch();
+        p.closedAt = uint64(block.timestamp);
+    }
+
     function _expire(uint256 id, Proposal storage p) internal {
         p.status = Status.Expired;
-        _accounts[p.owner].openProposal = 0;
+        _close(p);
         emit SlashExpired(id, p.owner);
     }
 

@@ -44,6 +44,13 @@ contract NodeStakeHandler is CommonBase, StdCheats, StdUtils {
     uint256 public ghostMinted;
     uint256 public ghostDonated; // SPARE sent to the contract without stake()
     uint256 public ghostUnexpected; // must stay 0
+    uint256 public ghostProposedInGrace; // proposals the contract accepted inside the handler's own grace window
+    // The handler's own record of each proposal's timing, independent of the contract's storage.
+    mapping(address => uint256) public lastId;
+    mapping(uint256 => uint64) internal _propEpoch;
+    mapping(uint256 => uint64) internal _propAt;
+    mapping(uint256 => uint64) internal _closedEpoch; // set when the handler cancelled or executed it
+    mapping(uint256 => uint64) internal _closedAt;
 
     mapping(bytes32 => uint256) public calls;
 
@@ -157,11 +164,16 @@ contract NodeStakeHandler is CommonBase, StdCheats, StdUtils {
         uint256 cap = st.maxSlashOf(o);
         if (cap == 0) return;
         bytes32 h = keccak256(abi.encode("evidence", ev));
-        if (st.openProposalOf(o) != 0) {
+        // The handler's own answer: no live proposal and the grace period after the last one is over.
+        bool allowed = _mayProposeGhost(o);
+        if (allowed != st.canPropose(o)) ++ghostUnexpected;
+        if (!allowed) {
             vm.prank(sched);
             try st.proposeSlash(o, 1, h) {
-                ++ghostUnexpected; // one open proposal per owner
-            } catch {}
+                ++ghostProposedInGrace; // an open proposal or a grace period must block it
+            } catch {
+                ++calls["proposeBlocked"];
+            }
             return;
         }
         if (tryAboveCap) {
@@ -174,6 +186,9 @@ contract NodeStakeHandler is CommonBase, StdCheats, StdUtils {
         vm.prank(sched);
         uint256 id = st.proposeSlash(o, amount, h);
         ghostCapAtProposal[id] = cap;
+        lastId[o] = id;
+        _propEpoch[id] = r.currentEpoch();
+        _propAt[id] = uint64(block.timestamp);
         _ids.push(id);
         ++calls["propose"];
     }
@@ -184,9 +199,20 @@ contract NodeStakeHandler is CommonBase, StdCheats, StdUtils {
         if (_ids.length == 0) return;
         uint256 id = _ids[idSeed % _ids.length];
         if (st.getProposal(id).status != NS.Status.Open) return;
+        bool expired = _expiredGhost(id);
         vm.prank(safe);
         st.cancelSlash(id);
-        ++calls["cancel"];
+        NS.Status s = st.getProposal(id).status;
+        if (expired) {
+            // A cancel after the decision window records the expiry instead.
+            if (s != NS.Status.Expired) ++ghostUnexpected;
+            ++calls["cancelExpired"];
+        } else {
+            if (s != NS.Status.Cancelled) ++ghostUnexpected;
+            _closedEpoch[id] = r.currentEpoch();
+            _closedAt[id] = uint64(block.timestamp);
+            ++calls["cancel"];
+        }
     }
 
     function execute(uint256 idSeed) external {
@@ -209,6 +235,8 @@ contract NodeStakeHandler is CommonBase, StdCheats, StdUtils {
         uint256 slashableBefore = st.slashableOf(p.owner);
         vm.prank(safe);
         st.executeSlash(id);
+        _closedEpoch[id] = r.currentEpoch();
+        _closedAt[id] = uint64(block.timestamp);
         ghostSlashed[p.owner] += p.amount;
         if (st.slashableOf(p.owner) != slashableBefore - p.amount) ++ghostUnexpected;
         if (burnMode) {
@@ -310,5 +338,29 @@ contract NodeStakeHandler is CommonBase, StdCheats, StdUtils {
 
     function _owner(uint256 seed) internal view returns (address) {
         return owners[seed % 4];
+    }
+
+    /// @dev The handler's own copy of the window rule (n epochs closed and n epoch lengths passed, or twice the
+    ///      time if epochs stall), applied to timings the handler recorded itself.
+    function _overGhost(uint64 e0, uint64 t0, uint256 n) internal view returns (bool) {
+        uint256 span = n * len;
+        if (block.timestamp < uint256(t0) + span) return false;
+        if (uint256(r.currentEpoch()) >= uint256(e0) + n) return true;
+        return block.timestamp >= uint256(t0) + 2 * span;
+    }
+
+    function _expiredGhost(uint256 id) internal view returns (bool) {
+        return _overGhost(_propEpoch[id], _propAt[id], uint256(st.appealWindowEpochs()) + st.decisionWindowEpochs());
+    }
+
+    /// @dev May the scheduler propose against `o` now? No live proposal, and 2 epochs (the grace period) since the
+    ///      last one was cancelled or executed, or since it expired (appeal + decision + 2 from the proposal).
+    function _mayProposeGhost(address o) internal view returns (bool) {
+        uint256 id = lastId[o];
+        if (id == 0) return true;
+        NS.Status s = st.getProposal(id).status;
+        if (s == NS.Status.Open && !_expiredGhost(id)) return false;
+        if (_closedAt[id] != 0) return _overGhost(_closedEpoch[id], _closedAt[id], 2);
+        return _overGhost(_propEpoch[id], _propAt[id], uint256(st.appealWindowEpochs()) + st.decisionWindowEpochs() + 2);
     }
 }

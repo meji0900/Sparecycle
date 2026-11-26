@@ -123,12 +123,15 @@ abstract contract NodeStakeInvariantBase is Test {
         }
     }
 
-    /// @notice At most one stored-open proposal per owner, and it is the one the account points to; every executed
-    ///         proposal stayed within slashBps of the stake it was proposed against.
+    /// @notice At most one stored-open proposal per owner, and only the latest one against that owner (the one the
+    ///         account points to) can be open; closed proposals carry their close time; every executed proposal
+    ///         stayed within slashBps of the stake it was proposed against; no proposal was ever accepted inside
+    ///         the grace period of the owner's previous one.
     function invariant_ProposalBookkeeping() public view {
         address[4] memory o = _owners();
         uint256[4] memory open;
         uint256[4] memory lastOpen;
+        uint256[4] memory latest;
         uint256 n = st.proposalCount();
         uint256 executedSum;
         for (uint256 id = 1; id <= n; ++id) {
@@ -137,8 +140,12 @@ abstract contract NodeStakeInvariantBase is Test {
             assertTrue(p.evidenceHash != bytes32(0), "evidence on every proposal");
             assertLe(p.amount, h.ghostCapAtProposal(id), "amount <= slashBps of stake at proposal");
             if (p.status == NS.Status.Executed) executedSum += p.amount;
+            if (p.status == NS.Status.Open) assertEq(p.closedAt, 0, "open proposals are not closed");
+            else assertGe(p.closedAt, p.proposedAt, "closed proposals carry their close time");
             for (uint256 i; i < 4; ++i) {
-                if (p.owner == o[i] && p.status == NS.Status.Open) {
+                if (p.owner != o[i]) continue;
+                latest[i] = id;
+                if (p.status == NS.Status.Open) {
                     ++open[i];
                     lastOpen[i] = id;
                 }
@@ -147,8 +154,10 @@ abstract contract NodeStakeInvariantBase is Test {
         assertEq(executedSum, st.totalSlashed(), "executed proposals == totalSlashed");
         for (uint256 i; i < 4; ++i) {
             assertLe(open[i], 1, "one open proposal per owner");
-            assertEq(st.getAccount(o[i]).openProposal, lastOpen[i], "account points to its open proposal");
+            assertEq(st.getAccount(o[i]).lastProposal, latest[i], "account points to its latest proposal");
+            if (open[i] == 1) assertEq(lastOpen[i], latest[i], "only the latest proposal can be open");
         }
+        assertEq(h.ghostProposedInGrace(), 0, "no proposal inside a grace period");
     }
 
     /// @notice No handler path saw an unexpected success, payout or burn.
