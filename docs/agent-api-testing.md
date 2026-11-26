@@ -31,7 +31,7 @@ outside the repository (`%TEMP%\sc-openai-test`), never in the repo.
 | Official OpenAI JS SDK | `openai@7.64.0` | 14/14 |
 | Official OpenAI Python SDK | `openai==3.59.0` (Python 3.10, pydantic 2.14.4) | 5/5 |
 | Scripted JSON-RPC MCP client over HTTP | (no SDK) | 8/8 |
-| MCP Inspector CLI | `@modelcontextprotocol/inspector@2.16.0` | see below |
+| MCP Inspector CLI (`--cli`, `--transport http`) | `@modelcontextprotocol/inspector@2.16.0` | tools/list: the 4 tools, `--strict` schema check 0 errors 0 warnings; tools/call submit_job -> get_job_status (agreed) -> get_job_result (text), get_balance; a bad key is refused (the CLI then asks for OAuth, which it can't do non-interactively) |
 
 JS SDK checks: `models.list()` = exactly qwen2.5-1.5b and sd15 on `/v1` and `/api/v1`; `chat.completions.create`
 -> parsable 202 with `sparecycle.job_id`, `retrieve(id)` -> the agreed text, no `usage`,
