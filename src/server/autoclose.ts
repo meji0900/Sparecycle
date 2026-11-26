@@ -9,6 +9,7 @@ import { startPoolTimer } from "./gpu-pool";
 import { startSweepTimer } from "./sweep";
 import { startBackupTimer } from "./backup";
 import { startX402Timer } from "./x402";
+import { startHolderTimer } from "./holder-posts";
 
 const g = globalThis as typeof globalThis & { __sparecycleBooted?: boolean; __sparecycleAutoclose?: ReturnType<typeof setInterval> };
 
@@ -25,6 +26,7 @@ export function bootScheduler() {
   startSweepTimer();
   startBackupTimer();
   startX402Timer(); // x402 escrow settlement (./x402): only when X402_ENABLED=1 and configured
+  startHolderTimer(); // holder-pool roots (./holder-posts): only with TOKEN_HOLDERS on and the pool and V2 set
   if (!serverEnv.autoclose() || g.__sparecycleAutoclose) return;
   let running = false;
   g.__sparecycleAutoclose = setInterval(() => {

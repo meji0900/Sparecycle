@@ -58,6 +58,39 @@ export const holderPoolAbi = parseAbi([
   "event RootPosted(uint64 indexed epochId, bytes32 root, uint256 totalEth, uint64 claimableUntilEpoch)",
   "event Claimed(uint64 indexed epochId, address indexed holder, uint8 mode, uint256 amount)",
   "function fund() payable",
+  // Reads of the root posting (src/server/holder-posts.ts) and the claim panel. Appended: chain-io reads events by index.
+  "function getRoot(uint64 epochId) view returns ((bytes32 root, uint256 total, uint256 claimed, uint64 postedInEpoch, uint64 claimableUntilEpoch, bool posted, bool rolledOver))",
+  "function hasClaimed(uint64 epochId, address holder) view returns (bool)",
+  "function available() view returns (uint256)",
+  "function nextPostableEpoch() view returns (uint64)",
+  "function payments() view returns (address)",
+  "function UNCLAIMED_ROLLOVER_EPOCHS() view returns (uint64)",
+  // Custom errors, so a simulated postRoot / claim decodes its revert by name.
+  "error NotScheduler()",
+  "error EpochNotClosed(uint64 epochId, uint64 open)",
+  "error EpochNotPostable(uint64 epochId, uint64 nextPostable)",
+  "error EmptyRootWithTotal()",
+  "error TotalExceedsAvailable(uint256 total, uint256 available)",
+  "error NotPosted(uint64 epochId)",
+  "error ClaimWindowClosed(uint64 epochId, uint64 claimableUntilEpoch)",
+  "error AlreadyClaimed()",
+  "error InvalidProof()",
+  "error ClaimExceedsTotal()",
+  "error NvdaModeNotAvailable()",
+  "error UnknownMode(uint8 mode)",
+]);
+
+/**
+ * SparecycleJobPaymentsV2, only what the holder pool needs: the split of each charge (`Distributed`, whose
+ * `toHolderPool` funds the pool for that epoch) and the spend-only credit balance a claim adds to (`creditOf`).
+ */
+export const jobPaymentsV2Abi = parseAbi([
+  "event Distributed(uint64 indexed epochId, bytes32 indexed listHash, uint256 toPot, uint256 toTreasury, uint256 toBurner, uint256 toHolderPool, uint256 fromReserve)",
+  "event CreditAdded(address indexed customer, uint256 amount, uint256 credit)",
+  "event CreditsSpent(uint64 indexed epochId, address indexed customer, uint256 amount)",
+  "function creditOf(address customer) view returns (uint256)",
+  "function balanceOf(address customer) view returns (uint256)",
+  "function holderPool() view returns (address)",
 ]);
 
 export const burnerAbi = parseAbi(["event Burned(uint64 indexed epochId, uint256 ethIn, uint256 spareBurned)"]);

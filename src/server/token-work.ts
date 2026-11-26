@@ -1,11 +1,12 @@
 // The token-feature steps of an epoch close (docs/token-features.md). Each runs only when its TOKEN_* flag is on; with
 // every flag off (the default) runTokenWorkAfterClose returns at once and the close is exactly as before. Each step is
-// isolated: it logs, never throws into the close, and NEVER signs or sends a transaction (payloads are prepared,
-// unsigned, and served to the operator by GET /api/v1/admin/token-payloads).
+// isolated: it logs and never throws into the close. Burns and slashes are prepared, unsigned, and served to the operator
+// by GET /api/v1/admin/token-payloads. The one exception is the holder-pool root (TOKEN_HOLDERS with SparecycleHolderPool
+// and SparecycleJobPaymentsV2 set): ./holder-posts sends postRoot from the scheduler key; this file sends nothing itself.
 import { getDb } from "./db";
 import { serverEnv } from "./env";
 import { burnPlansJson, prepareBurns } from "./burns";
-import { prepareHolderRoots } from "./holders";
+import { runHolderWork } from "./holder-posts";
 import { attributeFaults, proposeDueSlashes } from "./slashing";
 
 const msg = (e: unknown) => (e instanceof Error ? e.message.split("\n")[0] : String(e));
@@ -34,7 +35,7 @@ export async function runTokenWorkAfterClose(epochId: number): Promise<void> {
   }
   if (holders) {
     try {
-      console.log(`[sparecycle] token: ${await prepareHolderRoots()}`);
+      console.log(`[sparecycle] token: ${await runHolderWork()}`);
     } catch (e) {
       console.error(`[sparecycle] token: holder roots failed: ${msg(e)}`);
     }
