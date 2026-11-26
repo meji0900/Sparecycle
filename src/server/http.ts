@@ -97,6 +97,13 @@ export async function readBody(req: Request, maxBytes: number): Promise<string> 
   return text;
 }
 
+/** 415 json-required unless the request is declared as JSON: a cross-site HTML form can't send that. */
+export function requireJson(req: Request) {
+  if (!(req.headers.get("content-type") ?? "").toLowerCase().includes("application/json")) {
+    throw new ApiError(415, "json-required", "send the body as application/json");
+  }
+}
+
 export function parseJson(text: string): unknown {
   try {
     return text.trim() === "" ? {} : JSON.parse(text);

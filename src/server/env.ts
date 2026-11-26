@@ -85,6 +85,17 @@ export const serverEnv = {
   challengeIntervalSeconds: () => hoursEnv("CHALLENGE_INTERVAL_HOURS", 24),
   /** Seconds a node waits after a failed challenge before the next one (CHALLENGE_COOLDOWN_HOURS, default 6). */
   challengeCooldownSeconds: () => hoursEnv("CHALLENGE_COOLDOWN_HOURS", 6),
+  /**
+   * API keys (src/server/apikeys.ts; decision D11, Default, not yet confirmed by Fabio): "on" (default) = a wallet may
+   * create keys that pay for jobs without a per-job signature after one link signature; "off" = no key can be created
+   * or activated and every key-paid submission is refused (503 api-keys-off). Reading results with a key still works.
+   */
+  apiKeys: (): "on" | "off" => (str(process.env.API_KEYS)?.toLowerCase() === "off" ? "off" : "on"),
+  /**
+   * Longest `Prefer: wait=<seconds>` the OpenAI-compatible routes honour (decision A9, open). Must stay below the
+   * hosting platform's request timeout, which is not known for Railway yet: 25 s until it is checked. 0 = never wait.
+   */
+  apiMaxWaitSeconds: () => Math.min(intEnv("API_MAX_WAIT_SECONDS", 25, 0), 300),
   /** The root-posting key. Returns null unless it is a well-formed 32-byte hex key. */
   signerKey: (): Hex | null => {
     const s = str(process.env.SCHEDULER_SIGNER_KEY);

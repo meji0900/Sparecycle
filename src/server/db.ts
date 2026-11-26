@@ -220,6 +220,50 @@ const MIGRATIONS: string[] = [
     note      TEXT
   );
   `,
+  // agent-api (API keys, OpenAI-compatible API, MCP; src/server/apikeys.ts, src/server/openai.ts). Additive only.
+  // A key is `sck_<key_id>_<secret>`: only sha256(full key) is stored, never the secret. A key spends from its owner's
+  // prepaid balance after one link signature (EIP-191) and within its daily cap (UTC day). api_key_spend counts the
+  // price of the key's jobs per UTC day; jobs.api_key_held = 1 while that price still counts (set back to 0 and taken
+  // off the counter when the job ends disagreed / expired / rejected). api_requests maps an OpenAI-style or MCP create
+  // call to its job (Idempotency-Key, the image response format chosen at create).
+  `
+  CREATE TABLE api_keys (
+    key_id          TEXT PRIMARY KEY,           -- 16 hex chars (8 random bytes), shown in the UI
+    owner           TEXT NOT NULL,              -- checksummed wallet the key spends from
+    label           TEXT NOT NULL DEFAULT '',
+    key_hash        TEXT NOT NULL,              -- sha256(full key), hex; the secret itself is never stored
+    daily_cap_wei   TEXT NOT NULL,              -- wei per UTC day, decimal string
+    status          TEXT NOT NULL CHECK (status IN ('pending','active','disabled','deleted')),
+    link_message    TEXT,                       -- the EIP-191 message the wallet signed (or is asked to sign)
+    link_signature  TEXT,
+    link_issued     INTEGER,                    -- unix seconds in the link message
+    created_at      INTEGER NOT NULL,
+    activated_at    INTEGER,
+    last_used_at    INTEGER,
+    disabled_at     INTEGER
+  );
+  CREATE INDEX api_keys_owner ON api_keys(owner, status);
+  CREATE TABLE api_key_spend (
+    key_id    TEXT NOT NULL,
+    day       TEXT NOT NULL,                    -- UTC day, YYYY-MM-DD
+    held_wei  TEXT NOT NULL,                    -- decimal string
+    PRIMARY KEY (key_id, day)
+  );
+  ALTER TABLE jobs ADD COLUMN api_key_id TEXT;
+  ALTER TABLE jobs ADD COLUMN api_key_held INTEGER NOT NULL DEFAULT 0;
+  CREATE INDEX jobs_api_key ON jobs(api_key_id, status) WHERE api_key_id IS NOT NULL;
+  CREATE INDEX jobs_api_key_held ON jobs(api_key_held) WHERE api_key_held = 1;
+  CREATE TABLE api_requests (
+    job_id           TEXT PRIMARY KEY,
+    key_id           TEXT NOT NULL,
+    surface          TEXT NOT NULL,             -- chat | images | mcp
+    idempotency_key  TEXT,                      -- Idempotency-Key header (NULL = none sent)
+    body_hash        TEXT NOT NULL,             -- sha256 of the request body
+    response_format  TEXT,                      -- images: b64_json | url
+    created_at       INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX api_requests_idem ON api_requests(key_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+  `,
 ];
 
 type Holder = { db: DatabaseSync; path: string; txDepth: number };

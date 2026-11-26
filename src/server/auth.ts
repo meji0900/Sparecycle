@@ -4,6 +4,9 @@
 //   - a wallet session: EIP-4361 "Sign-In with Ethereum" (GET auth/nonce -> the wallet signs -> POST auth/verify)
 //     gives an HttpOnly cookie `sc_session`; only the sha256 of the session id is stored. A session reads the jobs
 //     whose payer is that wallet (paid and team jobs). EOAs and ERC-1271 / ERC-6492 smart wallets are supported.
+//   - an API key (src/server/apikeys.ts): `Authorization: Bearer sck_<keyId>_<secret>`; only sha256(full key) is stored.
+//     A key reads the jobs submitted with that key only (never other jobs of its wallet). The `sck_` format keeps keys
+//     apart from read secrets on the same header: a token matching API_KEY_PATTERN is never tried as a read secret.
 // Node request signatures (x-sc-*) are never credentials here: nodes cannot read outputs.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { getAddress, isAddress, verifyMessage, type Address, type Hex } from "viem";
@@ -23,8 +26,8 @@ const CLOCK_SKEW_SECONDS = 5 * 60;
 
 const sha256 = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 
-/** Constant-time comparison of two hex digests of the same length. */
-function sameDigest(a: string, b: string): boolean {
+/** Constant-time comparison of two 32-byte hex digests. */
+export function sameDigest(a: string, b: string): boolean {
   const x = Buffer.from(a, "hex");
   const y = Buffer.from(b, "hex");
   return x.length === 32 && y.length === 32 && timingSafeEqual(x, y);
@@ -84,7 +87,7 @@ export function issueNonce(req: Request) {
 }
 
 /** EOA signature first (no RPC), then ERC-1271 / ERC-6492 through the chain, like ownerSigValid in ./nodes. */
-async function signatureValid(address: Address, message: string, signature: Hex): Promise<boolean> {
+export async function signatureValid(address: Address, message: string, signature: Hex): Promise<boolean> {
   try {
     if (await verifyMessage({ address, message, signature })) return true;
   } catch {
@@ -184,13 +187,52 @@ export function signOut(req: Request) {
   if (id) getDb().prepare("DELETE FROM sessions WHERE id_hash = ?").run(sha256(id));
 }
 
-/** Who is asking for an output: a session wallet and / or a read secret. */
-export type Viewer = { address: Address | null; secret: string | null };
+/** An API key that passed the lookup: active, and its sha256 matches (constant time). */
+export type KeyViewer = { keyId: string; owner: Address };
 
-export const ANONYMOUS: Viewer = { address: null, secret: null };
+/** Who is asking for an output: a session wallet, a read secret and / or an API key. */
+export type Viewer = { address: Address | null; secret: string | null; key?: KeyViewer | null };
 
-/** Credentials of a request: the session cookie and `Authorization: Bearer <read secret>` (never the query string). */
-export function viewerFromRequest(req: Request): Viewer {
+export const ANONYMOUS: Viewer = { address: null, secret: null, key: null };
+
+/** `sck_` + 16 hex (key id, 8 bytes) + `_` + 43 base64url characters (32 bytes). 64 characters in all. */
+export const API_KEY_PATTERN = /^sck_([0-9a-f]{16})_([A-Za-z0-9_-]{43})$/;
+
+/** sha256 hex of a full API key (the only form in which a key is stored). */
+export const apiKeyHash = (fullKey: string) => sha256(fullKey);
+
+/** The bearer token of a request (never the query string), or null. */
+export function bearerToken(req: Request): string | null {
   const m = /^Bearer\s+(\S{1,512})\s*$/i.exec(req.headers.get("authorization") ?? "");
-  return { address: sessionFromRequest(req)?.address ?? null, secret: m ? m[1] : null };
+  return m ? m[1] : null;
+}
+
+/**
+ * The active API key named by `token`, or null (not an `sck_` key, unknown, not active, or a wrong secret). The
+ * stored hash is compared in constant time. Status is read on every call, so disabling a key takes effect on the
+ * next request.
+ */
+export function apiKeyFromToken(token: string | null): KeyViewer | null {
+  const m = token ? API_KEY_PATTERN.exec(token) : null;
+  if (!m || !token) return null;
+  const row = getDb().prepare("SELECT owner, key_hash, status FROM api_keys WHERE key_id = ?").get(m[1]) as
+    | { owner: Address; key_hash: string; status: string }
+    | undefined;
+  if (!row || row.status !== "active") return null;
+  return sameDigest(apiKeyHash(token), row.key_hash) ? { keyId: m[1], owner: row.owner } : null;
+}
+
+/**
+ * Credentials of a request: the session cookie and `Authorization: Bearer <read secret or API key>` (never the query
+ * string). A bearer token in the API key format is only ever tried as a key: an unknown or disabled key gives no
+ * credential at all.
+ */
+export function viewerFromRequest(req: Request): Viewer {
+  const token = bearerToken(req);
+  const isKey = token !== null && API_KEY_PATTERN.test(token);
+  return {
+    address: sessionFromRequest(req)?.address ?? null,
+    secret: token && !isKey ? token : null,
+    key: isKey ? apiKeyFromToken(token) : null,
+  };
 }
