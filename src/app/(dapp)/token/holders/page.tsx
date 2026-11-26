@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 import { ArrowUpRight } from "lucide-react";
 import { PageHeader } from "@/components/dapp/app-shell";
+import { HolderClaims } from "@/components/dapp/holder-claims";
 import { Panel, SectionTitle, TableBox, TableMessage, td, th } from "@/components/dapp/ui";
 import { Notice, StatusTag } from "@/components/ui/status";
 import { NOT_LIVE_YET } from "@/lib/addresses";
@@ -31,6 +32,16 @@ function SourceLink({ source }: { source: Source }) {
       {source.label}
       <ArrowUpRight aria-hidden className="size-3 shrink-0" />
     </a>
+  );
+}
+
+/** One line of the "Who is eligible" panel (TOKEN_HOLDERS on): label left, model text right. */
+function EligibilityRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1 px-5 py-3 sm:flex-row sm:items-baseline sm:justify-between sm:gap-8">
+      <dt className="shrink-0 text-sm text-muted">{label}</dt>
+      <dd className="max-w-[640px] text-sm leading-relaxed text-text sm:text-right">{children}</dd>
+    </div>
   );
 }
 
@@ -183,6 +194,42 @@ export default async function HoldersPage() {
           </Notice>
         ) : null}
       </div>
+
+      {m.claims ? (
+        <section aria-labelledby="claim" className="mt-12 scroll-mt-24">
+          <SectionTitle
+            id="claim"
+            title="Claim compute credits"
+            description={
+              <>
+                Eligible holders can claim compute credits: each epoch&apos;s holder share is posted as a Merkle root, and each
+                address claims its part with one transaction per epoch. Credits pay for Sparecycle jobs. They cannot be
+                withdrawn or transferred. Unclaimed shares roll back into the pool after {m.claims.rolloverText}.
+              </>
+            }
+            aside={m.claims.live ? <StatusTag tone="live">Roots posted on-chain</StatusTag> : <StatusTag tone="warn">Not live yet</StatusTag>}
+          />
+          <HolderClaims live={m.claims.live} pool={m.claims.pool} jobPaymentsV2={m.claims.jobPaymentsV2} rolloverEpochs={m.claims.rolloverEpochs} />
+          <Panel title="Who is eligible" className="mt-4">
+            <dl className="divide-y divide-line">
+              <EligibilityRow label="Minimum">
+                <span className="num">{m.claims.minimumText}</span> time-weighted over the epoch
+              </EligibilityRow>
+              <EligibilityRow label="Method">{m.claims.method}</EligibilityRow>
+              <EligibilityRow label="Excluded">
+                <a href="#rules" className="link">
+                  The addresses listed under Rules
+                </a>
+                , and any other contract unless allow-listed
+              </EligibilityRow>
+              <EligibilityRow label="Mode">Compute credits</EligibilityRow>
+              <EligibilityRow label="Last computed at">
+                {m.claims.lastComputedText ? <span className="num">{m.claims.lastComputedText}</span> : <span className="text-faint">No epoch computed yet</span>}
+              </EligibilityRow>
+            </dl>
+          </Panel>
+        </section>
+      ) : null}
 
       {[burned, distributed, staked].map((s) => (
         <SectionBlock key={s.id} section={s} />

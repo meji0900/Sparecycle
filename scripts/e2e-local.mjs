@@ -55,6 +55,15 @@
 // treasury); after the close of epoch 0 the x402 tree and the payer's receipt against the escrow events; 16b: an x402
 // job no pair agrees on is refunded in full. Without E2E_X402 none of this runs and the default run is unchanged.
 //
+// With E2E_HOLDERS=1 the run also covers the holder pool, credit mode (src/server/holders.ts, holder-posts.ts,
+// holder-api.ts; NOT DEPLOYED contracts): a SPARE stand-in (MockSpare's code at ADDR.spareToken), SparecycleBurner,
+// SparecycleJobPaymentsV2 and SparecycleHolderPool on the reward contract, and the scheduler with TOKEN_HOLDERS and
+// TOKEN_HOLDER_PAGE on. Step 18 (scheduler restarted without autoclose): holders get SPARE (one below the minimum, the
+// team wallet excluded), a V2 charge funds the pool, one holder moves SPARE mid-epoch, the close posts the root from the
+// scheduler key with amounts that match an independent time-weighted computation, holders claim with the API's proofs as
+// spend-only credits, a V2 charge spends them, and the next close posts the next root without posting the first again.
+// Without E2E_HOLDERS none of this runs and the default run is unchanged.
+//
 // The anvil keys below are the well-known public anvil/hardhat dev keys. They are for this local test only and
 // must never be used anywhere else.
 import { spawn, spawnSync } from "node:child_process";
@@ -108,6 +117,8 @@ const PRICE_WEI_PER_UNIT = 1_000_000_000n; // 1 gwei per work unit in this test
 /** E2E_X402=1: also run the x402 pay-per-job path (see the header). */
 const X402 = process.env.E2E_X402 === "1";
 const X402_PRICE_PER_UNIT = 10n; // mock-token units per work unit in this test
+/** E2E_HOLDERS=1: also run the holder pool path (see the header). */
+const HOLDERS = process.env.E2E_HOLDERS === "1";
 
 const RUN_ID = new Date().toISOString().replace(/[:.]/g, "-");
 const RUN_DIR = join(ROOT, "data", `e2e-${RUN_ID}`);
@@ -238,7 +249,7 @@ function artifact(outDir, file, name) {
 function cleanEnv(extra) {
   const env = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (/^(NEXT_PUBLIC_|SCHEDULER_|SWEEP_|SPARECYCLE_|X402_)/.test(k)) continue;
+    if (/^(NEXT_PUBLIC_|SCHEDULER_|SWEEP_|SPARECYCLE_|X402_|TOKEN_)/.test(k)) continue;
     if (["DB_PATH", "PAYOUT_CAP_PER_UNIT", "JOB_RATE_LIMIT", "LAUNCHER_WALLET", "EPOCH_POST_GAS_COST", "NODE_OPTIONS", "OUTPUT_AUTH", "OUTPUT_RATE_LIMIT", "AUTH_DOMAIN"].includes(k)) continue;
     env[k] = v;
   }
@@ -371,6 +382,7 @@ async function main() {
           "src/SparecycleNodeStake.sol",
           "test/mocks/StakeMocks.sol",
           ...(X402 ? ["src/SparecycleX402Escrow.sol", "test/mocks/MockEIP3009.sol"] : []),
+          ...(HOLDERS ? ["src/SparecycleJobPaymentsV2.sol", "src/SparecycleBurner.sol", "src/SparecycleHolderPool.sol", "test/mocks/V2Mocks.sol"] : []),
         ],
         { cwd: join(ROOT, "contracts"), encoding: "utf8" },
       );
@@ -426,6 +438,32 @@ async function main() {
       [10_000_000n, 1_000_000_000n, 100_000_000n],
     ]);
     check("x402: mock EIP-3009 token and SparecycleX402Escrow deployed", Boolean(x402Token && x402Escrow), `${x402Token} ${x402Escrow}`);
+  }
+  // Holder pool (E2E_HOLDERS=1): MockSpare's code at the SPARE address (the scheduler reads Transfer logs there), a mock
+  // swap adapter, then Burner -> V2 -> HolderPool on the reward contract with predicted addresses (like DryRunDeployV2).
+  let hold = null;
+  if (HOLDERS) {
+    const { ADDR } = await srcImport("lib/addresses.ts");
+    const spareArt = artifact(forgeOut, "V2Mocks.sol", "MockSpare");
+    const spareTmp = await deploy(spareArt, []);
+    await pub.request({ method: "anvil_setCode", params: [ADDR.spareToken, await pub.getCode({ address: spareTmp })] });
+    const startBlock = await pub.getBlockNumber();
+    const adapter = await deploy(artifact(forgeOut, "V2Mocks.sol", "MockSwapAdapter"), [ADDR.spareToken, 10n ** 14n]);
+    const { getContractAddress } = await import("viem");
+    const n = await pub.getTransactionCount({ address: admin.address });
+    const v2At = getContractAddress({ from: admin.address, nonce: BigInt(n + 1) });
+    const poolAt = getContractAddress({ from: admin.address, nonce: BigInt(n + 2) });
+    const v2Art = artifact(forgeOut, "SparecycleJobPaymentsV2.sol", "SparecycleJobPaymentsV2");
+    const poolArt = artifact(forgeOut, "SparecycleHolderPool.sol", "SparecycleHolderPool");
+    const burner = await deploy(artifact(forgeOut, "SparecycleBurner.sol", "SparecycleBurner"), [rewards, treasury, ADDR.spareToken, adapter, v2At, true, parseEther("1")]);
+    const v2 = await deploy(v2Art, [rewards, treasury, burner, poolAt, ADDR.spareToken, adapter, 0n]);
+    const pool = await deploy(poolArt, [rewards, v2, treasury]);
+    hold = { spare: ADDR.spareToken, spareAbi: spareArt.abi, v2, v2Abi: v2Art.abi, pool, poolAbi: poolArt.abi, startBlock, teamWallet: ADDR.teamWallet };
+    const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+    const wired =
+      same(v2, v2At) && same(pool, poolAt) && same(await pub.readContract({ address: v2, abi: v2Art.abi, functionName: "holderPool" }), pool) &&
+      same(await pub.readContract({ address: pool, abi: poolArt.abi, functionName: "payments" }), v2);
+    check("holders: SPARE stand-in at the SPARE address, Burner, V2 and HolderPool deployed and wired", wired, `V2 ${v2}, pool ${pool}, SPARE from block ${startBlock}`);
   }
   // Optional node staking (step 17c): a mock SPARE (ERC20Burnable, 18 decimals) and SparecycleNodeStake on the reward
   // contract, minimum 0 as launched, but with the shortest valid windows (cooldown 3 epochs of 30 s) so the test can end
@@ -563,6 +601,15 @@ async function main() {
               X402_ASSET_NAME: "Global Dollar",
               X402_ASSET_VERSION: "1",
               X402_PRICE_PER_UNIT: X402_PRICE_PER_UNIT.toString(),
+            }
+          : {}),
+        ...(hold
+          ? {
+              TOKEN_HOLDERS: "on",
+              TOKEN_HOLDER_PAGE: "on",
+              TOKEN_HOLDER_POOL_ADDRESS: hold.pool,
+              TOKEN_JOB_PAYMENTS_V2_ADDRESS: hold.v2,
+              TOKEN_SPARE_START_BLOCK: hold.startBlock.toString(),
             }
           : {}),
         ...extra,
@@ -1657,6 +1704,170 @@ async function main() {
     check("unstake pays owner B everything back (500 SPARE in the wallet again)", (await spareRead("balanceOf", [ownerB.address])) === 500n * E18 && (await stakeRead("totalStaked")) === 300n * E18);
     const s3 = await stakingUntil("GET /staking: owner B gone", (b) => b.totalStakedWei === (300n * E18).toString());
     check("GET /staking: 300 staked, one owner left", JSON.stringify(s3.data.owners) === JSON.stringify({ staking: 1, active: 1, cooling: 0, fromBlock: nodeStakeDeploy.blockNumber.toString() }), JSON.stringify(s3.data.owners));
+  }
+
+  if (hold) {
+    step("18. holder pool (E2E_HOLDERS=1): SPARE holders -> V2 charge -> root posted by the scheduler -> claimed as credits -> spent");
+    const { holderLeafOf, verifyProof: verifyHolderProof } = await srcImport("lib/merkle.ts");
+    const { HOLDER_MIN_SPARE_WEI } = await srcImport("lib/token-rules.ts");
+    const { keccak256, parseEventLogs, toHex } = await import("viem");
+    const S = 10n ** 18n;
+    const admHdr = { authorization: `Bearer ${ADMIN_TOKEN}` };
+    const send = async (account, address, abi, functionName, args = [], value) => {
+      const { request } = await pub.simulateContract({ account, address, abi, functionName, args, value });
+      const r = await pub.waitForTransactionReceipt({ hash: await wallet(account).writeContract(request) });
+      if (r.status !== "success") throw new Error(`${functionName} reverted`);
+      return r;
+    };
+    const poolRead = (functionName, args = []) => pub.readContract({ address: hold.pool, abi: hold.poolAbi, functionName, args });
+    const v2Read = (functionName, args = []) => pub.readContract({ address: hold.v2, abi: hold.v2Abi, functionName, args });
+    const spareTx = (account, functionName, args) => send(account, hold.spare, hold.spareAbi, functionName, args);
+    const blockTimeOf = async (r) => Number((await pub.getBlock({ blockNumber: r.blockNumber })).timestamp);
+    /** Warps past the open epoch's end and closes it through the API (a post left over from autoclose is retried first). */
+    const closeOne = async () => {
+      for (let i = 0; i < 4; i++) {
+        await pub.request({ method: "evm_increaseTime", params: [EPOCH_LENGTH * 2] });
+        await pub.request({ method: "evm_mine", params: [] });
+        const c = await api("POST", "/epochs/close", undefined, admHdr);
+        if (c.status === 200 && c.data.action === "closed") return c.data.epoch.id;
+        if (!(c.status === 200 && c.data.action === "retried-post")) throw new Error(`close: ${c.status} ${JSON.stringify(c.data)}`);
+      }
+      throw new Error("close: still retrying a post");
+    };
+    const [hA, hB, hC, hD] = [0, 1, 2, 3].map(() => privateKeyToAccount(generatePrivateKey()));
+    for (const a of [hA, hB, hC, hD]) await pub.request({ method: "anvil_setBalance", params: [a.address, "0x56bc75e2d63100000"] });
+
+    // The scheduler again without autoclose, so this step decides when epochs close (no race for the scheduler key).
+    killTree(nextProc);
+    await waitFor("next stopped", async () => !(await portBusy(NEXT_PORT)), { timeoutMs: 30_000 });
+    nextProc = await startNext("next-holders");
+
+    // Epoch E: holders get SPARE. C stays below the minimum (N11); the team wallet is on the exclusion list.
+    await spareTx(admin, "mint", [hA.address, 10_000_000n * S]);
+    await spareTx(admin, "mint", [hB.address, 30_000_000n * S]);
+    await spareTx(admin, "mint", [hC.address, 100n * S]);
+    await spareTx(admin, "mint", [hold.teamWallet, 50_000_000n * S]);
+    const eE = await closeOne();
+    const ep0 = (await api("GET", "/holders/epochs")).data;
+    const rowE = ep0.epochs.find((e) => e.epochId === eE);
+    check(`holders: epoch ${eE} (no V2 charge) is skipped, nothing posted`, rowE?.status === "skipped" && /no holder-pool funding/.test(rowE.note ?? "") && !rowE.postedTx, JSON.stringify(rowE));
+    check("holders: GET /holders/epochs states the rules (minimum, method, rollover) and is live", ep0.live === true && ep0.rules.minimumSpareWei === HOLDER_MIN_SPARE_WEI.toString() && ep0.rules.rolloverEpochs === 8 && /Time-weighted/.test(ep0.rules.method));
+
+    // Epoch E1: a V2 charge funds the pool; B moves a third of its SPARE to D in the middle of the epoch.
+    const e1 = Number(await read("currentEpoch"));
+    check("holders: the scheduler's open epoch is the chain's", e1 === eE + 1, `${e1}`);
+    await send(customer, hold.v2, hold.v2Abi, "deposit", [], parseEther("1"));
+    const chargeR = await send(scheduler, hold.v2, hold.v2Abi, "charge", [BigInt(e1), [customer.address], [parseEther("0.2")], keccak256(toHex("e2e-holders"))]);
+    const dist = parseEventLogs({ abi: hold.v2Abi, eventName: "Distributed", logs: chargeR.logs })[0].args;
+    const F = dist.toHolderPool;
+    check("holders: the V2 charge sent its holder part to the pool", F > 0n && (await pub.getBalance({ address: hold.pool })) === F, `${F} wei`);
+    await pub.request({ method: "evm_increaseTime", params: [7] });
+    const moveR = await spareTx(hB, "transfer", [hD.address, 10_000_000n * S]);
+    const tMove = await blockTimeOf(moveR);
+    const e1Closed = await closeOne();
+    check(`holders: epoch ${e1} closed`, e1Closed === e1);
+
+    // Independent check of the amounts: time-weighted averages from the on-chain window and the transfer's block time.
+    const win = await read("getEpoch", [BigInt(e1)]);
+    const s = BigInt(win.startedAt);
+    const e = BigInt(win.endedAt);
+    const t = BigInt(tMove);
+    const len = e - s;
+    const w = new Map([
+      [hA.address, 10_000_000n * S],
+      [hB.address, (30_000_000n * S * (t - s) + 20_000_000n * S * (e - t)) / len],
+      [hD.address, (10_000_000n * S * (e - t)) / len],
+    ]);
+    const sumW = [...w.values()].reduce((x, y) => x + y, 0n);
+    const expected = new Map([...w].map(([a, v]) => [a, (F * v) / sumW]));
+    const total = [...expected.values()].reduce((x, y) => x + y, 0n);
+    const ep1 = (await api("GET", "/holders/epochs")).data.epochs.find((x) => x.epochId === e1);
+    check(
+      `holders: epoch ${e1} root posted by the close: funded = the V2 holder part, total = the sum of the floored shares, 3 holders`,
+      ep1?.status === "posted" && ep1.fundedWei === F.toString() && ep1.totalWei === total.toString() && ep1.holders === 3 && /^0x[0-9a-f]{64}$/.test(ep1.postedTx?.hash ?? ""),
+      JSON.stringify(ep1),
+    );
+    const onRoot = await poolRead("getRoot", [BigInt(e1)]);
+    const postR = await pub.getTransactionReceipt({ hash: ep1.postedTx.hash });
+    const posted = parseEventLogs({ abi: hold.poolAbi, eventName: "RootPosted", logs: postR.logs });
+    check(
+      "holders: on-chain root = the API's, posted once from the scheduler key, remainder (< 1 wei per holder) left available",
+      onRoot.posted && onRoot.root === ep1.root && onRoot.total === total && Number(onRoot.claimableUntilEpoch) === ep1.claimableUntilEpoch &&
+        postR.from.toLowerCase() === scheduler.address.toLowerCase() && posted.length === 1 &&
+        (await poolRead("available")) === F - total && F - total < 3n,
+      `root ${onRoot.root}, total ${onRoot.total} of ${F}`,
+    );
+    const acct = async (a) => (await api("GET", `/holders/${a}`)).data;
+    const entryOf = async (a) => (await acct(a)).entries.find((x) => x.epochId === e1);
+    let shareOk = true;
+    for (const [a, amt] of expected) {
+      const x = await entryOf(a);
+      const leaf = holderLeafOf(BigInt(e1), a, 1, amt);
+      shareOk &&= x?.state === "claimable" && x.amountWei === amt.toString() && x.leaf === leaf && verifyHolderProof(x.proof, onRoot.root, leaf);
+    }
+    check("holders: each holder's amount equals the independent time-weighted share, and its proof verifies against the on-chain root", shareOk);
+    check(
+      "holders: below the minimum and the excluded team wallet get nothing",
+      (await acct(hC.address)).entries.length === 0 && (await acct(hold.teamWallet)).entries.length === 0,
+    );
+
+    // Claims as compute credits, with the API's own call arguments.
+    for (const h of [hA, hB]) {
+      const x = await entryOf(h.address);
+      const [epochArg, mode, amount, proof] = x.claim.args;
+      await send(h, hold.pool, hold.poolAbi, "claim", [BigInt(epochArg), mode, BigInt(amount), proof]);
+    }
+    const credA = await v2Read("creditOf", [hA.address]);
+    check(
+      "holders: A and B claimed; the amounts are spend-only credits in V2, nothing withdrawable",
+      credA === expected.get(hA.address) && (await v2Read("creditOf", [hB.address])) === expected.get(hB.address) && (await v2Read("balanceOf", [hA.address])) === 0n && (await poolRead("hasClaimed", [BigInt(e1), hA.address])),
+      `A ${credA}`,
+    );
+    let again = null;
+    try {
+      const x = await entryOf(hA.address);
+      await pub.simulateContract({ account: hA, address: hold.pool, abi: hold.poolAbi, functionName: "claim", args: [BigInt(e1), 1, BigInt(x.amountWei), x.proof] });
+    } catch (err) {
+      again = revertName(err);
+    }
+    check("holders: a second claim reverts AlreadyClaimed", again === "AlreadyClaimed", String(again));
+    await waitFor("the API to show A's claim", async () => (await entryOf(hA.address))?.state === "claimed", { timeoutMs: 30_000, intervalMs: 2000 });
+    const aView = await acct(hA.address);
+    check("holders: GET /holders/:address shows the claim and the credit balance; D's share is still claimable", aView.creditWei === credA.toString() && (await entryOf(hD.address)).state === "claimable");
+    let noWithdraw = null;
+    try {
+      await pub.simulateContract({ account: hA, address: hold.v2, abi: hold.v2Abi, functionName: "requestWithdraw", args: [1n] });
+    } catch (err) {
+      noWithdraw = revertName(err);
+    }
+    check("holders: credits cannot be withdrawn (requestWithdraw reverts)", noWithdraw !== null, String(noWithdraw));
+
+    // Credits pay for a job: the charge V2 makes for a paid job of A takes credits first.
+    const e2 = Number(await read("currentEpoch"));
+    const spend = credA / 2n;
+    const spendR = await send(scheduler, hold.v2, hold.v2Abi, "charge", [BigInt(e2), [hA.address], [spend], keccak256(toHex("e2e-holders-spend"))]);
+    const spent = parseEventLogs({ abi: hold.v2Abi, eventName: "CreditsSpent", logs: spendR.logs });
+    check(
+      "holders: a V2 charge of A is paid from its credits (CreditsSpent), its deposit balance untouched",
+      spent.length === 1 && spent[0].args.amount === spend && (await v2Read("creditOf", [hA.address])) === credA - spend && (await v2Read("balanceOf", [hA.address])) === 0n,
+    );
+
+    // The next close posts the next root and never the first one again.
+    const e2Closed = await closeOne();
+    const ep2 = (await api("GET", "/holders/epochs")).data.epochs;
+    const rootLogs = await pub.getContractEvents({ address: hold.pool, abi: hold.poolAbi, eventName: "RootPosted", fromBlock: 0n });
+    check(
+      `holders: epoch ${e2Closed} (funded by the credit charge) posted; each epoch has exactly one RootPosted`,
+      ep2.find((x) => x.epochId === e2Closed)?.status === "posted" && rootLogs.length === 2 && rootLogs.filter((l) => Number(l.args.epochId) === e1).length === 1,
+      `${rootLogs.length} RootPosted`,
+    );
+
+    // The page and the API description, with the flags on.
+    const page = await fetch(`${SITE}/token/holders`, { signal: AbortSignal.timeout(180_000) });
+    const html = await page.text();
+    check("holders: /token/holders renders the claim panel and who is eligible", page.status === 200 && html.includes("Claim compute credits") && html.includes("Who is eligible"));
+    const oas = (await api("GET", "/openapi.json")).data;
+    check("holders: the OpenAPI description lists the holder endpoints while TOKEN_HOLDERS is on", Boolean(oas.paths["/holders/epochs"] && oas.paths["/holders/{address}"]));
   }
 
   const leaky = jobsCacheHeaders.filter((h) => /public|immutable/i.test(h.cc));

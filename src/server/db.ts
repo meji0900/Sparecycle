@@ -525,6 +525,24 @@ const MIGRATIONS: string[] = [
     created_at INTEGER NOT NULL
   );
   `,
+  // v13 (holder pool, credit mode; src/server/holders.ts + holder-posts.ts, docs/token-features.md). Additive only; every
+  // column stays NULL / 0 while TOKEN_HOLDERS is off. With SparecycleHolderPool and SparecycleJobPaymentsV2 set, a root row
+  // goes ready -> sent -> posted (or skipped / unpostable / conflict / failed), and the postRoot transaction is sent from
+  // the scheduler key. funded_wei = the epoch's Distributed.toHolderPool from V2; total_eth_wei = the sum of the leaves.
+  `
+  ALTER TABLE token_holder_roots ADD COLUMN funded_wei TEXT;            -- V2 Distributed.toHolderPool summed over the epoch
+  ALTER TABLE token_holder_roots ADD COLUMN available_wei TEXT;         -- the pool's available() when the tree was built
+  ALTER TABLE token_holder_roots ADD COLUMN note TEXT;                  -- why a root was skipped / is unpostable
+  ALTER TABLE token_holder_roots ADD COLUMN pending_tx TEXT;            -- postRoot sent, receipt not seen yet
+  ALTER TABLE token_holder_roots ADD COLUMN sent_at INTEGER;
+  ALTER TABLE token_holder_roots ADD COLUMN posted_tx TEXT;             -- the postRoot transaction (RootPosted)
+  ALTER TABLE token_holder_roots ADD COLUMN posted_at INTEGER;
+  ALTER TABLE token_holder_roots ADD COLUMN claimable_until INTEGER;    -- getRoot(epoch).claimableUntilEpoch after posting
+  ALTER TABLE token_holder_roots ADD COLUMN post_error TEXT;            -- last send error (never a secret)
+  ALTER TABLE token_holder_roots ADD COLUMN post_attempts INTEGER NOT NULL DEFAULT 0; -- contract reverts only
+  ALTER TABLE token_holder_leaves ADD COLUMN proof TEXT;                -- JSON array of sibling hashes (OpenZeppelin MerkleProof)
+  CREATE INDEX token_holder_leaves_holder ON token_holder_leaves(holder, epoch_id);
+  `,
 ];
 
 type Holder = { db: DatabaseSync; path: string; txDepth: number };

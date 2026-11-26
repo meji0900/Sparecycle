@@ -1,6 +1,14 @@
 // Holder weights and the HolderPool root, credit mode (brief §6.1–6.2, docs/token-features.md), behind TOKEN_HOLDERS
-// (default off). Nothing here sends a transaction: the postRoot call and the Safe funding transaction are PREPARED,
-// unsigned. NVDA mode is not built (gates G1–G3, §6.6).
+// (default off). Nothing in this file sends a transaction. NVDA mode is not built (gates G1–G3, §6.6).
+//
+// Two modes:
+//  - live (SparecycleHolderPool AND SparecycleJobPaymentsV2 set): V2 sends the holder part of every charge to the pool
+//    itself. Once epoch E is closed on-chain its funding is final (V2 charges only the open epoch): the sum of V2's
+//    Distributed.toHolderPool for E, capped by the pool's available(). Amounts are each holder's time-weighted share of
+//    it, floored; totalEth = the sum of the leaves, so the rounding remainder stays in the pool. An epoch with no funding
+//    or no eligible holder is `skipped` (nothing to post). A `ready` root is sent by ./holder-posts from the scheduler key.
+//  - prepared only (the pool without V2, the earlier stage): the share is read from the V1 charge and the postRoot call
+//    and the Safe funding transaction are PREPARED, unsigned, never sent.
 //
 // Weight (no point-in-time snapshot). For epoch E = [startedAt, endedAt) the weight of an address is its time-weighted
 // average SPARE balance:  sum(balance x seconds held) / epoch length,  replayed from SPARE Transfer logs read through
@@ -21,10 +29,10 @@
 // The ledger (token_holder_ledger, cursor meta token_holder_block) replays every SPARE transfer from SPARE_START_BLOCK,
 // because a holder's balance at an epoch start needs the full history. While SPARE_START_BLOCK is not recorded, roots are
 // stored `incomplete`.
-import { encodeFunctionData, encodePacked, getAddress, keccak256, type Address, type Hex } from "viem";
+import { encodeFunctionData, getAddress, type Address, type Hex } from "viem";
 import { ADDR, BURN_SINKS, HOLDER_CONTRACT_ALLOWLIST, HOLDER_EXCLUSIONS, SPARE_START_BLOCK, TOKEN_CONTRACTS } from "@/lib/addresses";
 import { targetChain } from "@/lib/chain";
-import { buildTree, ZERO_ROOT } from "@/lib/merkle";
+import { buildTree, getProof, holderLeafOf as libHolderLeafOf, ZERO_ROOT } from "@/lib/merkle";
 import { holderPoolAbi } from "@/lib/token-contracts";
 import { DEFAULT_HOLDER_MODE, HOLDER_MIN_SPARE_WEI, holderShareOf, STAKED_COUNTS_AS_HELD, SUPPORTED_HOLDER_MODES, type HolderMode } from "@/lib/token-rules";
 import { tokenChain, type SpareTransfer } from "./chain-io";
@@ -159,13 +167,13 @@ export function modeForEpoch(history: ModeChange[], epochId: number, supported: 
   return last.mode as HolderMode;
 }
 
-/** keccak256(abi.encodePacked(uint64 epochId, address holder, uint8 mode, uint256 amount)). */
-export const holderLeafOf = (epochId: bigint, holder: Address, mode: number, amount: bigint): Hex =>
-  keccak256(encodePacked(["uint64", "address", "uint8", "uint256"], [epochId, holder, mode, amount]));
+/** keccak256(abi.encodePacked(uint64 epochId, address holder, uint8 mode, uint256 amount)) (src/lib/merkle.ts, browser-safe). */
+export const holderLeafOf = (epochId: bigint, holder: Address, mode: number, amount: bigint): Hex => libHolderLeafOf(epochId, holder, mode, amount);
 
 export function buildHolderTree<T extends { holder: Address; mode: number; amount: bigint }>(epochId: number, entries: T[]) {
   const leaves = entries.map((e) => ({ ...e, leaf: holderLeafOf(BigInt(epochId), e.holder, e.mode, e.amount) }));
-  return { tree: leaves.length ? buildTree(leaves.map((l) => l.leaf)) : { root: ZERO_ROOT, layers: [[]] }, leaves };
+  const tree = leaves.length ? buildTree(leaves.map((l) => l.leaf)) : { root: ZERO_ROOT, layers: [[]] };
+  return { tree, leaves: leaves.map((l) => ({ ...l, proof: getProof(tree, l.leaf) })) };
 }
 
 // ---- The runner ------------------------------------------------------------------------------------------------
@@ -173,6 +181,8 @@ export function buildHolderTree<T extends { holder: Address; mode: number; amoun
 export type HolderInfra = {
   startBlock: bigint | null;
   holderPool: Address | null;
+  /** SparecycleJobPaymentsV2: with the pool set, roots are live (funded by V2, posted by ./holder-posts). */
+  jobPaymentsV2: Address | null;
   nodeStake: Address | null;
   safe: Address;
   chainId: number;
@@ -184,6 +194,7 @@ export type HolderInfra = {
 export const defaultHolderInfra = (): HolderInfra => ({
   startBlock: SPARE_START_BLOCK,
   holderPool: TOKEN_CONTRACTS.holderPool,
+  jobPaymentsV2: TOKEN_CONTRACTS.jobPaymentsV2,
   nodeStake: TOKEN_CONTRACTS.nodeStake,
   safe: ADDR.treasurySafe,
   chainId: targetChain.id,
@@ -191,6 +202,14 @@ export const defaultHolderInfra = (): HolderInfra => ({
   allowlist: HOLDER_CONTRACT_ALLOWLIST,
   min: HOLDER_MIN_SPARE_WEI,
 });
+
+/** Live mode: the pool is funded by V2's charges and its roots are sent by ./holder-posts. Needs both addresses. */
+export const holderPostingLive = (infra: Pick<HolderInfra, "holderPool" | "jobPaymentsV2"> = defaultHolderInfra()) =>
+  infra.holderPool !== null && infra.jobPaymentsV2 !== null;
+
+/** How a holder's weight is computed, as the API and the holder page state it. */
+export const HOLDER_WEIGHT_METHOD =
+  "Time-weighted average SPARE balance over the epoch (six hours): the sum of balance x seconds held, divided by the epoch length, replayed from SPARE Transfer logs with block times. Staked SPARE counts for its owner.";
 
 type EpochRow = { id: number; started_at: number; ended_at: number | null; length: number };
 const CURSOR = "token_holder_block";
@@ -233,10 +252,26 @@ const incompleteRow = (epochId: number, missing: string[], toTreasury: bigint | 
  * processed in order). Returns a summary line.
  */
 export async function prepareHolderRoot(epoch: EpochRow, infra: HolderInfra = defaultHolderInfra()): Promise<string> {
-  const end = epoch.ended_at ?? epoch.started_at + epoch.length;
-  const charge = await epochTreasuryAmount(epoch.id);
-  const toTreasury = charge?.toTreasury ?? null;
-  const total = toTreasury === null ? 0n : holderShareOf(toTreasury);
+  const liveMode = holderPostingLive(infra);
+  let start = epoch.started_at;
+  let end = epoch.ended_at ?? epoch.started_at + epoch.length;
+  let toTreasury: bigint | null = null;
+  let total = 0n;
+  if (liveMode) {
+    // The funding is final (V2 charges only the open epoch), and postRoot accepts the epoch, only once it is closed
+    // on-chain. Not yet: throw, and prepareHolderRoots retries it later. Its window is the contract's.
+    const open = await tokenChain.currentEpoch();
+    if (open <= BigInt(epoch.id)) throw new Error(`epoch ${epoch.id} is not closed on-chain yet`);
+    const w = await tokenChain.rewardsEpoch(BigInt(epoch.id));
+    if (w.endedAt > w.startedAt) {
+      start = Number(w.startedAt);
+      end = Number(w.endedAt);
+    }
+  } else {
+    const charge = await epochTreasuryAmount(epoch.id);
+    toTreasury = charge?.toTreasury ?? null;
+    total = toTreasury === null ? 0n : holderShareOf(toTreasury);
+  }
   if (infra.startBlock === null) {
     incompleteRow(epoch.id, ["SPARE start block (src/lib/addresses.ts SPARE_START_BLOCK): balances need the full Transfer history"], toTreasury, total);
     return `epoch ${epoch.id}: incomplete (SPARE start block not recorded)`;
@@ -244,14 +279,14 @@ export async function prepareHolderRoot(epoch: EpochRow, infra: HolderInfra = de
   const cursorRaw = getMeta(CURSOR);
   const cursor = cursorRaw === null ? infra.startBlock - 1n : BigInt(cursorRaw);
   // Ledger up to the epoch start (transfers before startedAt), then the epoch's own transfers (startedAt <= t < end).
-  const startBoundary = await tokenChain.lastBlockBefore(epoch.started_at, infra.startBlock);
+  const startBoundary = await tokenChain.lastBlockBefore(start, infra.startBlock);
   const endBoundary = await tokenChain.lastBlockBefore(end, infra.startBlock);
   if (startBoundary < cursor) return `epoch ${epoch.id}: skipped (the ledger is already past its start)`;
   const ledger = loadLedger();
   const stake = infra.nodeStake ? lower(infra.nodeStake) : null;
   for (const t of await timedTransfers(cursor + 1n, startBoundary, infra, false)) applyTransfer(ledger, t, stake);
   const inEpoch = await timedTransfers(startBoundary + 1n, endBoundary, infra, true);
-  const { averages, closing } = timeWeightedAverages({ start: epoch.started_at, end, opening: ledger, transfers: inEpoch, stake: infra.nodeStake });
+  const { averages, closing } = timeWeightedAverages({ start, end, opening: ledger, transfers: inEpoch, stake: infra.nodeStake });
 
   // Modes: ModeSet events up to the epoch end (stored as history); none while the pool is not deployed.
   if (infra.holderPool) {
@@ -274,7 +309,24 @@ export async function prepareHolderRoot(epoch: EpochRow, infra: HolderInfra = de
     if (await tokenChain.isContract(getAddress(a))) contracts.add(a);
   }
   const el = eligibleWeights(averages, { excluded, allowlist, contracts, min: infra.min });
-  const shares = allocateHolderShares(total, el.eligible);
+
+  // Live: the epoch's funding (V2 Distributed.toHolderPool), capped by what the pool has unreserved. Each share is floored
+  // and totalEth is their sum, so the remainder stays in the pool's available().
+  let funded: bigint | null = null;
+  let available: bigint | null = null;
+  let note: string | null = null;
+  if (liveMode) {
+    funded = (await tokenChain.holderFunding(BigInt(epoch.id), startBoundary + 1n)).total;
+    available = await tokenChain.holderPoolAvailable();
+  }
+  const distributable = liveMode ? (funded! < available! ? funded! : available!) : total;
+  const shares = allocateHolderShares(distributable, el.eligible);
+  if (liveMode) {
+    total = shares.reduce((s, x) => s + x.amount, 0n);
+    if (distributable === 0n) note = funded === 0n ? "no holder-pool funding in this epoch (no V2 charge with a holder part)" : "the pool has nothing available";
+    else if (el.eligible.size === 0) note = "no eligible holder in this epoch: the funding stays in the pool";
+    else if (!shares.length) note = "every share rounds down to 0 wei: the funding stays in the pool";
+  }
   const modeRows = getDb().prepare("SELECT holder, mode, effective_epoch, block, log_index FROM token_holder_modes").all() as {
     holder: string;
     mode: number;
@@ -293,21 +345,23 @@ export async function prepareHolderRoot(epoch: EpochRow, infra: HolderInfra = de
   const totalWeight = [...el.eligible.values()].reduce((s, w) => s + w, 0n);
 
   const missing: string[] = [];
-  if (!infra.holderPool) missing.push("SparecycleHolderPool (src/lib/addresses.ts TOKEN_CONTRACTS.holderPool): no postRoot call");
-  if (toTreasury === null) missing.push("no confirmed charge in this epoch: nothing to distribute");
-  const postCall =
-    infra.holderPool && toTreasury !== null
-      ? {
-          unsigned: true,
-          from: "scheduler key (never sent by this code)",
-          to: infra.holderPool,
-          function: "postRoot(uint64 epochId, bytes32 root, uint256 totalEth)",
-          args: { epochId: epoch.id, root: tree.root, totalEth: total.toString() },
-          data: encodeFunctionData({ abi: holderPoolAbi, functionName: "postRoot", args: [BigInt(epoch.id), tree.root, total] }),
-        }
-      : null;
+  if (!liveMode) {
+    if (!infra.holderPool) missing.push("SparecycleHolderPool (src/lib/addresses.ts TOKEN_CONTRACTS.holderPool): no postRoot call");
+    if (toTreasury === null) missing.push("no confirmed charge in this epoch: nothing to distribute");
+  }
+  const callable = liveMode ? note === null : infra.holderPool !== null && toTreasury !== null;
+  const postCall = callable
+    ? {
+        unsigned: true,
+        from: liveMode ? "scheduler key: sent by src/server/holder-posts.ts" : "scheduler key (never sent by this code)",
+        to: infra.holderPool,
+        function: "postRoot(uint64 epochId, bytes32 root, uint256 totalEth)",
+        args: { epochId: epoch.id, root: tree.root, totalEth: total.toString() },
+        data: encodeFunctionData({ abi: holderPoolAbi, functionName: "postRoot", args: [BigInt(epoch.id), tree.root, total] }),
+      }
+    : null;
   let fund: object | null = null;
-  if (postCall && total > 0n) {
+  if (!liveMode && postCall && total > 0n) {
     // Until SparecycleJobPaymentsV2 sends the split itself, the holder share leaves the treasury Safe by a Safe transaction.
     try {
       const safeTx: SafeTx = {
@@ -327,7 +381,15 @@ export async function prepareHolderRoot(epoch: EpochRow, infra: HolderInfra = de
       missing.push(`treasury Safe nonce read failed: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`);
     }
   }
-  const status = postCall ? "prepared" : toTreasury === null && infra.holderPool ? "nothing-due" : "incomplete";
+  const status = liveMode
+    ? note === null
+      ? "ready"
+      : "skipped"
+    : postCall
+      ? "prepared"
+      : toTreasury === null && infra.holderPool
+        ? "nothing-due"
+        : "incomplete";
   tx((db) => {
     db.prepare("DELETE FROM token_holder_ledger").run();
     const insL = db.prepare("INSERT INTO token_holder_ledger (address, wallet_wei, staked_wei) VALUES (?, ?, ?)");
@@ -335,7 +397,7 @@ export async function prepareHolderRoot(epoch: EpochRow, infra: HolderInfra = de
     setMeta(CURSOR, endBoundary.toString());
     db.prepare(
       `INSERT OR REPLACE INTO token_holder_roots (epoch_id, status, missing, to_treasury_wei, total_eth_wei, root, leaves, total_weight, from_block, to_block,
-         post_call, fund_safe_tx, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         post_call, fund_safe_tx, created_at, funded_wei, available_wei, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       epoch.id,
       status,
@@ -350,22 +412,30 @@ export async function prepareHolderRoot(epoch: EpochRow, infra: HolderInfra = de
       postCall ? JSON.stringify(postCall) : null,
       fund ? JSON.stringify(fund) : null,
       nowSec(),
+      funded?.toString() ?? null,
+      available?.toString() ?? null,
+      note,
     );
     db.prepare("DELETE FROM token_holder_leaves WHERE epoch_id = ?").run(epoch.id);
     const insLeaf = db.prepare(
-      "INSERT INTO token_holder_leaves (epoch_id, holder, mode, avg_balance_wei, amount_wei, leaf) VALUES (?, ?, ?, ?, ?, ?)",
+      "INSERT INTO token_holder_leaves (epoch_id, holder, mode, avg_balance_wei, amount_wei, leaf, proof) VALUES (?, ?, ?, ?, ?, ?, ?)",
     );
-    for (const l of leaves) insLeaf.run(epoch.id, l.holder, l.mode, l.weight.toString(), l.amount.toString(), l.leaf);
+    for (const l of leaves) insLeaf.run(epoch.id, l.holder, l.mode, l.weight.toString(), l.amount.toString(), l.leaf, JSON.stringify(l.proof));
   });
-  return (
-    `epoch ${epoch.id}: ${status}, ${leaves.length} holders, total ${total} wei, root ${tree.root} ` +
-    `(${el.excluded.length} excluded, ${el.contracts.length} contracts, ${el.belowMin.length} below the minimum; NOT posted)`
-  );
+  const counts = `${el.excluded.length} excluded, ${el.contracts.length} contracts, ${el.belowMin.length} below the minimum`;
+  if (liveMode) {
+    return (
+      `epoch ${epoch.id}: ${status}${note ? ` (${note})` : ""}, ${leaves.length} holders, total ${total} of ${funded} wei funded, ` +
+      `root ${tree.root} (${counts})`
+    );
+  }
+  return `epoch ${epoch.id}: ${status}, ${leaves.length} holders, total ${total} wei, root ${tree.root} (${counts}; NOT posted)`;
 }
 
 /**
  * Prepares the roots of the closed epochs that have none yet, in order. On the first run only the latest closed epoch is
- * taken (earlier epochs are not distributed). Stops at the first failure; it is retried at the next close.
+ * taken (earlier epochs are not distributed). Stops at the first failure (in live mode also an epoch not yet closed
+ * on-chain); it is retried at the next close and by the holder timer (./holder-posts).
  */
 export async function prepareHolderRoots(infra: HolderInfra = defaultHolderInfra()): Promise<string> {
   const db = getDb();

@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
-import { burnerAbi, holderPoolAbi, nodeStakeAbi } from "./token-contracts";
+import { burnerAbi, holderPoolAbi, jobPaymentsV2Abi, nodeStakeAbi } from "./token-contracts";
 
 type Param = { type: string; indexed?: boolean; components?: readonly Param[] };
 type Item = { type: string; name?: string; inputs?: readonly Param[]; outputs?: readonly Param[]; stateMutability?: string };
@@ -17,7 +17,12 @@ const sig = (i: Item) =>
   (i.type === "function" ? ` ${i.stateMutability} -> (${(i.outputs ?? []).map(t).join(",")})` : "");
 const out = (name: string) => join(process.cwd(), "contracts", "out", `${name}.sol`, `${name}.json`);
 
-for (const [name, abi] of [["SparecycleNodeStake", nodeStakeAbi], ["SparecycleHolderPool", holderPoolAbi], ["SparecycleBurner", burnerAbi]] as const) {
+for (const [name, abi] of [
+  ["SparecycleNodeStake", nodeStakeAbi],
+  ["SparecycleHolderPool", holderPoolAbi],
+  ["SparecycleBurner", burnerAbi],
+  ["SparecycleJobPaymentsV2", jobPaymentsV2Abi],
+] as const) {
   describe(`${name} ABI used by the site`, () => {
     const file = out(name);
     test("every event, function and error matches the compiled contract", { skip: !existsSync(file) && "contracts/out not built" }, () => {

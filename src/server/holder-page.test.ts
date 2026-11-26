@@ -134,6 +134,29 @@ describe("every figure has a source", () => {
     assert.equal(staked.tables[0].rows[0].source.href, "/api/v1/slashing/1", "a proposal links its public evidence");
   });
 
+  test("TOKEN_HOLDERS off: no claim panel; on: the holder minimum is a sourced figure and the panel states the rules", () => {
+    assert.equal(P.buildHolderPage(today()).claims, null, "off (today): no claim panel, the page is as before");
+    const r = today();
+    r.holders = { lastComputedAt: 1_795_700_000 };
+    let model = P.buildHolderPage(r);
+    assert.deepEqual(unsourced(model), []);
+    const min = model.sections[3].figures.find((f) => f.label === "Holder minimum (time-weighted SPARE)")!;
+    assert.equal(min.kind, "value");
+    assert.equal(min.kind === "value" && min.value, "100,000");
+    assert.equal(min.kind === "value" && min.source.href, "/api/v1/holders/epochs");
+    assert.deepEqual(
+      { ...model.claims, method: undefined },
+      { live: false, pool: null, jobPaymentsV2: null, minimumText: "100,000 SPARE", method: undefined, lastComputedText: model.claims!.lastComputedText, rolloverEpochs: 8, rolloverText: "8 epochs (2 days)" },
+    );
+    assert.match(model.claims!.method, /^Time-weighted average SPARE balance over the epoch \(six hours\)/);
+    assert.match(model.claims!.lastComputedText!, /UTC$/);
+    r.contracts = { ...r.contracts, holderPool: addr(0xf00d1), jobPaymentsV2: addr(0xb2) };
+    model = P.buildHolderPage(r);
+    assert.equal(model.claims!.live, true, "live only with both the pool and V2");
+    const page = readFileSync(join(ROOT, "src", "app", "(dapp)", "token", "holders", "page.tsx"), "utf8");
+    assert.match(page, /\{m\.claims \? \(/, "the claim section renders only from the model");
+  });
+
   test("the rows of the burn table always carry a transaction link (no row without a hash)", () => {
     const r = today();
     r.burns = { status: "live", fromBlock: 1n, rows: [], slashes: [], burner: "not-live", stakeLive: false };

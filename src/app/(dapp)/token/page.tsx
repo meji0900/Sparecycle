@@ -106,12 +106,25 @@ export default async function TokenPage() {
             tone="neutral"
             title="Holders"
             action={
-              <Link href="/token/holders" className="link text-sm">
-                Open the holder page
-              </Link>
+              // TOKEN_HOLDERS on as well: also a link to the claim panel. Off: exactly the one link as before.
+              serverEnv.tokenHolders() ? (
+                <span className="flex flex-wrap gap-x-4 gap-y-1">
+                  <Link href="/token/holders#claim" className="link text-sm">
+                    Claim compute credits
+                  </Link>
+                  <Link href="/token/holders" className="link text-sm">
+                    Open the holder page
+                  </Link>
+                </span>
+              ) : (
+                <Link href="/token/holders" className="link text-sm">
+                  Open the holder page
+                </Link>
+              )
             }
           >
             SPARE burned, distributed to holders and staked by node owners, read from the chain.
+            {serverEnv.tokenHolders() ? " Eligible holders can claim compute credits there; credits pay for jobs and cannot be withdrawn." : null}
           </Notice>
         ) : null}
         {config.tokenAddress && snap.token && !snap.token.ok ? (

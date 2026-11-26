@@ -1,5 +1,6 @@
-// On-chain I/O of the scheduler: reads of the reward contract and the one write it makes,
-// closeEpochAndPostRoot. The signer key comes only from SCHEDULER_SIGNER_KEY and is never logged.
+// On-chain I/O of the scheduler: reads of the reward contract and its writes from the scheduler key,
+// closeEpochAndPostRoot and (TOKEN_HOLDERS with the holder pool and V2 set) SparecycleHolderPool.postRoot. The signer key
+// comes only from SCHEDULER_SIGNER_KEY and is never logged.
 // Token features (`tokenChain`, at the end of the file): reads only, never a write.
 import {
   BaseError,
@@ -11,6 +12,8 @@ import {
   keccak256,
   parseEventLogs,
   toBytes,
+  TransactionReceiptNotFoundError,
+  WaitForTransactionReceiptTimeoutError,
   type Address,
   type Hex,
 } from "viem";
@@ -20,7 +23,7 @@ import { publicClient, targetChain } from "@/lib/chain";
 import { sparecycleRewardsAbi, type EpochStruct } from "@/contracts/sparecycleRewards";
 import { jobPaymentsAbi } from "@/contracts/jobPayments";
 import { ADDR, BURN_SINKS, TOKEN_CONTRACTS, UNISWAP_V4 } from "@/lib/addresses";
-import { burnerAbi, holderPoolAbi, nodeStakeAbi, safeAbi, spareTokenAbi, v4PoolManagerAbi, v4StateViewAbi } from "@/lib/token-contracts";
+import { burnerAbi, holderPoolAbi, jobPaymentsV2Abi, nodeStakeAbi, safeAbi, spareTokenAbi, v4PoolManagerAbi, v4StateViewAbi } from "@/lib/token-contracts";
 import { serverEnv } from "./env";
 
 export const rewardAddress = (): Address | null => config.rewardContract;
@@ -86,6 +89,13 @@ export function sendAsScheduler<T>(send: () => Promise<T>): Promise<T> {
 
 export const rootPostingConfigured = () => rewardAddress() !== null && schedulerAccount() !== null;
 
+/** The decoded custom-error name of a contract revert (simulation or call), or null when it is not a decoded revert. */
+export function chainErrorName(e: unknown): string | null {
+  if (!(e instanceof BaseError)) return null;
+  const revert = e.walk((x) => x instanceof ContractFunctionRevertedError);
+  return revert instanceof ContractFunctionRevertedError ? (revert.data?.errorName ?? null) : null;
+}
+
 /** Short, secret-free error text (decoded revert name when there is one). */
 export function describeChainError(e: unknown): string {
   if (e instanceof BaseError) {
@@ -128,6 +138,51 @@ export async function postRoot(
   const settled = await readEpoch(epochId);
   return { hash, success: true, endedAt: settled.endedAt };
 }
+
+// ---- Holder pool root posting (docs/token-features.md; TOKEN_HOLDERS with SparecycleHolderPool and V2 set) --------
+// The one token-feature write: SparecycleHolderPool.postRoot(epochId, root, totalEth) from the scheduler key, through
+// sendAsScheduler so it never takes a nonce another scheduler-key send already took. The rules that make it idempotent
+// (getRoot read before every send, a sent transaction is waited for, epochs in order) are in ./holder-posts.
+
+export const holderPoolSender = {
+  /** Simulates (decoded reverts throw), then sends postRoot; `onSent` gets the hash before the receipt wait. */
+  async postRoot(
+    pool: Address,
+    epochId: bigint,
+    root: Hex,
+    totalEth: bigint,
+    onSent: (hash: Hex) => void,
+  ): Promise<{ hash: Hex; success: boolean }> {
+    const account = schedulerAccount();
+    if (!account) throw new Error("SCHEDULER_SIGNER_KEY not set");
+    const { request } = await publicClient.simulateContract({
+      account,
+      address: pool,
+      abi: holderPoolAbi,
+      functionName: "postRoot",
+      args: [epochId, root, totalEth],
+    });
+    const wallet = createWalletClient({ account, chain: targetChain, transport: http(targetChain.rpcUrls.default.http[0]) });
+    const hash = await sendAsScheduler(() => wallet.writeContract(request));
+    onSent(hash);
+    const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 180_000 });
+    return { hash, success: receipt.status === "success" };
+  },
+
+  /** A sent transaction's outcome; null while it is not mined (or unknown to the node). Waits up to `waitMs`. */
+  async receiptStatus(hash: Hex, waitMs = 0): Promise<"success" | "reverted" | null> {
+    try {
+      const r =
+        waitMs > 0
+          ? await publicClient.waitForTransactionReceipt({ hash, timeout: waitMs })
+          : await publicClient.getTransactionReceipt({ hash });
+      return r.status;
+    } catch (e) {
+      if (e instanceof TransactionReceiptNotFoundError || e instanceof WaitForTransactionReceiptTimeoutError) return null;
+      throw e;
+    }
+  },
+};
 
 // ---- Token features (docs/token-features.md): READS ONLY ---------------------------------------------------------
 // Everything the burn plan, the holder weights, the slashing, the stake gate and the holder page read from the chain
@@ -176,6 +231,16 @@ export type ChargedEvent = { epochId: bigint; total: bigint; toPot: bigint; toTr
 export type PoolRead = { sqrtPriceX96: bigint; liquidity: bigint; lpFee: number; block: bigint };
 export type SafeExecution = { safeTxHash: Hex; txHash: Hex; block: bigint };
 export type ModeSetEvent = { holder: Address; mode: number; effectiveEpoch: bigint; block: bigint; logIndex: number };
+/** SparecycleHolderPool.getRoot(epochId). */
+export type HolderRootInfo = {
+  root: Hex;
+  total: bigint;
+  claimed: bigint;
+  postedInEpoch: bigint;
+  claimableUntilEpoch: bigint;
+  posted: boolean;
+  rolledOver: boolean;
+};
 export type SlashedEvent = { owner: Address; amount: bigint; proposalId: bigint; evidenceHash: Hex; block: bigint; txHash: Hex };
 /** SparecycleNodeStake's public totals and its fixed rules (immutables and code constants). */
 export type NodeStakeTotals = {
@@ -213,9 +278,11 @@ const EXECUTION_SUCCESS_TOPIC = keccak256(toBytes("ExecutionSuccess(bytes32,uint
 /** Safe 1.3 logs ExecutionSuccess with txHash in data, later versions index it: read both layouts. */
 const safeTxHashOfLog = (l: { topics: readonly Hex[]; data: Hex }): Hex => (l.topics[1] ?? (`0x${l.data.slice(2, 66)}` as Hex)) as Hex;
 
+// Every head read below is uncached (cacheTime 0): viem keeps the last block number for a few seconds, and a scan that
+// ends at a stale head silently misses the newest logs (a charge's Distributed, a transfer just before an epoch end).
 export const tokenChain = {
   async headBlock(): Promise<bigint> {
-    return publicClient.getBlockNumber();
+    return publicClient.getBlockNumber({ cacheTime: 0 });
   },
 
   /** Block timestamp (unix seconds), cached in memory. */
@@ -319,7 +386,7 @@ export const tokenChain = {
   /** The SPARE/ETH v4 pool's price and in-range liquidity (StateView), both read at one block. */
   async poolState(): Promise<PoolRead> {
     const address = live(UNISWAP_V4.stateView, "Uniswap v4 StateView");
-    const block = await publicClient.getBlockNumber();
+    const block = await publicClient.getBlockNumber({ cacheTime: 0 });
     const id = UNISWAP_V4.spareEthPoolId;
     const [slot0, liquidity] = await Promise.all([
       publicClient.readContract({ address, abi: v4StateViewAbi, functionName: "getSlot0", args: [id], blockNumber: block }),
@@ -335,7 +402,7 @@ export const tokenChain = {
 
   /** ExecutionSuccess events of the treasury Safe since `fromBlock`. */
   async safeExecutions(fromBlock: bigint): Promise<SafeExecution[]> {
-    const head = await publicClient.getBlockNumber();
+    const head = await publicClient.getBlockNumber({ cacheTime: 0 });
     const logs = await logsInChunks(fromBlock, head, (from, to) => publicClient.getLogs({ address: ADDR.treasurySafe, fromBlock: from, toBlock: to }));
     return logs
       .filter((l) => l.topics[0] === EXECUTION_SUCCESS_TOPIC)
@@ -359,7 +426,7 @@ export const tokenChain = {
 
   /** SPARE Transfer logs to the zero or the dead address since `fromBlock` (burn candidates), in chain order. */
   async spareBurnTransfers(fromBlock: bigint): Promise<SpareTransfer[]> {
-    const head = await publicClient.getBlockNumber();
+    const head = await publicClient.getBlockNumber({ cacheTime: 0 });
     const out: SpareTransfer[] = [];
     for (const sink of [BURN_SINKS.zero, BURN_SINKS.dead]) {
       const logs = await logsInChunks(fromBlock, head, (from, to) =>
@@ -420,7 +487,7 @@ export const tokenChain = {
   /** SparecycleNodeStake Slashed events in [fromBlock, toBlock] (default: to the head). */
   async slashedEvents(fromBlock: bigint, toBlock?: bigint): Promise<SlashedEvent[]> {
     const address = live(TOKEN_CONTRACTS.nodeStake, "SparecycleNodeStake");
-    const head = toBlock ?? (await publicClient.getBlockNumber());
+    const head = toBlock ?? (await publicClient.getBlockNumber({ cacheTime: 0 }));
     const logs = await logsInChunks(fromBlock, head, (from, to) => publicClient.getLogs({ address, event: nodeStakeAbi[3], fromBlock: from, toBlock: to }));
     return logs.map((l) => ({
       owner: getAddress(l.args.owner!),
@@ -435,7 +502,7 @@ export const tokenChain = {
   /** SparecycleBurner Burned events since `fromBlock` (phase 2b). */
   async burnedEvents(fromBlock: bigint): Promise<BurnedEvent[]> {
     const address = live(TOKEN_CONTRACTS.burner, "SparecycleBurner");
-    const head = await publicClient.getBlockNumber();
+    const head = await publicClient.getBlockNumber({ cacheTime: 0 });
     const logs = await logsInChunks(fromBlock, head, (from, to) => publicClient.getLogs({ address, event: burnerAbi[0], fromBlock: from, toBlock: to }));
     return logs.map((l) => ({
       epochId: l.args.epochId!,
@@ -449,7 +516,7 @@ export const tokenChain = {
   /** SparecycleNodeStake SlashProposed events since `fromBlock`. */
   async slashProposedEvents(fromBlock: bigint): Promise<(Omit<SlashedEvent, "proposalId"> & { proposalId: bigint })[]> {
     const address = live(TOKEN_CONTRACTS.nodeStake, "SparecycleNodeStake");
-    const head = await publicClient.getBlockNumber();
+    const head = await publicClient.getBlockNumber({ cacheTime: 0 });
     const logs = await logsInChunks(fromBlock, head, (from, to) => publicClient.getLogs({ address, event: nodeStakeAbi[4], fromBlock: from, toBlock: to }));
     return logs.map((l) => ({
       owner: getAddress(l.args.owner!),
@@ -467,7 +534,7 @@ export const tokenChain = {
     claims: { epochId: bigint; holder: Address; mode: number; amount: bigint; block: bigint; txHash: Hex }[];
   }> {
     const address = live(TOKEN_CONTRACTS.holderPool, "SparecycleHolderPool");
-    const head = await publicClient.getBlockNumber();
+    const head = await publicClient.getBlockNumber({ cacheTime: 0 });
     const [roots, claims] = await Promise.all([
       logsInChunks(fromBlock, head, (from, to) => publicClient.getLogs({ address, event: holderPoolAbi[4], fromBlock: from, toBlock: to })),
       logsInChunks(fromBlock, head, (from, to) => publicClient.getLogs({ address, event: holderPoolAbi[5], fromBlock: from, toBlock: to })),
@@ -483,6 +550,72 @@ export const tokenChain = {
         txHash: l.transactionHash as Hex,
       })),
     };
+  },
+
+  /** SparecycleRewards.currentEpoch(): the open epoch on-chain (the holder pool's clock). */
+  async currentEpoch(): Promise<bigint> {
+    return readCurrentEpoch();
+  },
+
+  /** SparecycleRewards.getEpoch(id): the epoch's on-chain window (endedAt = 0 while it is open). */
+  async rewardsEpoch(id: bigint): Promise<{ startedAt: bigint; endedAt: bigint; settled: boolean }> {
+    const e = await readEpoch(id);
+    return { startedAt: e.startedAt, endedAt: e.endedAt, settled: e.settled };
+  },
+
+  /**
+   * The holder pool's funding of an epoch: the sum of `Distributed.toHolderPool` over SparecycleJobPaymentsV2's charges
+   * for it (epochId is indexed), searched from `fromBlock` to the head. Final once the epoch is closed on-chain, since V2
+   * charges only the open epoch.
+   */
+  async holderFunding(epochId: bigint, fromBlock: bigint): Promise<{ total: bigint; txs: Hex[] }> {
+    const address = live(TOKEN_CONTRACTS.jobPaymentsV2, "SparecycleJobPaymentsV2");
+    const head = await publicClient.getBlockNumber({ cacheTime: 0 });
+    const logs = await logsInChunks(fromBlock, head, (from, to) =>
+      publicClient.getLogs({ address, event: jobPaymentsV2Abi[0], args: { epochId }, fromBlock: from, toBlock: to }),
+    );
+    return { total: logs.reduce((s, l) => s + (l.args.toHolderPool ?? 0n), 0n), txs: logs.map((l) => l.transactionHash as Hex) };
+  },
+
+  /** SparecycleHolderPool.getRoot(epochId). */
+  async holderRoot(epochId: bigint): Promise<HolderRootInfo> {
+    const address = live(TOKEN_CONTRACTS.holderPool, "SparecycleHolderPool");
+    const r = await publicClient.readContract({ address, abi: holderPoolAbi, functionName: "getRoot", args: [epochId] });
+    return { ...r };
+  },
+
+  /** SparecycleHolderPool.available(): ETH not reserved for any open root. */
+  async holderPoolAvailable(): Promise<bigint> {
+    const address = live(TOKEN_CONTRACTS.holderPool, "SparecycleHolderPool");
+    return publicClient.readContract({ address, abi: holderPoolAbi, functionName: "available" });
+  },
+
+  /** SparecycleHolderPool.nextPostableEpoch(): the lowest epoch id postRoot still accepts. */
+  async holderNextPostable(): Promise<bigint> {
+    const address = live(TOKEN_CONTRACTS.holderPool, "SparecycleHolderPool");
+    return publicClient.readContract({ address, abi: holderPoolAbi, functionName: "nextPostableEpoch" });
+  },
+
+  /** The transaction of the RootPosted event for `epochId` (indexed), from `fromBlock`; null when there is none. */
+  async holderRootPostedTx(epochId: bigint, fromBlock: bigint): Promise<Hex | null> {
+    const address = live(TOKEN_CONTRACTS.holderPool, "SparecycleHolderPool");
+    const head = await publicClient.getBlockNumber({ cacheTime: 0 });
+    const logs = await logsInChunks(fromBlock, head, (from, to) =>
+      publicClient.getLogs({ address, event: holderPoolAbi[4], args: { epochId }, fromBlock: from, toBlock: to }),
+    );
+    return logs.length ? (logs[0].transactionHash as Hex) : null;
+  },
+
+  /** SparecycleHolderPool.hasClaimed(epochId, holder). */
+  async holderHasClaimed(epochId: bigint, holder: Address): Promise<boolean> {
+    const address = live(TOKEN_CONTRACTS.holderPool, "SparecycleHolderPool");
+    return publicClient.readContract({ address, abi: holderPoolAbi, functionName: "hasClaimed", args: [epochId, holder] });
+  },
+
+  /** SparecycleJobPaymentsV2.creditOf(holder): spend-only compute credits. */
+  async creditOf(holder: Address): Promise<bigint> {
+    const address = live(TOKEN_CONTRACTS.jobPaymentsV2, "SparecycleJobPaymentsV2");
+    return publicClient.readContract({ address, abi: jobPaymentsV2Abi, functionName: "creditOf", args: [holder] });
   },
 
   /** TREASURY_BPS of the live SparecycleJobPayments (ADDR.payments): the treasury cut of every charge. */
