@@ -1,6 +1,7 @@
 // Client-side access to the scheduler API (docs/SPEC.md, "Scheduler API"). Every call returns either the data
 // or a typed failure, so pages can say exactly what went wrong instead of inventing rows.
 import { config } from "@/lib/config";
+import type { PublicNodeState } from "@/lib/node-state";
 import type { SchedulerStatus } from "@/lib/use-live";
 
 export const apiUrl = (path: string) => `${config.schedulerApiUrl.replace(/\/+$/, "")}${path}`;
@@ -75,6 +76,8 @@ export type ApiNode = {
   backend?: "cuda" | "vulkan" | "cpu";
   caps: string[];
   online: boolean;
+  /** Idle Guard state (node client 0.4.0+ reports pauses); absent on older schedulers. Never when a pause began. */
+  state?: PublicNodeState;
   lastSeen: number;
   agreedJobs: number;
   epochAgreedJobs: number;

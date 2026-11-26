@@ -3,8 +3,12 @@ import Link from "next/link";
 import { PageHeader } from "@/components/dapp/app-shell";
 import { LastEpochAverage } from "@/components/dapp/last-epoch-average";
 import { DemoVideo } from "@/components/dapp/demo-video";
+import { RegisteredNodesTable } from "@/components/dapp/node-list";
+import { NODE_STATE_TONE } from "@/components/dapp/node-state";
 import { SetupGuide } from "@/components/dapp/setup-guide";
 import { SectionTitle, TableBox, td, th } from "@/components/dapp/ui";
+import { StatusTag } from "@/components/ui/status";
+import { IDLE_GUARD_HOURS_ONLY, NODE_STATE_LABEL, NODE_STATE_MEANING, type PublicNodeState } from "@/lib/node-state";
 import { MODELS } from "@/lib/protocol";
 import { IMAGE_MAX_BITS, TEXT_MIN_SIMILARITY } from "@/server/verify";
 import { FUNDING, feesToTeamWallet, paidJobsLive } from "@/lib/funding-copy";
@@ -22,10 +26,12 @@ const CHECKS: [string, string, string][] = [
   ["VRAM for Stable Diffusion 1.5", `At least ${MODELS.sd15.vramMb.toLocaleString("en-US")} MB (${gb(MODELS.sd15.vramMb)}).`, "Below that, image jobs stay off."],
   ["VRAM for Qwen2.5-1.5B (Q4)", `At least ${MODELS["qwen2.5-1.5b"].vramMb.toLocaleString("en-US")} MB (${gb(MODELS["qwen2.5-1.5b"].vramMb)}).`, "Below that, text jobs stay off."],
   ["Runtimes installed", "The Python environment (image jobs) and llama-server plus the model file (text jobs).", "A missing runtime turns that job type off; the node says which."],
-  ["Another program on the GPU", "Any other process using more than 500 MB of VRAM.", "The node pauses and resumes on its own."],
-  ["GPU temperature", "83 °C or hotter.", "The node pauses until it cools down."],
-  ["Your hours", "The --hours ranges, in local time.", "Outside them the node waits."],
+  ["Another program on the GPU", "Any other process using more than 500 MB of VRAM. NVIDIA only (nvidia-smi).", "The node pauses and resumes on its own. The node list shows: paused, owner is using the GPU."],
+  ["GPU temperature", "83 °C or hotter. NVIDIA only (nvidia-smi).", "The node pauses until it cools down. The node list shows: paused, GPU too hot."],
+  ["Your hours", "The --hours ranges, in local time.", "Outside them the node waits. The node list shows: paused, outside chosen hours."],
 ];
+
+const STATES: PublicNodeState[] = ["active", "paused-busy", "paused-hot", "paused-hours", "offline"];
 
 export default function NodesPage() {
   return (
@@ -120,6 +126,36 @@ export default function NodesPage() {
             </tbody>
           </TableBox>
         </div>
+      </section>
+
+      <section aria-labelledby="idle-guard" className="mt-14">
+        <SectionTitle
+          id="idle-guard"
+          title="Idle Guard: why a node is resting"
+          description={
+            <>
+              Node client 0.4.0 and later tell the scheduler when they pause and why, so a resting node is not mistaken for a
+              switched-off one. A paused node gets no jobs. Only the state is sent: no temperature, no VRAM figure, no
+              process names, no process IDs. The list shows the reason, not when the pause began.
+            </>
+          }
+        />
+        <dl className="mb-5 divide-y divide-line rounded-l border border-line bg-coal">
+          {STATES.map((s) => (
+            <div key={s} className="flex flex-col gap-2 px-5 py-3.5 sm:flex-row sm:items-center sm:gap-6">
+              <dt className="shrink-0 sm:w-64">
+                <StatusTag tone={NODE_STATE_TONE[s]}>{NODE_STATE_LABEL[s]}</StatusTag>
+              </dt>
+              <dd className="text-sm leading-relaxed text-muted">{NODE_STATE_MEANING[s]}</dd>
+            </div>
+          ))}
+        </dl>
+        <p className="mb-5 text-sm leading-relaxed text-muted">
+          AMD, Intel and CPU nodes show <span className="text-text">{IDLE_GUARD_HOURS_ONLY}</span>: there is no reliable
+          cross-vendor reading of temperature or other programs&apos; VRAM, so they pause on <span className="num text-text">--hours</span>{" "}
+          only. Older clients still work; they show active or offline, as before.
+        </p>
+        <RegisteredNodesTable />
       </section>
 
       <div className="mt-14 grid gap-10 lg:grid-cols-2">

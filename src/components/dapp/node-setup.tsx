@@ -179,7 +179,7 @@ export function NodeSetup({
 
       <InstallStep n={4} title="Choose the hours it may work">
         <p>
-          The node only takes jobs inside these hours, and pauses on its own when another program needs the GPU. Pick the
+          The node only takes jobs inside these hours, and on NVIDIA it also pauses on its own when another program needs the GPU or it runs hot. Pick the
           hours your computer is usually idle.
         </p>
         <IdlePlanner hours={hours} onChange={setHours} />
@@ -201,7 +201,7 @@ export function NodeSetup({
       <InstallStep n={6} title="Check that the scheduler sees it">
         <p>
           On start the node prints <span className="num text-text">registered with … · payouts go to 0x…</span>. Within two
-          minutes it appears as Online under{" "}
+          minutes it appears as Active (or Paused, with the reason) under{" "}
           <Link href="/app#nodes" className="link">
             Registered nodes
           </Link>{" "}
