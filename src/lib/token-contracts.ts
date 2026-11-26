@@ -35,8 +35,9 @@
 //   Uniswap v4 (phase 2a buy): StateView getSlot0 / getLiquidity for the price read, the Universal Router's
 //     execute(bytes commands, bytes[] inputs, uint256 deadline) with one V4_SWAP command (0x10) whose actions are
 //     SWAP_EXACT_IN_SINGLE (0x06), SETTLE_ALL (0x0c) and TAKE (0x0e) or TAKE_ALL (0x0f), with
-//     ExactInputSingleParams { PoolKey poolKey; bool zeroForOne; uint128 amountIn; uint128 amountOutMinimum; bytes hookData }
-//     as in v4-periphery 4.0. Check the router deployed on Robinhood Chain uses this layout before any payload is used.
+//     ExactInputSingleParams { PoolKey poolKey; bool zeroForOne; uint128 amountIn; uint128 amountOutMinimum;
+//     uint256 minHopPriceX36; bytes hookData }: the layout of both Universal Routers on Robinhood Chain (checked on their
+//     Sourcify source and run on a fork, 27 Nov 2026; docs/uniswap-v4-adapter.md). The first draft here lacked minHopPriceX36.
 //   Safe 1.5.0 (the treasury Safe): nonce(), the EIP-712 SafeTx hash, event ExecutionSuccess(bytes32 txHash, uint256 payment).
 import { parseAbi } from "viem";
 
