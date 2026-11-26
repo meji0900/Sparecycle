@@ -3,17 +3,20 @@ import { LegalPage, LegalSection } from "@/components/legal/legal-page";
 import { ReviewStatus } from "@/components/legal/review-status";
 import { config } from "@/lib/config";
 import { serverEnv } from "@/server/env";
+import { supportEnabled } from "@/server/support";
 
 export const metadata: Metadata = {
   title: "Privacy",
   description: "Placeholder until counsel drafts the Sparecycle privacy policy, with a factual list of what the software stores.",
 };
 
-// What it says about job results follows the scheduler's OUTPUT_AUTH setting, read per request.
+// What it says about job results follows the scheduler's OUTPUT_AUTH setting, and about the support form its
+// SUPPORT_WEBHOOK_URL setting, both read per request.
 export const dynamic = "force-dynamic";
 
 export default function PrivacyPage() {
   const privateResults = serverEnv.outputAuth() === "enforce";
+  const supportOn = supportEnabled();
   return (
     <LegalPage
       title="Privacy"
@@ -68,6 +71,12 @@ export default function PrivacyPage() {
           <li>
             <span className="text-text">Rate limiting.</span> Job submissions are counted per IP address per hour. The scheduler
             keeps a salted hash of the IP address, not the address itself.
+          </li>
+          <li>
+            <span className="text-text">Support form.</span>{" "}
+            {supportOn
+              ? "A message sent from /docs/support (topic, message, and the wallet and job id if you add them) is forwarded to the project's support channel, an outside service that keeps its own copy, and is not stored by this site. The only trace here is the hourly rate-limit counter, under a salted hash of your IP address."
+              : "The form at /docs/support is switched off: nothing typed into it is sent or stored. When it is switched on, a message is forwarded to the project's support channel, an outside service that keeps its own copy, and is not stored by this site apart from an hourly rate-limit counter under a salted hash of your IP address."}
           </li>
           <li>
             <span className="text-text">Nodes.</span> A node that registers sends its node key, the owner wallet and its

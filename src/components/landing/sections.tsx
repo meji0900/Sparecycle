@@ -9,6 +9,7 @@ import { chainSnapshot } from "@/lib/onchain";
 import { PONS, PONS_DOCS_URL } from "@/lib/pons";
 import { cn } from "@/lib/utils";
 import { FUNDING, feesToTeamWallet } from "@/lib/funding-copy";
+import { ROADMAP_STATUSES, roadmapByStatus } from "@/lib/roadmap";
 
 function Section({
   id,
@@ -261,22 +262,23 @@ export async function TokenSection() {
   );
 }
 
-/* ---------- Roadmap ---------- */
-const ROADMAP = [
-  [
-    "Now",
-    "Paid image and text jobs on Robinhood Chain mainnet, two GPUs per job, payouts every six hours. A free trial, a playground, the node client for Windows and Linux, and a public proof page.",
-  ],
-  ["Next", "Shared control of the reward contract and treasury (more than one signer), more graphics cards once each one has published match results, and job results private to the person who paid."],
-  ["Later, only if jobs actually support it", "More models or a less centralized scheduler. Not promised."],
-] as const;
-
+/* ---------- Roadmap (an excerpt of src/lib/roadmap.ts, the one source) ---------- */
 export function Roadmap() {
+  const groups = ROADMAP_STATUSES.map((s) => ({ ...s, items: roadmapByStatus(s.id).slice(0, 2) })).filter((g) => g.items.length);
   return (
-    <Section id="roadmap" title="Roadmap">
+    <Section
+      id="roadmap"
+      title="Roadmap"
+      intro={
+        <>
+          No dates and no promises. What shipped is on the <Link href="/changelog" className="link">changelog</Link>, each item
+          with its proof.
+        </>
+      }
+    >
       <ol className="relative border-l border-line">
-        {ROADMAP.map(([t, d], i) => (
-          <li key={t} className="relative pb-10 pl-8 last:pb-0">
+        {groups.map((g, i) => (
+          <li key={g.id} className="relative pb-10 pl-8 last:pb-0">
             <span
               aria-hidden
               className={cn(
@@ -284,14 +286,24 @@ export function Roadmap() {
                 i === 0 ? "border-signal bg-signal" : "border-line-strong bg-coal",
               )}
             />
-            <p className="font-medium text-text">
-              {t}
-              {i === 0 ? <span className="sr-only"> (current phase)</span> : null}
-            </p>
-            <p className="mt-2 max-w-[62ch] text-muted">{d}</p>
+            <p className="font-medium text-text">{g.label}</p>
+            <ul className="mt-2 space-y-2">
+              {g.items.map((item) => (
+                <li key={item.id} className="max-w-[62ch] text-muted">
+                  <Link href={`/roadmap#${item.id}`} className="text-text hover:underline hover:decoration-line-strong hover:underline-offset-4">
+                    {item.title}
+                  </Link>
+                </li>
+              ))}
+            </ul>
           </li>
         ))}
       </ol>
+      <p className="mt-8">
+        <Link href="/roadmap" className="link">
+          The full roadmap
+        </Link>
+      </p>
     </Section>
   );
 }

@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+    # labeled / unlabeled re-run the docs check when the no-docs label changes
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 jobs:
   app:
@@ -18,8 +20,25 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
-      - run: npm test # GPU allowlist and challenge unit tests
+      - run: npm test # unit tests (src/**/*.test.ts)
       - run: npm run check:bench # published bench verdicts re-derived with the current code
+
+  docs:
+    name: Docs updated with the code
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # Fails when src/app/api/, src/server/ or node-client/src/ changed without a change under src/app/(site)/docs/,
+      # docs/ or src/lib/changelog.ts, unless the pull request has the label no-docs.
+      - run: node scripts/check-docs-touch.mjs --base "origin/${{ github.base_ref }}"
+        env:
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
 
   contracts:
     name: Contract tests

@@ -20,6 +20,8 @@ export const metadata: Metadata = {
     images: [{ url: "/og.jpg", width: 1200, height: 630, alt: `Sparecycle: ${FUNDING.tagline}` }],
   },
   twitter: { card: "summary_large_image", title: "Sparecycle", description, images: ["/og.jpg"] },
+  // The changelog feed, discoverable from every page (feed readers, HEY Research).
+  alternates: { types: { "application/rss+xml": [{ url: "/changelog.xml", title: "Sparecycle changelog" }] } },
   // HEY Research (heyresearch.xyz) ownership check for sparecycle.tech; the same code is in /.well-known/hey-research.txt.
   other: { "hey-research-verification": "pcG-9Qu1WPmMDpZRlQ1ShysEQ-SlXRyv" },
 };

@@ -6,19 +6,16 @@ import { useEffect, useState, type ReactNode } from "react";
 import { StatusTag } from "@/components/ui/status";
 import { config } from "@/lib/config";
 import { formatAmount } from "@/lib/format";
+import { FIRST_PAYOUT_TXS, MAINNET_EXPLORER } from "@/lib/proof";
 import { useLiveJson, type ChainApi } from "@/lib/use-live";
 import { cn } from "@/lib/utils";
 
 // The playground's default image: SD 1.5, 512x512, 15 steps = 2,400 work units (src/lib/protocol.ts workUnits).
 const EXAMPLE_UNITS = 2400n;
-const EXPLORER = config.explorerUrl ?? "https://robinhoodchain.blockscout.com";
+const EXPLORER = config.explorerUrl ?? MAINNET_EXPLORER;
 // Epoch 1 on mainnet, 24 Nov 2026: the first paid job charged, its payout root posted, the payout claimed.
 // The claim went to the team's own, labelled paid test node (the payout path tested in the open).
-const FIRST_PAYOUT = [
-  { label: "Job payments charged", hash: "0x7ef05c0e4126770474abbbcf8c58043e1ee771109a87d8ea669044488ce07db2" },
-  { label: "Payouts posted for checked work", hash: "0x7178cd00506c9a4f34263ba05312bd87dded8bf6c1bdfe7c820d3bf8e56f2df1" },
-  { label: "A node claimed its share", hash: "0x251cc6104160579bd282405392df6f2c28c7b2d6012d9df5cc136bb87ee413a0" },
-];
+const FIRST_PAYOUT = FIRST_PAYOUT_TXS;
 
 type Tab = "job" | "node" | "check";
 const TABS: { id: Tab; label: string }[] = [

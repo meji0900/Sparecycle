@@ -4,6 +4,8 @@ import { config } from "@/lib/config";
 import { PONS_DOCS_URL } from "@/lib/pons";
 import { FUNDING } from "@/lib/funding-copy";
 import { XLink } from "@/components/brand/x-link";
+import { ADDR, explorerAddressUrl } from "@/lib/addresses";
+import { DOCS_LINKS } from "@/lib/docs-nav";
 
 /** A footer link when its URL is configured; nothing at all otherwise (never a dead link or a visible placeholder). */
 function FooterLink({ href, label }: { href: string | null; label: string }) {
@@ -46,7 +48,7 @@ export function SiteFooter() {
             />
           </a>
         </div>
-        <div className="grid gap-8 text-sm sm:grid-cols-3">
+        <div className="grid gap-8 text-sm sm:grid-cols-2 lg:grid-cols-4">
           <div className="flex flex-col gap-2.5">
             <p className="text-faint">Product</p>
             <Link href="/app" className="text-muted hover:text-text">Network status</Link>
@@ -57,10 +59,24 @@ export function SiteFooter() {
             <Link href="/proof" className="text-muted hover:text-text">Mainnet proof</Link>
           </div>
           <div className="flex flex-col gap-2.5">
+            <p className="text-faint">Docs</p>
+            <Link href="/docs" className="text-muted hover:text-text">Docs</Link>
+            <a href={DOCS_LINKS.openapi} className="text-muted hover:text-text">API (OpenAPI)</a>
+            <Link href={DOCS_LINKS.changelog} className="text-muted hover:text-text">Changelog</Link>
+            <a href={DOCS_LINKS.feed} className="text-muted hover:text-text">Changelog feed (RSS)</a>
+            <Link href={DOCS_LINKS.roadmap} className="text-muted hover:text-text">Roadmap</Link>
+            <Link href="/docs/contracts" className="text-muted hover:text-text">Contracts</Link>
+            <a href={explorerAddressUrl(ADDR.rewards)} target="_blank" rel="noreferrer" className="text-muted hover:text-text">
+              SparecycleRewards on Blockscout
+            </a>
+            <a href={explorerAddressUrl(ADDR.payments)} target="_blank" rel="noreferrer" className="text-muted hover:text-text">
+              SparecycleJobPayments on Blockscout
+            </a>
+          </div>
+          <div className="flex flex-col gap-2.5">
             <p className="text-faint">Elsewhere</p>
             {links.x ? <XLink withLabel /> : null}
             {links.github ? <FooterLink href={links.github} label="GitHub" /> : null}
-            <FooterLink href={links.docs} label="Docs" />
             <FooterLink href={links.telegram} label="Telegram" />
             <a href={PONS_DOCS_URL} target="_blank" rel="noreferrer" className="text-muted hover:text-text">
               Pons v2 docs
