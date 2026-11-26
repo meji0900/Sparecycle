@@ -15,6 +15,8 @@
 //   node scripts/mainnet.mjs deploy-payments     deploy SparecycleJobPayments (paid jobs) with the treasury Safe
 //   node scripts/mainnet.mjs deploy-stake [--dry-run]   deploy SparecycleNodeStake (SPARE staking, slashes judged by
 //                                                the treasury Safe; minimum stake 0). Internal review only, no audit.
+//   node scripts/mainnet.mjs deploy-x402 [--dry-run]    deploy SparecycleX402Escrow (x402 pay-per-job in USDG, owner and
+//                                                forwardTo the treasury Safe; caps 1 / 100 / 10 USDG). Internal review only.
 //   node scripts/mainnet.mjs transfer-owner <safe>  step 1 of moving the reward contract owner to a Safe
 //                                                (the Safe then executes acceptOwnership(); docs/ops/multisig-runbook.md)
 //   node scripts/mainnet.mjs launch              launch the token on Pons with the reward contract as fee recipient
@@ -50,6 +52,8 @@ const PONS = { factory: "0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e", feeEscrow:
 const USDG = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168";
 // Env the forge scripts read; cleared before each run so nothing stale from the shell leaks in.
 const SCRIPT_ENV = ["TREASURY", "SPARE_TOKEN", "SPARE_HAS_BURN", "MIN_STAKE_PER_NODE",
+  "X402_ASSET", "X402_ASSET_NAME", "X402_ASSET_VERSION", "X402_FORWARD_TO", "X402_SETTLE_WINDOW", "X402_MAX_PER_JOB",
+  "X402_MAX_TOTAL_HELD", "X402_MAX_PER_PAYER_PER_EPOCH",
   "ADMIN", "SCHEDULER", "EPOCH_LENGTH", "PAYOUT_TOKEN", "FEE_ESCROW", "DEPLOY_MOCK_ESCROW", "REWARD_CONTRACT",
   "TOKEN_NAME", "TOKEN_SYMBOL", "TOKEN_LOGO", "TOKEN_DESCRIPTION", "TOKEN_TWITTER", "TOKEN_TELEGRAM", "TOKEN_DISCORD",
   "TOKEN_WEBSITE", "TOKEN_FARCASTER", "CREATOR_TAX_BPS", "PAIR_ASSET", "LAUNCH_CONFIG_ID", "LAUNCH_SALT",
@@ -198,6 +202,24 @@ function deployedPayments() {
   const a = JSON.parse(readFileSync(DEPLOYMENTS, "utf8"))[String(CHAIN_ID)]?.SparecycleJobPayments;
   return a ? getAddress(a) : null;
 }
+
+function deployedX402() {
+  if (!existsSync(DEPLOYMENTS)) return null;
+  const a = JSON.parse(readFileSync(DEPLOYMENTS, "utf8"))[String(CHAIN_ID)]?.SparecycleX402Escrow;
+  return a ? getAddress(a) : null;
+}
+
+// x402 launch settings (decided 26 Nov 2026): USDG (6 decimals), caps 1 USDG per job, 100 USDG held in total,
+// 10 USDG per payer per reward epoch; the pot's 95% goes to the treasury Safe, which converts it to ETH.
+const X402 = {
+  asset: USDG,
+  assetName: "Global Dollar",
+  assetVersion: "1",
+  maxPerJob: 1_000_000n,
+  maxTotalHeld: 100_000_000n,
+  maxPerPayerPerEpoch: 10_000_000n,
+  settleWindow: 43_200n,
+};
 
 function deployedStake() {
   if (!existsSync(DEPLOYMENTS)) return null;
@@ -540,6 +562,91 @@ async function deployStake(again, dryRun) {
   console.log("Next: node scripts/mainnet.mjs verify stake, then set TOKEN_NODE_STAKE_ADDRESS on Railway.");
 }
 
+const x402Abi = parseAbi([
+  "function owner() view returns (address)",
+  "function rewards() view returns (address)",
+  "function asset() view returns (address)",
+  "function treasury() view returns (address)",
+  "function forwardTo() view returns (address)",
+  "function settleWindow() view returns (uint64)",
+  "function potPaysInAsset() view returns (bool)",
+  "function maxPerJob() view returns (uint256)",
+  "function maxTotalHeld() view returns (uint256)",
+  "function maxPerPayerPerEpoch() view returns (uint256)",
+]);
+
+/**
+ * Deploys SparecycleX402Escrow (x402 option X1): per-job USDG escrow funded by the payer's EIP-3009 authorization,
+ * forwarded on agreement (95% to forwardTo = the Safe for conversion, 5% to the treasury Safe) or refunded. Owner =
+ * the treasury Safe (the reward contract's owner). Internal review only, not externally audited. --dry-run simulates.
+ */
+async function deployX402(again, dryRun) {
+  const c = config();
+  const reward = deployedReward();
+  if (!reward) fail("No reward contract deployed.");
+  const safe = c.treasury?.safe;
+  if (!safe || !isAddress(safe)) fail('Set "treasury": { "safe": "0x…" } in contracts/mainnet.json (the Safe multisig).');
+  if (deployedX402() && !again) fail(`Already deployed: ${deployedX402()}. (--again deploys another one)`);
+  if (!dryRun) {
+    needTerminal();
+    needKeystore(c);
+  }
+  const r = await rpc();
+  const pc = await client();
+  const [threshold, owner] = await Promise.all([
+    pc.readContract({ address: safe, abi: safeAbi, functionName: "getThreshold" }).catch(() => null),
+    pc.readContract({ address: reward, abi: rewardAbi, functionName: "owner" }),
+  ]);
+  if (threshold === null || threshold < 2n) fail(`${safe} is not a Safe with a threshold of at least 2.`);
+  if (getAddress(owner) !== getAddress(safe)) fail(`The reward contract's owner is ${owner}, not the treasury Safe: the escrow owner must be the Safe.`);
+  const usdg = (n) => `${Number(n) / 1e6} USDG`;
+  console.log(`Asset USDG ${X402.asset} ("${X402.assetName}" v${X402.assetVersion}); owner, treasury and forwardTo: the Safe ${safe}`);
+  console.log(`Caps: ${usdg(X402.maxPerJob)} per job, ${usdg(X402.maxTotalHeld)} held in total, ${usdg(X402.maxPerPayerPerEpoch)} per payer per epoch; settle window ${X402.settleWindow} s`);
+  const env = {
+    REWARD_CONTRACT: reward,
+    X402_ASSET: X402.asset,
+    X402_ASSET_NAME: X402.assetName,
+    X402_ASSET_VERSION: X402.assetVersion,
+    X402_FORWARD_TO: safe,
+    TREASURY: safe,
+    X402_SETTLE_WINDOW: String(X402.settleWindow),
+    X402_MAX_PER_JOB: String(X402.maxPerJob),
+    X402_MAX_TOTAL_HELD: String(X402.maxTotalHeld),
+    X402_MAX_PER_PAYER_PER_EPOCH: String(X402.maxPerPayerPerEpoch),
+  };
+  const args = ["script", "script/DeployX402Escrow.s.sol:DeployX402Escrow", "--rpc-url", r.url, "--sender", c.wallet];
+  console.log(`Simulating the x402 escrow deploy from ${c.wallet} (nothing sent yet)\n`);
+  if ((await run("forge", args, env)) !== 0) fail("Simulation failed. Nothing was sent.");
+  if (dryRun) {
+    console.log("\nDry run only: nothing was sent.");
+    return;
+  }
+  const ok = await confirm(
+    "X402",
+    `Deploy SparecycleX402Escrow: USDG escrow per job, funded by the payer's signed authorization; on agreement 95% to the Safe for conversion and 5% to the treasury Safe, otherwise refunded; anyone can refund after ${X402.settleWindow} s. Caps ${usdg(X402.maxPerJob)} / ${usdg(X402.maxTotalHeld)} / ${usdg(X402.maxPerPayerPerEpoch)}. Owner: the Safe. Internal review only, not externally audited.`,
+  );
+  if (!ok) fail("Stopped. Nothing was sent.");
+  if ((await run("forge", [...args, "--account", c.keystore, "--broadcast"], env)) !== 0) fail("Broadcast failed (see above).");
+  const runFile = join(CONTRACTS, "broadcast", "DeployX402Escrow.s.sol", String(CHAIN_ID), "run-latest.json");
+  const out = JSON.parse(readFileSync(runFile, "utf8"));
+  const receipt = out.receipts?.find((x) => x.status === "0x1" || x.status === 1);
+  const address = receipt?.contractAddress ? getAddress(receipt.contractAddress) : null;
+  if (!address) fail("Sent, but no successful receipt with a contract address in the broadcast output; check Blockscout.");
+  const all = existsSync(DEPLOYMENTS) ? JSON.parse(readFileSync(DEPLOYMENTS, "utf8")) : {};
+  all[String(CHAIN_ID)] = { ...(all[String(CHAIN_ID)] ?? {}), SparecycleX402Escrow: address };
+  writeFileSync(DEPLOYMENTS, JSON.stringify(all, null, 2) + "\n");
+  const read = (functionName) => pc.readContract({ address, abi: x402Abi, functionName });
+  const names = ["owner", "rewards", "asset", "treasury", "forwardTo", "settleWindow", "potPaysInAsset", "maxPerJob", "maxTotalHeld", "maxPerPayerPerEpoch"];
+  const v = Object.fromEntries(await Promise.all(names.map(async (n) => [n, await read(n)])));
+  const S = getAddress(safe);
+  const good = v.owner === S && v.rewards === reward && v.asset === getAddress(X402.asset) && v.treasury === S && v.forwardTo === S &&
+    v.settleWindow === X402.settleWindow && v.potPaysInAsset === false && v.maxPerJob === X402.maxPerJob &&
+    v.maxTotalHeld === X402.maxTotalHeld && v.maxPerPayerPerEpoch === X402.maxPerPayerPerEpoch;
+  console.log(`\nSparecycleX402Escrow ${address}\n${EXPLORER}/address/${address}\ntx ${receipt.transactionHash}`);
+  console.log(`read back: owner ${v.owner}, asset ${v.asset}, forwardTo ${v.forwardTo}, caps ${usdg(v.maxPerJob)} / ${usdg(v.maxTotalHeld)} / ${usdg(v.maxPerPayerPerEpoch)}, pot pays in asset ${v.potPaysInAsset}  ${good ? "OK" : "MISMATCH"}`);
+  console.log("Next: node scripts/mainnet.mjs verify x402, then set the X402_* variables on Railway.");
+}
+
 /**
  * Step 1 of 2 of moving the reward contract's owner to a Safe: transferOwnership(safe) from the wallet. The Safe must
  * then execute acceptOwnership() (data 0x79ba5097); until it does, the wallet stays owner. See docs/ops/multisig-runbook.md.
@@ -656,6 +763,7 @@ async function launch(again) {
 async function verify(which) {
   if (which === "payments") return verifyPayments();
   if (which === "stake") return verifyStake();
+  if (which === "x402") return verifyX402();
   const reward = deployedReward();
   if (!reward) fail("Nothing deployed yet.");
   const runFile = join(CONTRACTS, "broadcast", "Deploy.s.sol", String(CHAIN_ID), "run-latest.json");
@@ -697,6 +805,23 @@ async function verifyStake() {
   );
   process.exitCode = await run("forge", [
     "verify-contract", address, "src/SparecycleNodeStake.sol:SparecycleNodeStake",
+    "--chain", String(CHAIN_ID), "--verifier", "sourcify", "--constructor-args", args, "--watch",
+  ]);
+}
+
+async function verifyX402() {
+  const address = deployedX402();
+  if (!address) fail("SparecycleX402Escrow is not deployed yet.");
+  const runFile = join(CONTRACTS, "broadcast", "DeployX402Escrow.s.sol", String(CHAIN_ID), "run-latest.json");
+  const tx = JSON.parse(readFileSync(runFile, "utf8")).transactions?.find((t) => t.contractName === "SparecycleX402Escrow");
+  if (!tx?.arguments) fail(`No constructor arguments in ${runFile}.`);
+  const [admin, rewards, asset, treasury, forwardTo, window, caps] = tx.arguments;
+  const capList = String(caps).replace(/[[\]\s]/g, "").split(",").map((x) => BigInt(x));
+  const args = encodeAbiParameters(parseAbiParameters("address, address, address, address, address, uint64, uint256[3]"), [
+    admin, rewards, asset, treasury, forwardTo, BigInt(window), [capList[0], capList[1], capList[2]],
+  ]);
+  process.exitCode = await run("forge", [
+    "verify-contract", address, "src/SparecycleX402Escrow.sol:SparecycleX402Escrow",
     "--chain", String(CHAIN_ID), "--verifier", "sourcify", "--constructor-args", args, "--watch",
   ]);
 }
@@ -759,6 +884,7 @@ try {
     case "verify": await verify(positional[0]); break;
     case "deploy-payments": await deployPayments(flag("--again")); break;
     case "deploy-stake": await deployStake(flag("--again"), flag("--dry-run")); break;
+    case "deploy-x402": await deployX402(flag("--again"), flag("--dry-run")); break;
     case "transfer-owner": await transferOwner(positional[0]); break;
     case "env": env(); break;
     case "secret": secret(positional[0]); break;
