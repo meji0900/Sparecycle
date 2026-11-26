@@ -25,10 +25,10 @@ import {MockSpare, MockSwapAdapter} from "../test/mocks/V2Mocks.sol";
 ///         between, or the predicted addresses are wrong (the constructors then revert, nothing is half-wired).
 ///
 ///         Env (all optional; anything unset is replaced by a local stand-in, so it also runs with no RPC):
-///           REWARD_CONTRACT    live SparecycleRewards (ADDR.rewards in src/lib/addresses.ts)
-///           TREASURY           the treasury Safe (ADDR.treasurySafe)
-///           SPARE_TOKEN        SPARE (ADDR.spareToken)
-///           SWAP_ADAPTER       an ISpareSwapAdapter: UniswapV4SpareAdapter (src/adapters), not deployed yet
+///           V2_DRYRUN_REWARDS    live SparecycleRewards (ADDR.rewards in src/lib/addresses.ts)
+///           V2_DRYRUN_TREASURY the treasury Safe (ADDR.treasurySafe)
+///           V2_DRYRUN_SPARE        SPARE (ADDR.spareToken)
+///           V2_DRYRUN_ADAPTER       an ISpareSwapAdapter: UniswapV4SpareAdapter (src/adapters), not deployed yet
 ///                              ([PLACEHOLDER]; its constructor values are in docs/uniswap-v4-adapter.md)
 ///           USE_BURN_FUNCTION  true = SPARE.burn(), false = send to 0x...dEaD (default true; confirm burn() on
 ///                              SPARE's verified source first)
@@ -36,7 +36,7 @@ import {MockSpare, MockSwapAdapter} from "../test/mocks/V2Mocks.sol";
 ///           SPARE_PAY_CAP_ETH  N13 per-epoch cap in wei (default 0: SPARE payments stay off until the Safe sets it)
 ///
 ///         Local:  node contracts/tools/forge.mjs script script/DryRunDeployV2.s.sol:DryRunDeployV2
-///         Fork:   REWARD_CONTRACT=0x... TREASURY=0x... SPARE_TOKEN=0x... SWAP_ADAPTER=0x... MAX_ETH_PER_BURN=... \
+///         Fork:   V2_DRYRUN_REWARDS=0x... V2_DRYRUN_TREASURY=0x... V2_DRYRUN_SPARE=0x... V2_DRYRUN_ADAPTER=0x... MAX_ETH_PER_BURN=... \
 ///                 node contracts/tools/forge.mjs script script/DryRunDeployV2.s.sol:DryRunDeployV2 --fork-url <rpc>
 contract DryRunDeployV2 is Script {
     /// @dev Local stand-in values only (never used when the env gives real ones). Not market data.
@@ -59,10 +59,10 @@ contract DryRunDeployV2 is Script {
             "DryRunDeployV2 only simulates: never pass --broadcast"
         );
 
-        d.rewards = vm.envOr("REWARD_CONTRACT", address(0));
-        d.treasury = vm.envOr("TREASURY", address(0));
-        d.spare = vm.envOr("SPARE_TOKEN", address(0));
-        d.adapter = vm.envOr("SWAP_ADAPTER", address(0));
+        d.rewards = vm.envOr("V2_DRYRUN_REWARDS", address(0));
+        d.treasury = vm.envOr("V2_DRYRUN_TREASURY", address(0));
+        d.spare = vm.envOr("V2_DRYRUN_SPARE", address(0));
+        d.adapter = vm.envOr("V2_DRYRUN_ADAPTER", address(0));
         bool useBurn = vm.envOr("USE_BURN_FUNCTION", true);
         uint256 maxBurn = vm.envOr("MAX_ETH_PER_BURN", uint256(0));
         uint256 spareCap = vm.envOr("SPARE_PAY_CAP_ETH", uint256(0));
@@ -73,27 +73,27 @@ contract DryRunDeployV2 is Script {
                     address(this), address(this), address(0), address(new MockPonsFeeEscrow()), 6 hours
                 )
             );
-            console2.log("REWARD_CONTRACT not set: local SparecycleRewards stand-in");
+            console2.log("V2_DRYRUN_REWARDS not set: local SparecycleRewards stand-in");
         }
         if (d.treasury == address(0)) {
             d.treasury = vm.addr(uint256(keccak256("sparecycle local treasury stand-in")));
-            console2.log("TREASURY not set: local stand-in address (derived, not a real wallet)");
+            console2.log("V2_DRYRUN_TREASURY not set: local stand-in address (derived, not a real wallet)");
         }
         if (d.spare == address(0)) {
             d.spare = address(new MockSpare());
-            console2.log("SPARE_TOKEN not set: local MockSpare stand-in");
+            console2.log("V2_DRYRUN_SPARE not set: local MockSpare stand-in");
         }
         if (d.adapter == address(0)) {
             d.adapter = address(new MockSwapAdapter(IERC20(d.spare), LOCAL_PRICE));
-            console2.log("SWAP_ADAPTER not set: MockSwapAdapter stand-in ([PLACEHOLDER] for the Uniswap v4 adapter)");
+            console2.log("V2_DRYRUN_ADAPTER not set: MockSwapAdapter stand-in ([PLACEHOLDER] for the Uniswap v4 adapter)");
         }
         if (maxBurn == 0) {
             maxBurn = LOCAL_MAX_ETH_PER_BURN;
             console2.log("MAX_ETH_PER_BURN not set: local stand-in 1 ether ([PLACEHOLDER])");
         }
-        require(d.rewards.code.length > 0, "REWARD_CONTRACT has no code");
-        require(d.spare.code.length > 0, "SPARE_TOKEN has no code");
-        require(d.adapter.code.length > 0, "SWAP_ADAPTER has no code");
+        require(d.rewards.code.length > 0, "V2_DRYRUN_REWARDS has no code");
+        require(d.spare.code.length > 0, "V2_DRYRUN_SPARE has no code");
+        require(d.adapter.code.length > 0, "V2_DRYRUN_ADAPTER has no code");
         if (block.chainid == 4663) require(d.treasury.code.length > 0, "mainnet: TREASURY must be the Safe");
 
         uint64 n = vm.getNonce(address(this));
