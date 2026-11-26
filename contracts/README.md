@@ -118,6 +118,13 @@ root    0x4971f2383291235f443738a07a4de878815dbfa43170bc2af3e913c86fb3e7b9
     before launch. The post-graduation path (`hook.sweepPoolFees` / operator `sweepPool(bytes32)`) was **not**
     exercised.
 
+## SparecycleNodeStake (not deployed, audit required)
+
+`src/SparecycleNodeStake.sol` is node staking with partial slashing (brief §3). It is **written and tested only**:
+no deployment, no deploy script, and nothing in `../src/` calls it. External audit required before mainnet. Rules,
+defaults (N3–N9), the appeal flow, the evidence-bundle format and the open audit points are in
+`../docs/node-staking.md`. Tests: `test/SparecycleNodeStake.t.sol` and `test/invariant/SparecycleNodeStake.invariant.t.sol`.
+
 ## Run
 
 ```bash
