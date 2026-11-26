@@ -237,7 +237,7 @@ describe("GET /api/v1/jobs/:id/invoice", () => {
     assert.equal(((await res.json()) as { error: string }).error, "forbidden");
     assertPrivate(res, "403");
     const other = await submitJob(textRequest("someone else"), nextIp());
-    assert.equal((await getInvoice(paid.id, bearer(other.readSecret))).status, 403);
+    assert.equal((await getInvoice(paid.id, bearer(other.readSecret!))).status, 403);
   });
 
   test("unknown id -> 404, malformed id -> 400, both private", async () => {
@@ -291,13 +291,13 @@ describe("GET /api/v1/jobs/:id/invoice", () => {
     assert.equal(typeof inv.settledAt, "number");
     assert.match(String(inv.protocolCutNote), /rounded/);
     assert.match(String(inv.protocolCutNote), /per epoch batch/);
-    const bySecret = await getInvoice(paid.id, bearer(paid.readSecret));
+    const bySecret = await getInvoice(paid.id, bearer(paid.readSecret!));
     assert.equal(bySecret.status, 200);
     assert.equal(((await bySecret.json()) as { priceWei: string }).priceWei, price.toString());
   });
 
   test("the output hash equals the sha256 of the bytes the payer downloads", async () => {
-    const out = await resultRoute.GET(new Request(`${SITE}/api/v1/jobs/${paid.id}/result`, { headers: bearer(paid.readSecret) }), ctx(paid.id));
+    const out = await resultRoute.GET(new Request(`${SITE}/api/v1/jobs/${paid.id}/result`, { headers: bearer(paid.readSecret!) }), ctx(paid.id));
     assert.equal(out.status, 200);
     const bytes = new Uint8Array(await out.arrayBuffer());
     const inv = jobInvoice(paid.id, { address: payer.address, secret: null });
@@ -317,7 +317,7 @@ describe("GET /api/v1/jobs/:id/invoice", () => {
 
   test("a free trial job: its read secret gets a 'free trial, no charge' stub; a wallet session gets 403", async () => {
     const free = await submitJob(textRequest("free invoice"), nextIp());
-    const res = await getInvoice(free.id, bearer(free.readSecret));
+    const res = await getInvoice(free.id, bearer(free.readSecret!));
     assert.equal(res.status, 200);
     assertPrivate(res, "free stub");
     const stub = (await res.json()) as Record<string, unknown>;

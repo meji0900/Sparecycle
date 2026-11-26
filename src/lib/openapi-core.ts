@@ -1,5 +1,6 @@
 // OpenAPI module: the scheduler endpoints that exist today (README "API" table, docs/SPEC.md and the route files
 // under src/app/api/v1). Limits come from src/lib/protocol.ts so the description cannot drift from validation.
+import { agentApiJobsNote } from "./openapi-agent";
 import type { OpenApiModule } from "./openapi";
 import { JOB_PAYMENT_WINDOW_SECONDS } from "./job-payment";
 import { JOB_STATUSES, LIMITS } from "./protocol";
@@ -128,6 +129,8 @@ export const coreApi: OpenApiModule = {
           `The signature is accepted for ${JOB_PAYMENT_WINDOW_SECONDS} seconds after issued. priceWei must equal the job's work units times priceWeiPerUnit (GET /payments/account); otherwise 409 price-changed returns the right price.`,
           "",
           "The answer carries the job's readSecret once: keep it to read the result (GET /jobs/{id}/result with Authorization: Bearer <readSecret>). The scheduler stores only its hash.",
+          "",
+          agentApiJobsNote,
         ].join("\n"),
         tags: ["Jobs"],
         requestBody: {

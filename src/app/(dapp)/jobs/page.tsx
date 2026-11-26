@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { ApiKeysPanel } from "@/components/dapp/api-keys-panel";
 import { PageHeader } from "@/components/dapp/app-shell";
 import { JobAccountProvider, JobBalance } from "@/components/dapp/job-balance";
 import { JobLifecycle } from "@/components/dapp/job-lifecycle";
@@ -53,6 +54,10 @@ export default function JobsPage() {
             <JobAccountProvider>
               <div className="max-w-[880px] xl:max-w-none">
                 <JobSubmit rateLimit={rateLimit} side={<JobBalance />} />
+              </div>
+              {/* API keys pay from the same balance (src/server/apikeys.ts); management needs a wallet sign-in. */}
+              <div className="mt-10 max-w-[880px]">
+                <ApiKeysPanel />
               </div>
             </JobAccountProvider>
             {/* Disclosure: who paid for each recent job, team-funded test jobs included. */}

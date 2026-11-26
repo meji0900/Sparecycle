@@ -133,9 +133,14 @@ export async function verifyPayment(
 
 // ---- Charging -----------------------------------------------------------------------------------------
 
-type DueJob = { id: string; payer: Address; price_wei: string };
+type DueJob = { id: string; payer: Address; price_wei: string; api_key_id: string | null };
 type ChargeRow = { epoch_id: number; list_json: string; list_hash: Hex; total_wei: string; status: string; tx: Hex | null; error: string | null };
-type ListEntry = { jobId: string; payer: Address; priceWei: string };
+/**
+ * One charged job. `apiKeyId` (the key that paid for it, null = a per-job wallet signature) is in every entry of lists
+ * charged since API keys exist; older stored lists don't have the field and are served exactly as stored, so their
+ * listHash still matches.
+ */
+type ListEntry = { jobId: string; payer: Address; priceWei: string; apiKeyId?: string | null };
 
 const listHashOf = (list: ListEntry[]): Hex => keccak256(toHex(JSON.stringify(list)));
 
@@ -213,7 +218,7 @@ export async function chargeOpenEpoch(epochId: number): Promise<string> {
     "UPDATE jobs SET charge_status = 'released' WHERE charge_status = 'pending' AND status IN ('disagreed','expired','rejected')",
   ).run();
   const due = db
-    .prepare("SELECT id, payer, price_wei FROM jobs WHERE charge_status = 'pending' AND status = 'agreed' ORDER BY settled_at, id")
+    .prepare("SELECT id, payer, price_wei, api_key_id FROM jobs WHERE charge_status = 'pending' AND status = 'agreed' ORDER BY settled_at, id")
     .all() as DueJob[];
   if (!due.length) return "no paid jobs to charge";
 
@@ -239,7 +244,7 @@ export async function chargeOpenEpoch(epochId: number): Promise<string> {
     else if (b.room !== null && next > b.room) continue; // over their per-epoch limit: next epoch
     else {
       sum.set(j.payer, next);
-      list.push({ jobId: j.id, payer: j.payer, priceWei: j.price_wei });
+      list.push({ jobId: j.id, payer: j.payer, priceWei: j.price_wei, apiKeyId: j.api_key_id ?? null });
     }
   }
   if (unpaid.length) {

@@ -30,6 +30,21 @@ export const DOCS_NAV: DocsNavSection[] = [
         title: "API overview",
         description: "Every endpoint, how to authenticate, errors and limits. Machine-readable as OpenAPI.",
       },
+      {
+        href: "/docs/api/keys",
+        title: "API keys",
+        description: "Spend-only keys for your wallet: a daily cap, an off switch, and no way to withdraw.",
+      },
+      {
+        href: "/docs/api/openai",
+        title: "OpenAI-compatible API",
+        description: "Change the base URL of an OpenAI SDK: chat and images through the two-node check, async with polling.",
+      },
+      {
+        href: "/docs/api/mcp",
+        title: "MCP server",
+        description: "Four tools for agents: submit a job, check its status, read the result, see the balance.",
+      },
     ],
   },
   {
