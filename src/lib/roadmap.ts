@@ -35,9 +35,16 @@ export const ROADMAP: RoadmapItem[] = [
   {
     id: "x402-pay-per-job",
     title: "Pay per job over HTTP (x402)",
-    status: "exploring",
+    status: "in-progress",
     summary:
-      "An agent asks for a job, gets the price in an HTTP payment-required answer, and pays in the retry. The payments contract only takes prepaid balances today, so this needs its own design first.",
+      "An agent asks for a job, gets the price in an HTTP payment-required answer and pays in USDG in the retry. The payment waits in an escrow contract: it goes on when two machines agree and back to the payer when they don't. Built and tested, internal review only; it goes live once the escrow is deployed.",
+  },
+  {
+    id: "node-staking",
+    title: "Node staking with partial slashing",
+    status: "in-progress",
+    summary:
+      "Node owners can stake SPARE. A part of a stake is burned only after repeated faults proven against two other owners' results, with an appeal window, and never for a single mismatch. The scheduler proposes, the treasury Safe decides; it is not trustless. The minimum stake starts at zero, so running a node still needs no token.",
   },
 ];
 
