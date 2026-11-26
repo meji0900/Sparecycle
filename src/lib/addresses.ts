@@ -70,11 +70,7 @@ export const VERIFICATION = {
     sourcify: { status: "exact_match", checkedOn: "26 Nov 2026", verifiedAt: "2026-11-22T13:19:00Z" },
   },
   payments: {
-    blockscout: {
-      status: "not-verified",
-      checkedOn: "25 Nov 2026",
-      note: "Blockscout has not imported the Sourcify match yet. The source is published and matches the deployed bytecode exactly on Sourcify.",
-    },
+    blockscout: { status: "verified", checkedOn: "26 Nov 2026" },
     sourcify: { status: "exact_match", checkedOn: "26 Nov 2026", verifiedAt: "2026-11-24T10:00:50Z" },
   },
   treasurySafe: {

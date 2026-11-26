@@ -54,7 +54,7 @@ describe("addresses", () => {
       assert.ok(row(id).source?.sourcify?.checkedOn, `${id}: no Sourcify check date`);
       assert.ok(row(id).source?.blockscout?.checkedOn, `${id}: no Blockscout check date`);
     }
-    assert.equal(row("payments").source?.blockscout?.status, "not-verified", "say so until Blockscout imports it");
+    assert.equal(row("payments").source?.blockscout?.status, "verified", "Blockscout shows an exact match (checked 26 Nov 2026)");
     for (const id of ["scheduler", "sweep-bot", "launch-wallet", "team-wallet"]) assert.equal(row(id).kind, "key", id);
     for (const r of ADDRESS_ROWS.filter((r) => [PONS.factory, PONS.feeEscrow, ADDR.spareToken, ADDR.spareCurve, ADDR.cycleToken, ADDR.cycleCurve].includes(r.address as never))) {
       assert.equal(r.by, "pons", `${r.id} is a Pons contract`);
