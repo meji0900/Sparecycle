@@ -37,6 +37,14 @@ export function leafOf(epochId: bigint, account: Address, amount: bigint): Hex {
   return keccak256(encodePacked(["uint64", "address", "uint256"], [epochId, account, amount]));
 }
 
+/**
+ * SparecycleHolderPool's leaf (token features, docs/token-features.md): keccak256(abi.encodePacked(uint64 epochId,
+ * address holder, uint8 mode, uint256 amount)), 61 bytes in. Same sorted-pair tree as the reward contract.
+ */
+export function holderLeafOf(epochId: bigint, holder: Address, mode: number, amount: bigint): Hex {
+  return keccak256(encodePacked(["uint64", "address", "uint8", "uint256"], [epochId, holder, mode, amount]));
+}
+
 /** Builds the tree over `leaves` (any order; duplicates are rejected). */
 export function buildTree(leaves: Hex[]): MerkleTree {
   if (leaves.length === 0) return { root: ZERO_ROOT, layers: [[]] };

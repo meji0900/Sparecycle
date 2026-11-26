@@ -29,10 +29,10 @@
 // The ledger (token_holder_ledger, cursor meta token_holder_block) replays every SPARE transfer from SPARE_START_BLOCK,
 // because a holder's balance at an epoch start needs the full history. While SPARE_START_BLOCK is not recorded, roots are
 // stored `incomplete`.
-import { encodeFunctionData, encodePacked, getAddress, keccak256, type Address, type Hex } from "viem";
+import { encodeFunctionData, getAddress, type Address, type Hex } from "viem";
 import { ADDR, BURN_SINKS, HOLDER_CONTRACT_ALLOWLIST, HOLDER_EXCLUSIONS, SPARE_START_BLOCK, TOKEN_CONTRACTS } from "@/lib/addresses";
 import { targetChain } from "@/lib/chain";
-import { buildTree, getProof, ZERO_ROOT } from "@/lib/merkle";
+import { buildTree, getProof, holderLeafOf as libHolderLeafOf, ZERO_ROOT } from "@/lib/merkle";
 import { holderPoolAbi } from "@/lib/token-contracts";
 import { DEFAULT_HOLDER_MODE, HOLDER_MIN_SPARE_WEI, holderShareOf, STAKED_COUNTS_AS_HELD, SUPPORTED_HOLDER_MODES, type HolderMode } from "@/lib/token-rules";
 import { tokenChain, type SpareTransfer } from "./chain-io";
@@ -167,9 +167,8 @@ export function modeForEpoch(history: ModeChange[], epochId: number, supported: 
   return last.mode as HolderMode;
 }
 
-/** keccak256(abi.encodePacked(uint64 epochId, address holder, uint8 mode, uint256 amount)). */
-export const holderLeafOf = (epochId: bigint, holder: Address, mode: number, amount: bigint): Hex =>
-  keccak256(encodePacked(["uint64", "address", "uint8", "uint256"], [epochId, holder, mode, amount]));
+/** keccak256(abi.encodePacked(uint64 epochId, address holder, uint8 mode, uint256 amount)) (src/lib/merkle.ts, browser-safe). */
+export const holderLeafOf = (epochId: bigint, holder: Address, mode: number, amount: bigint): Hex => libHolderLeafOf(epochId, holder, mode, amount);
 
 export function buildHolderTree<T extends { holder: Address; mode: number; amount: bigint }>(epochId: number, entries: T[]) {
   const leaves = entries.map((e) => ({ ...e, leaf: holderLeafOf(BigInt(epochId), e.holder, e.mode, e.amount) }));

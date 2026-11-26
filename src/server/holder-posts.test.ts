@@ -33,7 +33,6 @@ Object.assign(process.env, {
 
 const H = await import("./holders");
 const P = await import("./holder-posts");
-const A = await import("./holder-api");
 const { tokenChain, holderPoolSender } = await import("./chain-io");
 const { getDb, getMeta } = await import("./db");
 const { verifyProof } = await import("@/lib/merkle");
@@ -79,7 +78,6 @@ describe("live root: funding from V2, floored shares, skipped epochs", () => {
   let k = 0;
   const raw = (time: number, from: Address, to: Address, value: bigint) => ({ block: blockAt(time), logIndex: k++, txHash: hashOf(9000 + k), from, to, value });
   const s5 = T0 + 1_000;
-  const e5 = s5 + EPOCH;
   const transfers = [
     raw(T0 + 10, "0x0000000000000000000000000000000000000000", minter, 10n ** 9n * SPARE),
     raw(T0 + 20, minter, alice, 100_000n * SPARE),
@@ -87,7 +85,7 @@ describe("live root: funding from V2, floored shares, skipped epochs", () => {
     raw(T0 + 40, minter, carol, 600_000n * SPARE),
   ];
   let open = 6n;
-  let funding = 10n ** 18n + 7n;
+  const funding = 10n ** 18n + 7n;
   let available = 10n ** 20n;
 
   const stubChain = () => {

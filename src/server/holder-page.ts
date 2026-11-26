@@ -20,12 +20,13 @@ import {
   TOKEN_CONTRACTS,
 } from "@/lib/addresses";
 import { formatAmount, formatTime } from "@/lib/format";
-import { HOLDER_MODE } from "@/lib/token-rules";
+import { HOLDER_MIN_SPARE_WEI, HOLDER_MODE, UNCLAIMED_ROLLOVER_EPOCHS } from "@/lib/token-rules";
 import { NotLiveError, tokenChain } from "./chain-io";
 import { carryRows, readBurnRows, type BurnRow, type CarryRow, type SlashBurnRow } from "./burns";
 import { getDb } from "./db";
 import { serverEnv } from "./env";
 import { openEpochRow } from "./epochs";
+import { HOLDER_WEIGHT_METHOD } from "./holders";
 
 export type Source = { label: string; href: string };
 export type Figure =
@@ -35,6 +36,21 @@ export type Row = { source: Source; cells: string[] };
 export type Table = { label: string; columns: string[]; rows: Row[]; empty: string };
 export type Section = { id: string; title: string; description: string; live: boolean; figures: Figure[]; tables: Table[] };
 export type ExclusionItem = { label: string; why: string } & ({ address: Address; href: string } | { address: null; notLive: string });
+/**
+ * The claim panel (TOKEN_HOLDERS on): what the page states about eligibility, already formatted, and the contracts the
+ * browser claims from. null while TOKEN_HOLDERS is off (the page then renders exactly as before).
+ */
+export type HolderClaimsModel = {
+  /** True when SparecycleHolderPool and SparecycleJobPaymentsV2 are both set: roots are posted and claims are possible. */
+  live: boolean;
+  pool: Address | null;
+  jobPaymentsV2: Address | null;
+  minimumText: string;
+  method: string;
+  lastComputedText: string | null;
+  rolloverEpochs: number;
+  rolloverText: string;
+};
 export type HolderPageModel = {
   readAt: number;
   readAtText: string;
@@ -44,6 +60,7 @@ export type HolderPageModel = {
   exclusions: ExclusionItem[];
   contractRule: string;
   modeRule: string[];
+  claims: HolderClaimsModel | null;
 };
 
 const readLink = (address: Address, what: string): Source => ({ label: `${what} (contract read)`, href: `${explorerAddressUrl(address)}?tab=read_contract` });
@@ -71,6 +88,8 @@ export type HolderPageReads = {
   distributed:
     | { status: "live"; roots: { epochId: bigint; totalEth: bigint; txHash: Hex }[]; claims: { epochId: bigint; mode: number; amount: bigint; txHash: Hex }[] }
     | { status: "not-live" | "error"; why: string };
+  /** TOKEN_HOLDERS on: the scheduler's holder-root state (absent or null = off). */
+  holders?: { lastComputedAt: number | null } | null;
 };
 
 /** Pure: the page model from reads. */
@@ -230,7 +249,16 @@ export function buildHolderPage(r: HolderPageReads): HolderPageModel {
       : { kind: "value", label: "Treasury cut of every charge", value: `${r.treasuryBps / 100}%`, source: readLink(r.payments, "SparecycleJobPayments TREASURY_BPS"), note: "The node pot keeps the rest. Fixed in the live contract." },
     notLive("Split of the treasury cut (burn / holders / treasury)", "Read from SparecycleJobPaymentsV2 once it is deployed and audited."),
     notLive("Minimum stake per node", "Read from SparecycleNodeStake (minStakePerNode) once it is deployed."),
-    notLive("Holder minimum (time-weighted SPARE)", "Read from SparecycleHolderPool once it is deployed."),
+    r.holders
+      ? {
+          kind: "value",
+          label: "Holder minimum (time-weighted SPARE)",
+          value: spare(HOLDER_MIN_SPARE_WEI),
+          unit: "SPARE",
+          source: { label: "Scheduler rule N11, published with every root (GET /api/v1/holders/epochs)", href: "/api/v1/holders/epochs" },
+          note: "Set by the scheduler, not by a contract: an address whose six-hour average is below it gets no share.",
+        }
+      : notLive("Holder minimum (time-weighted SPARE)", "Read from SparecycleHolderPool once it is deployed."),
   ];
   sections.push({
     id: "rules",
@@ -259,6 +287,18 @@ export function buildHolderPage(r: HolderPageReads): HolderPageModel {
       "Holders who never chose receive compute credits. Compute credits is the only mode; a tokenized-stock mode is not offered.",
       "Weights are time-weighted over each six-hour epoch from SPARE transfer logs, so SPARE held for a few seconds counts for a few seconds. Staked SPARE counts for its owner.",
     ],
+    claims: r.holders
+      ? {
+          live: r.contracts.holderPool !== null && r.contracts.jobPaymentsV2 !== null,
+          pool: r.contracts.holderPool,
+          jobPaymentsV2: r.contracts.jobPaymentsV2,
+          minimumText: `${spare(HOLDER_MIN_SPARE_WEI)} SPARE`,
+          method: HOLDER_WEIGHT_METHOD,
+          lastComputedText: r.holders.lastComputedAt === null ? null : formatTime(r.holders.lastComputedAt),
+          rolloverEpochs: UNCLAIMED_ROLLOVER_EPOCHS,
+          rolloverText: `${UNCLAIMED_ROLLOVER_EPOCHS} epochs (${(UNCLAIMED_ROLLOVER_EPOCHS * 6) / 24} days)`,
+        }
+      : null,
   };
 }
 
@@ -347,6 +387,9 @@ export async function readHolderPage(): Promise<HolderPageReads> {
     carry: carryRows(),
     staked,
     distributed,
+    holders: serverEnv.tokenHolders()
+      ? { lastComputedAt: (getDb().prepare("SELECT MAX(created_at) AS t FROM token_holder_roots").get() as { t: number | null }).t }
+      : null,
   };
 }
 
