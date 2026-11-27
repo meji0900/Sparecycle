@@ -30,6 +30,28 @@ export const ADDR = {
    * Internal review only, not externally audited.
    */
   x402Escrow: "0xd7A11d725F411f96E02F04991B377953e7D7B7fB",
+  /**
+   * SparecycleJobPaymentsV2: prepaid balances in ETH or SPARE. A charge sends 95% to the node pot; the 5% protocol share
+   * splits 350 treasury / 0 burner / 150 holder pool (bps of the charge). SPARE at 0% discount, sold for ETH so the pot
+   * gets the same 95%. Owner of every setting: the treasury Safe. Deployed 27 Nov 2026 (tx 0x2f7f78ed…e977, block
+   * 123,925,640). Internal review only, not externally audited.
+   */
+  jobPaymentsV2: "0x898D6b3E4BE9F100330B6b96352983483e25559c",
+  /**
+   * SparecycleHolderPool: each epoch's holder share as a Merkle root; eligible SPARE holders claim it as spend-only compute
+   * credits in V2. Deployed 27 Nov 2026 (tx 0xbbbf82b6…a3f4, block 123,925,668). Internal review only.
+   */
+  holderPool: "0x25cdf643aC1B6B06CcF11b7Eebc88659219744b5",
+  /**
+   * SparecycleBurner: buys and burns SPARE from its share of V2 charges. Its share is 0 (burn postponed by the owner), so
+   * it holds nothing until the Safe changes the split. Deployed 27 Nov 2026 (tx 0x89934189…f0a8, block 123,925,607).
+   */
+  burner: "0xBE588f785300bA695e18F74854E9005b9c59C0F2",
+  /**
+   * UniswapV4SpareAdapter: swaps SPARE and ETH on the SPARE/ETH Uniswap v4 pool for V2 and the Burner. No owner, holds
+   * nothing between calls. Deployed 27 Nov 2026 (tx 0x21be9848…1929, block 123,925,577).
+   */
+  spareAdapter: "0x0A86983bB475F984a5D75a71D51daB0F93b80961",
   /** USDG (Global Dollar, Paxos), the x402 payment asset: 6 decimals, EIP-3009 signed transfers. Not Sparecycle's. */
   usdg: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
   /** Treasury Safe (Safe 1.5.0, 2 of 3): 5% of every charge, and since 25 Nov 2026 the reward contract's owner. */
@@ -96,6 +118,22 @@ export const VERIFICATION = {
   nodeStake: {
     blockscout: { status: "verified", checkedOn: "26 Nov 2026" },
     sourcify: { status: "exact_match", checkedOn: "26 Nov 2026", verifiedAt: "2026-11-26T13:40:00Z" },
+  },
+  jobPaymentsV2: {
+    blockscout: null,
+    sourcify: { status: "exact_match", checkedOn: "27 Nov 2026", verifiedAt: "2026-11-27T02:32:40Z" },
+  },
+  holderPool: {
+    blockscout: null,
+    sourcify: { status: "exact_match", checkedOn: "27 Nov 2026", verifiedAt: "2026-11-27T02:32:48Z" },
+  },
+  burner: {
+    blockscout: null,
+    sourcify: { status: "exact_match", checkedOn: "27 Nov 2026", verifiedAt: "2026-11-27T02:32:29Z" },
+  },
+  spareAdapter: {
+    blockscout: null,
+    sourcify: { status: "exact_match", checkedOn: "27 Nov 2026", verifiedAt: "2026-11-27T02:32:26Z" },
   },
   treasurySafe: {
     blockscout: {
@@ -166,6 +204,46 @@ export const ADDRESS_ROWS: AddressRow[] = [
     kind: "contract",
     by: "sparecycle",
     source: VERIFICATION.x402Escrow,
+  },
+  {
+    id: "job-payments-v2",
+    name: "SparecycleJobPaymentsV2",
+    role: "Prepaid balances for paid jobs in ETH or SPARE, from 27 Nov 2026. A charge sends 95% to the node pot; of the 5% protocol share, 3.5% goes to the treasury Safe and 1.5% to the holder pool (the burn share is 0). SPARE is taken at the pool price with no discount and sold for ETH, so the pot gets the same 95%; SPARE payments open once the Safe sets a reference price. Customers withdraw in two steps. Settings: the treasury Safe. Internal review only, not externally audited.",
+    address: ADDR.jobPaymentsV2,
+    network: "mainnet",
+    kind: "contract",
+    by: "sparecycle",
+    source: VERIFICATION.jobPaymentsV2,
+  },
+  {
+    id: "holder-pool",
+    name: "SparecycleHolderPool",
+    role: "Each epoch's holder share of charges, posted by the scheduler as a Merkle root. Eligible SPARE holders claim their part as compute credits that pay for jobs and cannot be withdrawn or transferred; unclaimed parts roll back into the pool after 8 epochs. Internal review only, not externally audited.",
+    address: ADDR.holderPool,
+    network: "mainnet",
+    kind: "contract",
+    by: "sparecycle",
+    source: VERIFICATION.holderPool,
+  },
+  {
+    id: "burner",
+    name: "SparecycleBurner",
+    role: "Buys and burns SPARE from its share of V2 charges. Its share is 0 (the burn is postponed), so it holds nothing until the treasury Safe changes the split. Internal review only, not externally audited.",
+    address: ADDR.burner,
+    network: "mainnet",
+    kind: "contract",
+    by: "sparecycle",
+    source: VERIFICATION.burner,
+  },
+  {
+    id: "spare-adapter",
+    name: "UniswapV4SpareAdapter",
+    role: "Swaps SPARE and ETH on the SPARE/ETH Uniswap v4 pool for SparecycleJobPaymentsV2 and the Burner, with a minimum output on every swap. No owner; it holds nothing between calls. Internal review only, not externally audited.",
+    address: ADDR.spareAdapter,
+    network: "mainnet",
+    kind: "contract",
+    by: "sparecycle",
+    source: VERIFICATION.spareAdapter,
   },
   {
     id: "treasury-safe",
@@ -368,11 +446,11 @@ export const TOKEN_CONTRACTS: {
 } = {
   /** SparecycleNodeStake: SPARE stake per owner wallet, slash proposals (brief §3). Deployed 26 Nov 2026 (ADDR.nodeStake). */
   nodeStake: tokenEnvAddress("TOKEN_NODE_STAKE_ADDRESS") ?? getAddress(ADDR.nodeStake),
-  /** SparecycleHolderPool: per-epoch Merkle root of holder shares, mode choice (brief §6.2). Not deployed. */
+  /** SparecycleHolderPool: per-epoch Merkle root of holder shares (brief §6.2). Deployed 27 Nov 2026 (ADDR.holderPool); the scheduler uses it when TOKEN_HOLDER_POOL_ADDRESS is set. */
   holderPool: tokenEnvAddress("TOKEN_HOLDER_POOL_ADDRESS"),
-  /** SparecycleBurner: phase 2b burn path (brief §4). Not deployed; phase 2a is run by the treasury Safe. */
+  /** SparecycleBurner: phase 2b burn path (brief §4). Deployed 27 Nov 2026 (ADDR.burner) with a share of 0. */
   burner: tokenEnvAddress("TOKEN_BURNER_ADDRESS"),
-  /** SparecycleJobPaymentsV2: configurable split of the 5%, creditFor (brief §6.3). Not deployed. */
+  /** SparecycleJobPaymentsV2: configurable split of the 5%, creditFor (brief §6.3). Deployed 27 Nov 2026 (ADDR.jobPaymentsV2); used when TOKEN_PAYMENTS_V2=on and TOKEN_JOB_PAYMENTS_V2_ADDRESS is set. */
   jobPaymentsV2: tokenEnvAddress("TOKEN_JOB_PAYMENTS_V2_ADDRESS"),
 };
 
@@ -466,9 +544,10 @@ export const BURN_SINKS = {
 } as const satisfies Record<string, Address>;
 
 /**
- * First block to read SPARE Transfer logs from (the SPARE launch transaction's block; TOKEN_SPARE_START_BLOCK). Not
- * recorded yet: until it is, holder weights cannot be computed (a holder's balance at an epoch start needs the full
- * history) and the holder page reads no burn rows.
+ * First block to read SPARE Transfer logs from (the SPARE launch transaction's block; TOKEN_SPARE_START_BLOCK). On
+ * mainnet that is block 122,170,534: SPARE's first Transfer, the mint from 0x0 in tx 0x0e116401…9b48 (24 Nov 2026
+ * 10:55:47 UTC), found with eth_getLogs. Unset: holder weights cannot be computed (a holder's balance at an epoch start
+ * needs the full history) and the holder page reads no burn rows.
  */
 export const SPARE_START_BLOCK: bigint | null = (() => {
   const v = tokenEnv("TOKEN_SPARE_START_BLOCK");

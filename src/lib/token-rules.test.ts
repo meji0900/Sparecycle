@@ -93,9 +93,16 @@ describe("addresses of the token features", () => {
     assert.equal(getAddress(BURN_SINKS.dead), BURN_SINKS.dead);
   });
 
-  test("/docs/contracts: SparecycleNodeStake is the only token-feature row (the others are not deployed)", () => {
-    const rows = ADDRESS_ROWS.filter((r) => /NodeStake|HolderPool|Burner|JobPaymentsV2|PoolManager|StateView|Universal Router/i.test(`${r.name} ${r.id}`));
-    assert.deepEqual(rows.map((r) => [r.id, r.address]), [["node-stake", ADDR.nodeStake]]);
+  test("/docs/contracts: the deployed token-feature rows (NodeStake 26 Nov, the V2 stack 27 Nov 2026), and no Uniswap rows", () => {
+    const rows = ADDRESS_ROWS.filter((r) => /NodeStake|HolderPool|Burner|JobPaymentsV2|SpareAdapter|PoolManager|StateView|Universal Router/i.test(`${r.name} ${r.id}`));
+    assert.deepEqual(rows.map((r) => [r.id, r.address]), [
+      ["node-stake", ADDR.nodeStake],
+      ["job-payments-v2", ADDR.jobPaymentsV2],
+      ["holder-pool", ADDR.holderPool],
+      ["burner", ADDR.burner],
+      ["spare-adapter", ADDR.spareAdapter],
+    ]);
+    for (const r of rows) assert.equal(r.source?.sourcify?.status, "exact_match", `${r.id} source published`);
   });
 
   test("SPARE only, never CYCLE (N16)", () => {

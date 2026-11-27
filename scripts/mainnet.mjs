@@ -1028,7 +1028,10 @@ function env() {
           `TOKEN_JOB_PAYMENTS_V2_ADDRESS=${deployedV2().SparecycleJobPaymentsV2}`,
           `TOKEN_HOLDER_POOL_ADDRESS=${deployedV2().SparecycleHolderPool ?? ""}`,
           `TOKEN_BURNER_ADDRESS=${deployedV2().SparecycleBurner ?? ""}`,
-          "# switch on only after the Safe set the reference SPARE price: TOKEN_PAYMENTS_V2=on, TOKEN_HOLDERS=on, TOKEN_HOLDER_PAGE=on",
+          "TOKEN_SPARE_START_BLOCK=122170534",
+          "TOKEN_PAYMENTS_V2=on",
+          "TOKEN_HOLDERS=on",
+          "TOKEN_HOLDER_PAGE=on",
         ]
       : []),
     "NEXT_PUBLIC_EXPLORER_URL=https://robinhoodchain.blockscout.com",

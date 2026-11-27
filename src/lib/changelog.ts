@@ -34,9 +34,35 @@ export const KIND_LABEL: Record<ChangelogKind, string> = {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    id: "pay-with-spare-and-holder-credits",
+    title: "Pay from an ETH or SPARE balance; holders claim compute credits",
+    date: "2026-11-27",
+    kind: "site",
+    summary:
+      "New deposits go to SparecycleJobPaymentsV2: each job is paid from your ETH or your SPARE balance, your choice, with the price shown before you sign. Balances in the first payments contract stay usable and withdrawable. SPARE is accepted while the pool price stays within 20% of the reference price set by the treasury Safe. Each epoch's holder share is posted as a Merkle root, and wallets that held at least 100,000 SPARE over the epoch (time-weighted) can claim their part on /token/holders as compute credits. Credits pay for jobs; they cannot be withdrawn or transferred.",
+    evidence: [
+      { label: "Holder shares and claims", url: `${LIVE_SITE}/token/holders#claim` },
+      { label: "Holder roots API", url: `${LIVE_SITE}/api/v1/holders/epochs` },
+      { label: "Docs: billing", url: `${LIVE_SITE}/docs/billing` },
+    ],
+  },
+  {
+    id: "v2-payment-contracts",
+    title: "V2 payment contracts deployed",
+    date: "2026-11-27T02:31:43Z",
+    kind: "contract",
+    summary:
+      "SparecycleJobPaymentsV2, SparecycleHolderPool, SparecycleBurner and a Uniswap v4 SPARE adapter are on Robinhood Chain with verified sources. A charge still sends 95% to the node pot. Of the 5% protocol share, 3.5% goes to the treasury Safe and 1.5% to the holder pool; the burn share is 0 for now. SPARE is taken at the pool price with no discount and sold for ETH, so the node pot gets the same 95% either way. Every setting is held by the treasury Safe. Internal review only, not externally audited.",
+    evidence: [
+      { label: "V2 deploy transaction", tx: "0x2f7f78edd9769ea5f825e6bb3288586ec3bb9530b82e8101857c1e179977e219" },
+      { label: "Holder pool deploy transaction", tx: "0xbbbf82b6d85fa59edda66e9e9ee5fc20228d15309bda45cafa351d654417a3f4" },
+      { label: "Verified source (Sourcify)", url: sourcifyUrl(ADDR.jobPaymentsV2) },
+    ],
+  },
+  {
     id: "staking-from-the-site",
     title: "Stake SPARE from the site (optional)",
-    date: "2026-11-26",
+    date: "2026-11-27",
     kind: "site",
     summary:
       "Node owners can now stake SPARE, request and cancel an unstake, withdraw after the cooldown and appeal a slash proposal from /nodes/stake, each step with its transaction link. Staking pays nothing and the minimum is zero, so running a node still needs no token. Total staked, the number of staking owners and the total slashed are public on /nodes, /token and in the API.",
