@@ -61,7 +61,8 @@ export function SiteFooter() {
           </div>
           <div className="flex flex-col gap-2.5">
             <p className="text-faint">Docs</p>
-            <Link href="/docs" className="text-muted hover:text-text">Docs</Link>
+            <Link href="/docs" className="text-muted hover:text-text">Documentation</Link>
+            <Link href="/docs/api" className="text-muted hover:text-text">API docs</Link>
             <a href={DOCS_LINKS.openapi} className="text-muted hover:text-text">API (OpenAPI)</a>
             <Link href={DOCS_LINKS.changelog} className="text-muted hover:text-text">Changelog</Link>
             <a href={DOCS_LINKS.feed} className="text-muted hover:text-text">Changelog feed (RSS)</a>
