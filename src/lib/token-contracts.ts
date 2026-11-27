@@ -155,6 +155,7 @@ export const jobPaymentsV2Abi = parseAbi([
   "function creditOf(address customer) view returns (uint256)",
   "function balanceOf(address customer) view returns (uint256)",
   "function holderPool() view returns (address)",
+  "function currentSplit() view returns (uint16 treasuryBps, uint16 burnerBps, uint16 holderPoolBps)",
 ]);
 
 export const burnerAbi = parseAbi(["event Burned(uint64 indexed epochId, uint256 ethIn, uint256 spareBurned)"]);

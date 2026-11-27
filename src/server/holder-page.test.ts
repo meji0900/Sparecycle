@@ -157,6 +157,28 @@ describe("every figure has a source", () => {
     assert.match(page, /\{m\.claims \? \(/, "the claim section renders only from the model");
   });
 
+  test("V2 live with the burn postponed (27 Nov 2026): split and minimum stake are contract reads, the burn copy says postponed", () => {
+    const r = today();
+    const v2 = addr(0x2222);
+    const stake = addr(0x57a4e0);
+    r.contracts = { nodeStake: stake, holderPool: addr(0xf00d1), burner: addr(0xb0a2), jobPaymentsV2: v2 };
+    r.split = { treasuryBps: 350, burnerBps: 0, holderPoolBps: 150 };
+    r.minStake = 0n;
+    r.staked = { status: "live", total: 0n, owners: [], proposals: null };
+    const model = P.buildHolderPage(r);
+    assert.deepEqual(unsourced(model), []);
+    const rules = model.sections.find((s) => s.id === "rules")!.figures;
+    const split = rules.find((f) => f.label.startsWith("Split of the treasury cut"));
+    assert.ok(split?.kind === "value" && split.value === "0% / 1.5% / 3.5%" && split.source.href.toLowerCase().includes(v2.toLowerCase()));
+    const min = rules.find((f) => f.label === "Minimum stake per node");
+    assert.ok(min?.kind === "value" && min.value === "0" && min.source.href.toLowerCase().includes(stake.toLowerCase()), "a read zero is a value, not a placeholder");
+    assert.match(model.sections.find((s) => s.id === "burned")!.description, /postponed/);
+    assert.match(model.sections.find((s) => s.id === "staked")!.description, /optional collateral/);
+    // Split not readable: back to the placeholder, never a guessed number.
+    const r2 = { ...r, split: null };
+    assert.equal(P.buildHolderPage(r2).sections.find((s) => s.id === "rules")!.figures.find((f) => f.label.startsWith("Split"))?.kind, "not-live");
+  });
+
   test("the rows of the burn table always carry a transaction link (no row without a hash)", () => {
     const r = today();
     r.burns = { status: "live", fromBlock: 1n, rows: [], slashes: [], burner: "not-live", stakeLive: false };

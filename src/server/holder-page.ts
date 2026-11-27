@@ -78,6 +78,10 @@ export type HolderPageReads = {
   spareToken: Address;
   payments: Address;
   treasuryBps: number | null;
+  /** SparecycleJobPaymentsV2.currentSplit() (absent or null = V2 not set or not readable). */
+  split?: { treasuryBps: number; burnerBps: number; holderPoolBps: number } | null;
+  /** SparecycleNodeStake.minStakePerNode() (absent or null = not set or not readable). */
+  minStake?: bigint | null;
   burns:
     | { status: "live"; fromBlock: bigint; rows: BurnRow[]; slashes: SlashBurnRow[]; burner: "live" | "not-live"; stakeLive: boolean }
     | { status: "not-live" | "error"; why: string };
@@ -114,7 +118,7 @@ export function buildHolderPage(r: HolderPageReads): HolderPageModel {
         ? b.length
           ? { kind: "value", label: "Burned by SparecycleBurner (phase 2b)", value: spare(sum(b)), unit: "SPARE", source: { label: "Burned events", href: explorerAddressUrl(r.contracts.burner) } }
           : { kind: "value", label: "Burned by SparecycleBurner (phase 2b)", value: "No Burned event yet", source: { label: "Burned events", href: explorerAddressUrl(r.contracts.burner) } }
-        : notLive("Burned by SparecycleBurner (phase 2b)", "SparecycleBurner is not deployed. It needs SparecycleJobPaymentsV2 and an audit first."),
+        : notLive("Burned by SparecycleBurner (phase 2b)", r.contracts.burner ? "SparecycleBurner is deployed but not read here yet." : "SparecycleBurner is not deployed. It needs SparecycleJobPaymentsV2 and an audit first."),
     );
     burnFigures.push(
       r.burns.stakeLive && r.contracts.nodeStake
@@ -150,11 +154,13 @@ export function buildHolderPage(r: HolderPageReads): HolderPageModel {
       empty: "Nothing carried over.",
     });
   }
+  const burnPostponed = r.split?.burnerBps === 0;
   sections.push({
     id: "burned",
     title: "Burned",
-    description:
-      "Each epoch, part of the treasury share is used to buy SPARE and burn it, and every transaction is listed. Only burn events read from the chain count here. An epoch whose amount could not be bought (cap on a thin pool) shows a carried-over row with the amount.",
+    description: burnPostponed
+      ? "The burn is postponed: SparecycleBurner's share of each charge is 0 until the treasury Safe changes the split, so nothing is bought or burned from charges. Any burn would be read from the chain and listed here with its transaction, and SPARE burned by an executed slash is shown apart."
+      : "Each epoch, part of the treasury share is used to buy SPARE and burn it, and every transaction is listed. Only burn events read from the chain count here. An epoch whose amount could not be bought (cap on a thin pool) shows a carried-over row with the amount.",
     live: r.burns.status === "live",
     figures: burnFigures,
     tables: burnTables,
@@ -236,7 +242,9 @@ export function buildHolderPage(r: HolderPageReads): HolderPageModel {
     id: "staked",
     title: "Staked by node owners",
     description:
-      "Node owners would lock SPARE to receive jobs. Repeated proven wrong results cost part of the stake, which is burned. The scheduler and the treasury Safe judge each case, so this is not trustless; every proposal comes with public evidence.",
+      st.status === "live"
+        ? "Node owners can lock SPARE as optional collateral for their nodes on /nodes/stake: the minimum is 0 and staking pays nothing. Repeated proven wrong results can cost part of a stake, which is burned. The scheduler proposes and the treasury Safe decides each case, so this is not trustless; every proposal comes with public evidence."
+        : "Node owners would lock SPARE to receive jobs. Repeated proven wrong results cost part of the stake, which is burned. The scheduler and the treasury Safe judge each case, so this is not trustless; every proposal comes with public evidence.",
     live: st.status === "live",
     figures: stFigures,
     tables: stTables,
@@ -247,8 +255,26 @@ export function buildHolderPage(r: HolderPageReads): HolderPageModel {
     r.treasuryBps === null
       ? notLive("Treasury cut of every charge", "Could not read SparecycleJobPayments right now.")
       : { kind: "value", label: "Treasury cut of every charge", value: `${r.treasuryBps / 100}%`, source: readLink(r.payments, "SparecycleJobPayments TREASURY_BPS"), note: "The node pot keeps the rest. Fixed in the live contract." },
-    notLive("Split of the treasury cut (burn / holders / treasury)", "Read from SparecycleJobPaymentsV2 once it is deployed and audited."),
-    notLive("Minimum stake per node", "Read from SparecycleNodeStake (minStakePerNode) once it is deployed."),
+    r.split && r.contracts.jobPaymentsV2
+      ? {
+          kind: "value",
+          label: "Split of the treasury cut (burn / holders / treasury)",
+          value: `${r.split.burnerBps / 100}% / ${r.split.holderPoolBps / 100}% / ${r.split.treasuryBps / 100}%`,
+          unit: "of each charge",
+          source: readLink(r.contracts.jobPaymentsV2, "SparecycleJobPaymentsV2 currentSplit"),
+          note: "Charges on SparecycleJobPaymentsV2. The node pot keeps 95%. Only the treasury Safe can change the split, at least 4 epochs ahead.",
+        }
+      : notLive("Split of the treasury cut (burn / holders / treasury)", "Read from SparecycleJobPaymentsV2 once it is deployed and audited."),
+    r.minStake !== undefined && r.minStake !== null && r.contracts.nodeStake
+      ? {
+          kind: "value",
+          label: "Minimum stake per node",
+          value: spare(r.minStake),
+          unit: "SPARE",
+          source: readLink(r.contracts.nodeStake, "SparecycleNodeStake minStakePerNode"),
+          note: r.minStake === 0n ? "Running a node needs no stake; staking is optional." : undefined,
+        }
+      : notLive("Minimum stake per node", "Read from SparecycleNodeStake (minStakePerNode) once it is deployed."),
     r.holders
       ? {
           kind: "value",
@@ -368,9 +394,11 @@ async function readBurns(start: bigint | null): Promise<HolderPageReads["burns"]
 /** Reads everything the page shows (no cache). */
 export async function readHolderPage(): Promise<HolderPageReads> {
   const start = SPARE_START_BLOCK;
-  const [block, treasuryBps, burns, staked, distributed] = await Promise.all([
+  const [block, treasuryBps, split, minStake, burns, staked, distributed] = await Promise.all([
     tokenChain.headBlock().catch(() => null),
     tokenChain.treasuryBps().catch(() => null),
+    TOKEN_CONTRACTS.jobPaymentsV2 ? tokenChain.v2Split().catch(() => null) : Promise.resolve(null),
+    TOKEN_CONTRACTS.nodeStake ? tokenChain.minStakePerNode().catch(() => null) : Promise.resolve(null),
     readBurns(start),
     readStaked(start),
     readDistributed(start),
@@ -383,6 +411,8 @@ export async function readHolderPage(): Promise<HolderPageReads> {
     spareToken: ADDR.spareToken,
     payments: ADDR.payments,
     treasuryBps,
+    split,
+    minStake,
     burns,
     carry: carryRows(),
     staked,

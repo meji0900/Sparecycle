@@ -183,11 +183,20 @@ export default async function HoldersPage() {
       />
 
       <div className="space-y-3">
-        <Notice tone="warn" title="Token features are not live">
-          Burns, holder distributions and node staking stay off until a legal review, external audits of the new contracts
-          and the split of the treasury Safe&apos;s keys across different people are done. Until a contract is deployed, its
-          part of this page shows <span className="num text-text">{NOT_LIVE_YET}</span>, never a zero or a sample number.
-        </Notice>
+        {m.claims?.live ? (
+          <Notice tone="warn" title="Internal review only">
+            Holder credits and node staking are live; the burn is postponed. SparecycleJobPaymentsV2, SparecycleHolderPool,
+            SparecycleBurner and SparecycleNodeStake have had an internal review only, not an external audit, and all three
+            keys of the treasury Safe are held by the project owner. A part that is not live shows{" "}
+            <span className="num text-text">{NOT_LIVE_YET}</span>, never a zero or a sample number.
+          </Notice>
+        ) : (
+          <Notice tone="warn" title="Token features are not live">
+            Burns, holder distributions and node staking stay off until a legal review, external audits of the new contracts
+            and the split of the treasury Safe&apos;s keys across different people are done. Until a contract is deployed, its
+            part of this page shows <span className="num text-text">{NOT_LIVE_YET}</span>, never a zero or a sample number.
+          </Notice>
+        )}
         {m.readError ? (
           <Notice tone="error" title="Could not read the chain">
             {m.readError}

@@ -618,6 +618,13 @@ export const tokenChain = {
     return publicClient.readContract({ address, abi: jobPaymentsV2Abi, functionName: "creditOf", args: [holder] });
   },
 
+  /** SparecycleJobPaymentsV2.currentSplit(): the 5% protocol share as treasury / burner / holder pool, in bps of a charge. */
+  async v2Split(): Promise<{ treasuryBps: number; burnerBps: number; holderPoolBps: number }> {
+    const address = live(TOKEN_CONTRACTS.jobPaymentsV2, "SparecycleJobPaymentsV2");
+    const [t, b, h] = await publicClient.readContract({ address, abi: jobPaymentsV2Abi, functionName: "currentSplit" });
+    return { treasuryBps: Number(t), burnerBps: Number(b), holderPoolBps: Number(h) };
+  },
+
   /** TREASURY_BPS of the live SparecycleJobPayments (ADDR.payments): the treasury cut of every charge. */
   async treasuryBps(): Promise<number> {
     return Number(await publicClient.readContract({ address: ADDR.payments, abi: jobPaymentsAbi, functionName: "TREASURY_BPS" }));
